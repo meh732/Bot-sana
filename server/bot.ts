@@ -129,7 +129,7 @@ async function sendServiceInfo(chatId: number, purchase: any) {
         parse_mode: 'Markdown',
         reply_markup: {
            inline_keyboard: [
-             [{ text: '♻️ تمدید سرویس (کسر از موجودی)', callback_data: `renew_service_${purchase.id}` }]
+             [{ text: '♻️ تمدید سرویس (کسر از موجودی)', callback_data: `renew_service_${purchase.id}`, style: 'success' }]
            ]
          }
       });
@@ -166,9 +166,9 @@ function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
 function getSellerReplyKeyboard() {
   return {
     keyboard: [
-      [{ text: '🛒 خرید سرویس همکار' }, { text: '📉 وضعیت بدهی و اعتبار همکار' }],
-      [{ text: '📋 لیست فروش‌های من' }],
-      [{ text: '🔙 بازگشت به منوی اصلی' }]
+      [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
+      [{ text: '📋 لیست فروش‌های من', style: 'primary' }],
+      [{ text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
     ],
     resize_keyboard: true
   };
@@ -903,8 +903,8 @@ export async function initBot() {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: `🛒 تایید خرید و پرداخت (${finalPrice.toLocaleString()} تومان)`, callback_data: `buy_now_with_coupon_${productId}_${inputCoupon}` }],
-              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+              [{ text: `🛒 تایید خرید و پرداخت (${finalPrice.toLocaleString()} تومان)`, callback_data: `buy_now_with_coupon_${productId}_${inputCoupon}`, style: 'success' }],
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase', style: 'danger' }]
             ]
           }
         });
@@ -1303,7 +1303,7 @@ export async function initBot() {
                 parse_mode: 'HTML',
                 reply_markup: {
                   inline_keyboard: [
-                    [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+                    [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
                   ]
                 }
               }).catch(() => {});
@@ -1371,7 +1371,7 @@ export async function initBot() {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+              [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
             ]
           }
         }).catch(() => {});
@@ -1611,7 +1611,7 @@ export async function initBot() {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow' }]
+            [{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow', style: 'success' }]
           ]
         }
       });
@@ -1685,10 +1685,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛒 *خرید سرویس ویژه همکاران*\nلطفا دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'Markdown',
@@ -1726,7 +1726,7 @@ export async function initBot() {
             `🔹 نام: *${p.name}*\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}` }]);
+          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
@@ -1767,10 +1767,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'Markdown',
@@ -1808,7 +1808,7 @@ export async function initBot() {
             `🔹 نام سرویس: *${p.name}*\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}` }]);
+          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
@@ -1834,7 +1834,7 @@ export async function initBot() {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '📞 ارتباط مستقیم تلگرام', url: `https://t.me/${username}` }]
+              [{ text: '📞 ارتباط مستقیم تلگرام', url: `https://t.me/${username}`, style: 'primary' }]
             ]
           }
         });
@@ -2234,7 +2234,7 @@ export async function initBot() {
             `🔹 نام سرویس: *${p.name}*\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}` }]);
+          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msg, {
@@ -2280,7 +2280,7 @@ export async function initBot() {
         if ((user.balance || 0) < finalPrice) {
           bot!.sendMessage(chatId, `❌ موجودی شما برای تمدید این سرویس کافی نیست.\n\nقیمت: ${finalPrice.toLocaleString()} تومان\nموجودی شما: ${(user.balance || 0).toLocaleString()} تومان`, {
             reply_markup: {
-              inline_keyboard: [[{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow' }]]
+              inline_keyboard: [[{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow', style: 'success' }]]
             }
           });
           return;
@@ -2468,10 +2468,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'Markdown',
@@ -2553,10 +2553,10 @@ export async function initBot() {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '🎫 ورود کد تخفیف', callback_data: `enter_coupon_${productId}` },
-                { text: '🛒 خرید بدون تخفیف', callback_data: `buy_now_${productId}` }
+                { text: '🎫 ورود کد تخفیف', callback_data: `enter_coupon_${productId}`, style: 'primary' },
+                { text: '🛒 خرید بدون تخفیف', callback_data: `buy_now_${productId}`, style: 'success' }
               ],
-              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase', style: 'danger' }]
             ]
           }
         });
@@ -2645,7 +2645,7 @@ export async function initBot() {
       bot!.sendMessage(chatId, '✏️ لطفا نام دلخواه خود را (فقط حروف انگلیسی، اعداد و خط تیره/زیرخط) بدون فاصله ارسال کنید:', {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            [{ text: '❌ انصراف', callback_data: 'cancel_purchase', style: 'danger' }]
           ]
         }
       });
