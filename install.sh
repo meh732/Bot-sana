@@ -20,8 +20,8 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-GIT_URL="https://github.com/meh732/botsel.git"
-DIR_NAME="botsel"
+GIT_URL="https://github.com/meh732/Bot-sana.git"
+DIR_NAME="Bot-sana"
 
 show_menu() {
   echo -e "\n${YELLOW}لطفاً یکی از گزینه‌های زیر را انتخاب نمایید:${NC}"
