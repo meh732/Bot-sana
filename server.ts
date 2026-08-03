@@ -418,6 +418,31 @@ async function startServer() {
     res.json({ success: true, products: newProducts });
   });
 
+  api.post("/products/bulk-update-inbounds", (req, res) => {
+    const { productIds, inboundIds, inboundId } = req.body;
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'لیست محصولات جهت ویرایش گروهی الزامی است.' });
+    }
+
+    const parsedInboundId = inboundId !== undefined ? parseInboundId(inboundId) : undefined;
+    const parsedInboundIds = inboundIds !== undefined ? parseInboundIds(inboundIds) : undefined;
+
+    const state = db.getState();
+    const newProducts = state.products.map(p => {
+      if (productIds.includes(p.id)) {
+        return {
+          ...p,
+          inboundId: parsedInboundId,
+          inboundIds: parsedInboundIds || []
+        };
+      }
+      return p;
+    });
+
+    db.updateState({ products: newProducts });
+    res.json({ success: true, products: newProducts });
+  });
+
   api.delete("/products/:id", (req, res) => {
     const state = db.getState();
     const newProducts = state.products.filter(p => p.id !== req.params.id);

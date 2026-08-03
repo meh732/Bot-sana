@@ -118,6 +118,7 @@ export interface AppState {
   autoBackupIntervalHours?: number;
   autoBackupPassword?: string;
   lastAutoBackupSent?: number;
+  lastDailyReportSent?: number;
 }
 
 const DB_PATH = path.join(process.cwd(), 'db.json');

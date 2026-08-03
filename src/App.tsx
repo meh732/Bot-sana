@@ -1050,6 +1050,8 @@ function ProductsView() {
   const [form, setForm] = useState({ name: '', price: 0, volumeGb: 10, durationDays: 30, inboundId: '', inboundIds: [] as number[], limitIp: 1, categoryId: '', isPayAsYouGo: false });
   const [newCatName, setNewCatName] = useState('');
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [bulkInboundIds, setBulkInboundIds] = useState<number[]>([]);
 
   useEffect(() => {
     fetch('/api/state')
@@ -1326,13 +1328,151 @@ function ProductsView() {
          </div>
        </div>
 
+       {/* بخش عملیات گروهی */}
+       {products.length > 0 && (
+         <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 mb-6">
+           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+             <div className="flex items-center gap-3">
+               <input 
+                 type="checkbox"
+                 checked={selectedProductIds.length === products.length && products.length > 0}
+                 onChange={(e) => {
+                   if (e.target.checked) {
+                     setSelectedProductIds(products.map(p => p.id));
+                   } else {
+                     setSelectedProductIds([]);
+                   }
+                 }}
+                 className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                 id="select-all-products"
+               />
+               <label htmlFor="select-all-products" className="text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                 انتخاب همه محصولات جهت ویرایش گروهی ({products.length} محصول)
+               </label>
+               {selectedProductIds.length > 0 && (
+                 <span className="text-xs bg-indigo-100 text-indigo-800 font-bold px-2 py-0.5 rounded-full">
+                   {selectedProductIds.length} محصول انتخاب شده
+                 </span>
+               )}
+             </div>
+             
+             {selectedProductIds.length > 0 && (
+               <button 
+                 onClick={() => setSelectedProductIds([])} 
+                 className="text-xs text-red-600 hover:text-red-800 font-semibold"
+               >
+                 لغو انتخاب‌ها
+               </button>
+             )}
+           </div>
+
+           {selectedProductIds.length > 0 && (
+             <div className="mt-4 pt-4 border-t border-slate-200 space-y-4">
+               <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                 <Settings2 className="w-4 h-4 text-indigo-600" />
+                 تغییر گروهی اینباندهای محصولات انتخاب شده
+               </h3>
+               <p className="text-xs text-slate-500">
+                 اینباندهای علامت‌زده شده در زیر برای تمام {selectedProductIds.length} محصول انتخابی به طور همزمان تنظیم خواهند شد (سایر مشخصات محصولات بدون تغییر می‌مانند).
+               </p>
+
+               {inbounds.length > 0 ? (
+                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
+                   {inbounds.map((ib: any) => {
+                     const isChecked = bulkInboundIds.includes(ib.id);
+                     return (
+                       <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-indigo-600 cursor-pointer select-none">
+                         <input 
+                           type="checkbox" 
+                           checked={isChecked}
+                           onChange={e => {
+                             let updatedIds = [...bulkInboundIds];
+                             if (e.target.checked) {
+                               if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                             } else {
+                               updatedIds = updatedIds.filter(id => id !== ib.id);
+                             }
+                             setBulkInboundIds(updatedIds);
+                           }}
+                           className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                         />
+                         <span className="font-medium text-slate-800">{ib.remark}</span>
+                         <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1.5 py-0.5 rounded">ID: {ib.id} ({ib.protocol})</span>
+                       </label>
+                     );
+                   })}
+                 </div>
+               ) : (
+                 <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
+                   ⚠️ لیست اینباندها لود نشده است. لطفاً ابتدا در زبانه «تنظیمات ربات»، مشخصات پنل را لود کنید.
+                 </div>
+               )}
+
+               <div className="flex justify-end gap-2">
+                 <button
+                   onClick={async () => {
+                     if (bulkInboundIds.length === 0) {
+                       alert('لطفاً حداقل یک اینباند انتخاب کنید.');
+                       return;
+                     }
+                     if (!confirm(`آیا مطمئن هستید که می‌خواهید اینباندهای ${selectedProductIds.length} محصول انتخابی را به اینباندهای جدید تغییر دهید؟`)) {
+                       return;
+                     }
+                     
+                     try {
+                       const res = await fetch('/api/products/bulk-update-inbounds', {
+                         method: 'POST',
+                         headers: { 'Content-Type': 'application/json' },
+                         body: JSON.stringify({
+                           productIds: selectedProductIds,
+                           inboundIds: bulkInboundIds,
+                           inboundId: bulkInboundIds[0]
+                         })
+                       });
+                       const data = await res.json();
+                       if (data.success) {
+                         setProducts(data.products);
+                         setSelectedProductIds([]);
+                         setBulkInboundIds([]);
+                         alert('✅ اینباندهای محصولات با موفقیت به صورت گروهی تغییر یافت.');
+                       } else {
+                         alert('خطا در اعمال تغییرات: ' + data.message);
+                       }
+                     } catch (e: any) {
+                       alert('خطای ارتباط با سرور: ' + e.message);
+                     }
+                   }}
+                   className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-xs font-semibold transition"
+                 >
+                   اعمال همزمان بر روی {selectedProductIds.length} محصول
+                 </button>
+               </div>
+             </div>
+           )}
+         </div>
+       )}
+
        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {products.map(p => (
             <div key={p.id} className={`bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col hover:shadow-md transition ${p.disabled ? 'opacity-60' : ''}`}>
-               <h3 className={`text-lg font-bold text-slate-900 mb-2 ${p.disabled ? 'line-through text-slate-500' : ''}`}>
-                 {p.name} {p.disabled && '(غیرفعال)'}
-                 {p.isPayAsYouGo && <span className="mr-2 text-[10px] bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded align-middle">پرداخت در ازای مصرف</span>}
-               </h3>
+               <div className="flex items-start justify-between mb-2 gap-2">
+                 <h3 className={`text-lg font-bold text-slate-900 ${p.disabled ? 'line-through text-slate-500' : ''}`}>
+                   {p.name} {p.disabled && '(غیرفعال)'}
+                   {p.isPayAsYouGo && <span className="mr-2 text-[10px] bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded align-middle">پرداخت در ازای مصرف</span>}
+                 </h3>
+                 <input 
+                   type="checkbox"
+                   checked={selectedProductIds.includes(p.id)}
+                   onChange={(e) => {
+                     if (e.target.checked) {
+                       setSelectedProductIds([...selectedProductIds, p.id]);
+                     } else {
+                       setSelectedProductIds(selectedProductIds.filter(id => id !== p.id));
+                     }
+                   }}
+                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-5 h-5 cursor-pointer flex-shrink-0 mt-1"
+                 />
+               </div>
                {p.categoryId && (
                  <div className="text-xs text-indigo-600 bg-indigo-50 px-2 py-1 rounded inline-block w-fit mb-3">
                    گروه: {categories.find(c => c.id === p.categoryId)?.name || 'نامشخص'}

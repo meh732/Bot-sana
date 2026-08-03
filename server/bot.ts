@@ -163,7 +163,7 @@ function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
   };
 }
 
-function getSellerReplyKeyboard() {
+function getSellerReplyKeyboard(): any {
   return {
     keyboard: [
       [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
@@ -418,6 +418,55 @@ export async function initBot() {
     }
   }
 
+  const getDailyReportText = (): string => {
+    const state = db.getState();
+    const now = Date.now();
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    
+    const totalUsers = state.users.length;
+    const newUsersToday = state.users.filter(u => {
+      if (!u.registeredAt) return false;
+      const regTime = new Date(u.registeredAt).getTime();
+      return (now - regTime) < MS_PER_DAY;
+    }).length;
+
+    let totalSalesTodayCount = 0;
+    let totalSalesTodayAmount = 0;
+    let sellerSalesTodayCount = 0;
+    let sellerSalesTodayAmount = 0;
+    let regularSalesTodayCount = 0;
+    let regularSalesTodayAmount = 0;
+
+    state.users.forEach(u => {
+      if (!u.purchases) return;
+      u.purchases.forEach(p => {
+        if (!p.createdAt) return;
+        const purchaseTime = new Date(p.createdAt).getTime();
+        if ((now - purchaseTime) < MS_PER_DAY) {
+          totalSalesTodayCount++;
+          totalSalesTodayAmount += (p.price || 0);
+          if (u.isSeller) {
+            sellerSalesTodayCount++;
+            sellerSalesTodayAmount += (p.price || 0);
+          } else {
+            regularSalesTodayCount++;
+            regularSalesTodayAmount += (p.price || 0);
+          }
+        }
+      });
+    });
+
+    return `📊 <b>گزارش فروش و کاربران (۲۴ ساعت گذشته)</b>\n\n` +
+           `👥 <b>آمار کاربران:</b>\n` +
+           `• کل کاربران ربات: <b>${totalUsers.toLocaleString()}</b> کاربر\n` +
+           `• کاربران جدید امروز: <b>${newUsersToday.toLocaleString()}</b> کاربر جدید\n\n` +
+           `💰 <b>آمار فروش امروز (۲۴ ساعت گذشته):</b>\n` +
+           `• کل فروش امروز: <b>${totalSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${totalSalesTodayCount})\n` +
+           `• فروش به کاربران عادی: <b>${regularSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${regularSalesTodayCount})\n` +
+           `• فروش به همکاران (سرویس‌دهندگان): <b>${sellerSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${sellerSalesTodayCount})\n\n` +
+           `📅 گزارش در تاریخ: <code>${new Date().toLocaleDateString('fa-IR')}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code> تهیه شده است.`;
+  };
+
   const sendAdminMainMenu = (chatId: number) => {
     bot!.sendMessage(chatId, '🔧 *پنل مدیریت ربات سنایی (X-UI)*:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
       parse_mode: 'Markdown',
@@ -427,11 +476,12 @@ export async function initBot() {
           [{ text: '🎁 هدیه/تست رایگان', callback_data: 'admin_test_menu' }, { text: '💳 شماره کارت پرداخت', callback_data: 'admin_card_menu' }],
           [{ text: '📦 مدیریت محصولات', callback_data: 'admin_products_menu' }, { text: '🎟 کدهای تخفیف', callback_data: 'admin_coupons_menu' }],
           [{ text: '👥 مدیریت جامع کاربران و همکاران', callback_data: 'admin_users_menu' }],
+          [{ text: '📊 گزارش فروش و کاربران (امروز)', callback_data: 'admin_daily_report' }],
           [{ text: '📢 ارسال پیام همگانی', callback_data: 'admin_broadcast' }, { text: '📞 پشتیبانی', callback_data: 'admin_set_support_id' }],
           [{ text: '⚙️ تنظیمات بکاپ خودکار', callback_data: 'admin_auto_backup_menu' }],
           [{ text: '📥 تهیه فایل بکاپ', callback_data: 'admin_backup' }, { text: '📤 بازیابی بکاپ', callback_data: 'admin_restore_prompt' }]
         ]
-      }
+      } as any
     });
   };
 
@@ -1635,7 +1685,7 @@ export async function initBot() {
         
       bot!.sendMessage(chatId, textResponse, {
         parse_mode: 'Markdown',
-        reply_markup: getSellerReplyKeyboard()
+        reply_markup: getSellerReplyKeyboard() as any
       });
       return;
     }
@@ -1694,7 +1744,7 @@ export async function initBot() {
            parse_mode: 'Markdown',
            reply_markup: {
              inline_keyboard: inlineKeyboard
-           }
+           } as any
         });
         return;
       }
@@ -1707,7 +1757,7 @@ export async function initBot() {
          parse_mode: 'Markdown',
          reply_markup: {
            inline_keyboard: inlineKeyboard
-         }
+         } as any
       });
       return;
     }
@@ -1776,7 +1826,7 @@ export async function initBot() {
            parse_mode: 'Markdown',
            reply_markup: {
              inline_keyboard: inlineKeyboard
-           }
+           } as any
         });
         return;
       }
@@ -1789,7 +1839,7 @@ export async function initBot() {
       bot!.sendMessage(chatId, '🛍 لطفا یک محصول انتخاب کنید:', {
          reply_markup: {
            inline_keyboard: inlineKeyboard
-         }
+         } as any
       });
       return;
     }
@@ -2005,6 +2055,14 @@ export async function initBot() {
       if (isAdmin) {
         adminSession.set(chatId, 'set_card_name');
         bot!.sendMessage(chatId, '👤 لطفا نام دارنده کارت جدید را ارسال کنید:');
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'admin_daily_report') {
+      if (isAdmin) {
+        bot!.sendMessage(chatId, getDailyReportText(), { parse_mode: 'HTML' });
       }
       bot!.answerCallbackQuery(query.id);
       return;
@@ -2477,7 +2535,7 @@ export async function initBot() {
            parse_mode: 'Markdown',
            reply_markup: {
              inline_keyboard: inlineKeyboard
-           }
+           } as any
         });
       } else {
         const inlineKeyboard = activeProducts.map(p => ([
@@ -2487,7 +2545,7 @@ export async function initBot() {
         bot!.sendMessage(chatId, '🛍 لطفا یک محصول انتخاب کنید:', {
            reply_markup: {
              inline_keyboard: inlineKeyboard
-           }
+           } as any
         });
       }
       bot!.answerCallbackQuery(query.id);
@@ -2518,7 +2576,7 @@ export async function initBot() {
          parse_mode: 'Markdown',
          reply_markup: {
            inline_keyboard: inlineKeyboard
-         }
+         } as any
       });
       bot!.answerCallbackQuery(query.id);
       return;
@@ -2659,6 +2717,32 @@ export async function initBot() {
       return;
     }
   });
+
+  // Start daily sales and user report worker
+  setInterval(async () => {
+    try {
+      const state = db.getState();
+      if (state.adminIds.length > 0) {
+        const lastSent = state.lastDailyReportSent || 0;
+        const now = Date.now();
+        const intervalMs = 24 * 60 * 60 * 1000; // 24 hours
+        
+        if (now - lastSent >= intervalMs) {
+          const reportText = getDailyReportText();
+          for (const adminId of state.adminIds) {
+            try {
+              await bot!.sendMessage(adminId, `🔔 <b>گزارش روزانه خودکار سیستم</b>\n\n` + reportText, { parse_mode: 'HTML' });
+            } catch (err: any) {
+              console.error(`[Daily Report Worker] Failed to send report to admin ${adminId}:`, err.message);
+            }
+          }
+          db.updateState({ lastDailyReportSent: now });
+        }
+      }
+    } catch (e: any) {
+      console.error('[Daily Report Worker Error]', e.message);
+    }
+  }, 30 * 60 * 1000); // Check every 30 minutes
 
   // Start auto-backup worker
   setInterval(async () => {
