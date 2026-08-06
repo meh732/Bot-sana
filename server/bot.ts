@@ -65,7 +65,17 @@ function getProductButtonText(user: any, p: any): string {
 let bot: TelegramBot | null = null;
 let isPolling = false;
 const adminSession = new Map<number, string>();
-const userSession = new Map<number, { action: string; amount?: number; productId?: string; couponCode?: string }>();
+const userSession = new Map<number, { 
+  action: string; 
+  amount?: number; 
+  productId?: string; 
+  couponCode?: string;
+  pendingPurchase?: {
+    productId: string;
+    couponCode?: string;
+    customName?: string;
+  };
+}>();
 const purchaseLocks = new Set<number>();
 // pendingPayments moved to db.getState().pendingPayments
 
@@ -250,7 +260,7 @@ export async function initBot() {
     let appliedCoupon: any = null;
     if (couponCode) {
       const couponsList = state.coupons || [];
-      const matchCoupon = couponsList.find((c: any) => c.code === couponCode);
+      const matchCoupon = couponsList.find((c: any) => c.code === couponCode && !c.giftAmount);
       if (matchCoupon) {
         // Validate coupon again
         let isValid = true;
@@ -312,6 +322,14 @@ export async function initBot() {
     } else {
       if (user.balance < finalPrice) {
         const diff = finalPrice - user.balance;
+        userSession.set(chatId, {
+          action: 'payment_awaiting_deposit_choice',
+          pendingPurchase: {
+            productId: product.id,
+            couponCode,
+            customName
+          }
+        });
         bot!.sendMessage(chatId, `❌ موجودی کافی نیست!\n\nقیمت سرویس: ${finalPrice.toLocaleString()} تومان\nموجودی شما: ${user.balance.toLocaleString()} تومان\nمبلغ کسری: ${diff.toLocaleString()} تومان\n\nجهت جبران کسری و ادامه خرید می‌توانید از دکمه زیر استفاده کنید:`, {
           reply_markup: {
             inline_keyboard: [
@@ -780,6 +798,7 @@ export async function initBot() {
       const session = userSession.get(chatId);
       if (session && session.action === 'payment_awaiting_photo') {
         const amount = session.amount || 0;
+        const pendingPurchase = session.pendingPurchase;
         userSession.delete(chatId); // Complete session
 
         // Get largest photo size
@@ -788,7 +807,7 @@ export async function initBot() {
         
         const payId = Math.random().toString(36).substring(2, 10);
         let currentPending = db.getState().pendingPayments || [];
-        currentPending.push({ id: payId, chatId, amount, fileId, timestamp: Date.now() });
+        currentPending.push({ id: payId, chatId, amount, fileId, timestamp: Date.now(), pendingPurchase });
         db.updateState({ pendingPayments: currentPending });
 
         bot!.sendMessage(chatId, '⏳ رسید پرداخت شما با موفقیت ارسال شد و در صف تایید مدیریت قرار گرفت. لطفاً صبور باشید...');
@@ -797,12 +816,28 @@ export async function initBot() {
         const escapedName = escapeHtml(msg.from?.first_name || 'ناشناس');
         const escapedUsername = msg.from?.username ? `@${escapeHtml(msg.from.username)}` : 'ندارد';
 
+        let purchaseInfoText = '';
+        if (pendingPurchase) {
+          const product = db.getState().products.find(p => p.id === pendingPurchase.productId);
+          if (product) {
+            purchaseInfoText = `🛒 <b>خرید خودکار پس از تایید:</b> ${product.name}\n`;
+            if (pendingPurchase.couponCode) {
+              purchaseInfoText += `🎫 کد تخفیف اعمال شده: <code>${pendingPurchase.couponCode}</code>\n`;
+            }
+            if (pendingPurchase.customName) {
+              purchaseInfoText += `📝 نام دلخواه کانفیگ: <code>${pendingPurchase.customName}</code>\n`;
+            }
+            purchaseInfoText += `\n`;
+          }
+        }
+
         state.adminIds.forEach(adminId => {
           bot!.sendPhoto(Number(adminId), fileId, {
             caption: `🔔 <b>درخواست جدید شارژ حساب (کارت به کارت)</b>\n\n` +
               `👤 کاربر: ${escapedName} (${escapedUsername})\n` +
               `🆔 شناسه کاربری (Chat ID): <code>${chatId}</code>\n` +
               `💰 مبلغ ارسالی فیش: <b>${amount.toLocaleString()}</b> تومان\n\n` +
+              purchaseInfoText +
               `آیا این رسید را تایید می‌کنید؟`,
             parse_mode: 'HTML',
             reply_markup: {
@@ -820,6 +855,7 @@ export async function initBot() {
               `👤 کاربر: ${escapedName} (${escapedUsername})\n` +
               `🆔 شناسه کاربری (Chat ID): <code>${chatId}</code>\n` +
               `💰 مبلغ ارسالی فیش: <b>${amount.toLocaleString()}</b> تومان\n\n` +
+              purchaseInfoText +
               `⚠️ تصویر فیش به علت محدودیت‌های تلگرام یا حجم بالا ارسال نشد اما درخواست ثبت گردیده است.`, {
               parse_mode: 'HTML',
               reply_markup: {
@@ -849,7 +885,7 @@ export async function initBot() {
         return;
       }
 
-      userSession.set(chatId, { action: 'payment_awaiting_photo', amount });
+      userSession.set(chatId, { action: 'payment_awaiting_photo', amount, pendingPurchase: userSg.pendingPurchase });
       const cardNumber = state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
       const cardHolder = state.cardHolder || 'مدیریت حساب';
 
@@ -861,6 +897,68 @@ export async function initBot() {
         `پس از انجام واریز کارت به کارت، لطفا *عکس رسید پرداخت (فیش واریزی)* خود را به صورت عکس به همین گفتگو بفرستید تا سریعاً توسط مدیریت تایید و حسابتان شارژ شود.`;
 
       bot!.sendMessage(chatId, paymentInstructions, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (userSg && userSg.action === 'awaiting_gift_code' && text && !text.startsWith('/')) {
+      const inputCode = text.trim().toUpperCase();
+      const couponsList = state.coupons || [];
+      const matchCoupon = couponsList.find((c: any) => c.code === inputCode && c.giftAmount !== undefined && c.giftAmount > 0);
+
+      if (!matchCoupon) {
+        bot!.sendMessage(chatId, '❌ کد هدیه وارد شده نامعتبر، منقضی شده یا اشتباه است. لطفاً مجدداً بررسی کنید.');
+        return;
+      }
+
+      // Check Expiration
+      if (matchCoupon.expirationDate && new Date(matchCoupon.expirationDate) < new Date()) {
+        bot!.sendMessage(chatId, '❌ متاسفانه مهلت استفاده از این کد هدیه به پایان رسیده است.');
+        return;
+      }
+
+      // Check Max Usage (total)
+      if (matchCoupon.maxUsage && matchCoupon.usedCount !== undefined && matchCoupon.usedCount >= matchCoupon.maxUsage) {
+        bot!.sendMessage(chatId, '❌ متاسفانه ظرفیت این کد هدیه تکمیل شده است.');
+        return;
+      }
+
+      // Check Max Usage per user
+      const usedBy = matchCoupon.usedBy || {};
+      const userUsage = usedBy[String(chatId)] || 0;
+      const maxUsagePerUser = matchCoupon.maxUsagePerUser !== undefined ? matchCoupon.maxUsagePerUser : 1;
+
+      if (userUsage >= maxUsagePerUser) {
+        bot!.sendMessage(chatId, '❌ شما قبلاً از این کد هدیه استفاده کرده‌اید.');
+        return;
+      }
+
+      // Add balance to user
+      const user = db.getUser(chatId);
+      if (user) {
+        const giftAmount = matchCoupon.giftAmount;
+        user.balance = (user.balance || 0) + giftAmount;
+        db.saveUser(user);
+
+        // Update coupon usage statistics
+        matchCoupon.usedCount = (matchCoupon.usedCount || 0) + 1;
+        if (!matchCoupon.usedBy) {
+          matchCoupon.usedBy = {};
+        }
+        matchCoupon.usedBy[String(chatId)] = (matchCoupon.usedBy[String(chatId)] || 0) + 1;
+        
+        // Update coupons state and save
+        const updatedCoupons = couponsList.map((c: any) => c.code === inputCode ? matchCoupon : c);
+        db.updateState({ coupons: updatedCoupons });
+
+        // Clean up session
+        userSession.delete(chatId);
+
+        bot!.sendMessage(chatId, `🎉 <b>تبریک! کد هدیه با موفقیت فعال شد.</b>\n\n` +
+          `💰 مبلغ <b>${giftAmount.toLocaleString()}</b> تومان به موجودی حساب شما افزوده شد.\n` +
+          `💳 موجودی جدید حساب شما: <b>${user.balance.toLocaleString()}</b> تومان`, { parse_mode: 'HTML' });
+      } else {
+        bot!.sendMessage(chatId, '❌ کاربر پیدا نشد.');
+      }
       return;
     }
 
@@ -912,7 +1010,7 @@ export async function initBot() {
 
       const inputCoupon = text.trim().toUpperCase();
       const couponsList = state.coupons || [];
-      const matchCoupon = couponsList.find((c: any) => c.code === inputCoupon);
+      const matchCoupon = couponsList.find((c: any) => c.code === inputCoupon && !c.giftAmount);
       
       let isValid = true;
       if (matchCoupon) {
@@ -1661,8 +1759,9 @@ export async function initBot() {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow', style: 'success' }]
-          ]
+            [{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow' }],
+            [{ text: '🎁 ثبت کد هدیه', callback_data: 'enter_gift_code' }]
+          ] as any
         }
       });
       return;
@@ -1960,18 +2059,53 @@ export async function initBot() {
             
             bot!.sendMessage(chatId, `✅ فیش واریزی کاربر \`${targetChatId}\` تایید شد. مبلغ *${amount.toLocaleString()}* تومان به حساب ایشان اضافه شد.`, { parse_mode: 'Markdown' });
             
-            // Notify the user
-            const notifyMsg = `🎉 <b>رسید پرداخت شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
-              `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
-              `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
-            bot!.sendMessage(targetChatId, notifyMsg, { 
-              parse_mode: 'HTML',
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
-                ]
+            if (payment.pendingPurchase) {
+              const pending = payment.pendingPurchase;
+              const product = db.getState().products.find(p => p.id === pending.productId);
+              if (product) {
+                // Inform admin
+                bot!.sendMessage(chatId, `⏳ در حال اجرای خودکار خرید ${product.name} برای کاربر...`);
+                
+                // Trigger purchase
+                executePurchase(targetChatId, product, pending.couponCode, pending.customName)
+                  .then(() => {
+                    bot!.sendMessage(chatId, `✅ خرید خودکار سرویس ${product.name} با موفقیت انجام و برای کاربر ارسال شد.`);
+                  })
+                  .catch(err => {
+                    console.error(`[Auto Purchase Error] Failed auto purchase on deposit approval for user ${targetChatId}:`, err);
+                    bot!.sendMessage(chatId, `❌ خطای سیستمی در اجرای خودکار خرید: ${err.message}`);
+                    bot!.sendMessage(targetChatId, `⚠️ خرید خودکار سرویس شما با خطا مواجه شد. لطفاً به صورت دستی اقدام به خرید کنید یا با پشتیبانی تماس بگیرید. خطا: ${err.message}`);
+                  });
+              } else {
+                bot!.sendMessage(chatId, `⚠️ محصول مربوط به خرید خودکار پیدا نشد. کاربر باید به صورت دستی اقدام کند.`);
+                
+                // Notify the user normally (without auto purchase)
+                const notifyMsg = `🎉 <b>رسید پرداخت شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
+                  `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
+                  `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
+                bot!.sendMessage(targetChatId, notifyMsg, { 
+                  parse_mode: 'HTML',
+                  reply_markup: {
+                    inline_keyboard: [
+                      [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+                    ]
+                  }
+                }).catch(e => console.error("Failed to notify user on payment approval:", e.message));
               }
-            }).catch(e => console.error("Failed to notify user on payment approval:", e.message));
+            } else {
+              // Notify the user normally (without auto purchase)
+              const notifyMsg = `🎉 <b>رسید پرداخت شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
+                `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
+                `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
+              bot!.sendMessage(targetChatId, notifyMsg, { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+                  ]
+                }
+              }).catch(e => console.error("Failed to notify user on payment approval:", e.message));
+            }
           } else {
             bot!.sendMessage(chatId, '❌ کاربر مورد نظر یافت نشد.');
           }
@@ -2006,8 +2140,17 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'enter_gift_code') {
+      userSession.set(chatId, { action: 'awaiting_gift_code' });
+      bot!.sendMessage(chatId, '🎁 *ثبت کد هدیه*\n\nلطفاً کد هدیه خود را ارسال نمایید:', { parse_mode: 'Markdown' });
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
     if (data === 'user_deposit_flow') {
-      userSession.set(chatId, { action: 'payment_awaiting_amount' });
+      const prevSession = userSession.get(chatId);
+      const pendingPurchase = prevSession && prevSession.action === 'payment_awaiting_deposit_choice' ? prevSession.pendingPurchase : undefined;
+      userSession.set(chatId, { action: 'payment_awaiting_amount', pendingPurchase });
       bot!.sendMessage(chatId, '💰 *شارژ حساب (کارت به کارت)*\n\nلطفاً مبلغ مد نظر جهت شارژ حساب خود را به *تومان* و به صورت عددی ارسال کنید:\n\nمثال: `50000` یا `120000`', { parse_mode: 'Markdown' });
       bot!.answerCallbackQuery(query.id);
       return;
@@ -2017,7 +2160,9 @@ export async function initBot() {
       const amountStr = data.replace('deposit_exact_', '');
       const amount = parseInt(amountStr);
       if (!isNaN(amount) && amount > 0) {
-        userSession.set(chatId, { action: 'payment_awaiting_photo', amount });
+        const prevSession = userSession.get(chatId);
+        const pendingPurchase = prevSession && prevSession.action === 'payment_awaiting_deposit_choice' ? prevSession.pendingPurchase : undefined;
+        userSession.set(chatId, { action: 'payment_awaiting_photo', amount, pendingPurchase });
         const cardNumber = state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
         const cardHolder = state.cardHolder || 'مدیریت حساب';
 
@@ -2603,7 +2748,7 @@ export async function initBot() {
         confirmMsg += `💰 قیمت سرویس: <b>${product.price.toLocaleString()}</b> تومان\n\n`;
       }
 
-      const couponsList = state.coupons || [];
+      const couponsList = (state.coupons || []).filter((c: any) => !c.giftAmount);
       if (couponsList.length > 0 && !user.isSeller) {
         confirmMsg += `🎫 آیا مایل هستید جهت پرداخت از <b>کد تخفیف</b> استفاده کنید؟`;
         bot!.sendMessage(chatId, confirmMsg, {

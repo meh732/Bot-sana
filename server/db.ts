@@ -80,6 +80,7 @@ export interface User {
 export interface Coupon {
   code: string;
   discountPercent: number; // e.g. 15 for 15%
+  giftAmount?: number; // Optional amount for gift coupon
   maxUsage?: number;
   usedCount?: number;
   expirationDate?: string;
@@ -93,6 +94,11 @@ export interface PendingPayment {
   amount: number;
   fileId?: string;
   timestamp: number;
+  pendingPurchase?: {
+    productId: string;
+    couponCode?: string;
+    customName?: string;
+  };
 }
 
 export interface AppState {

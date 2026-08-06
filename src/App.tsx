@@ -85,6 +85,8 @@ function SettingsView() {
 
   const [newCouponCode, setNewCouponCode] = useState('');
   const [newCouponPercent, setNewCouponPercent] = useState(20);
+  const [newCouponType, setNewCouponType] = useState<'discount' | 'gift'>('discount');
+  const [newCouponGiftAmount, setNewCouponGiftAmount] = useState('');
   const [newCouponMaxUsage, setNewCouponMaxUsage] = useState('');
   const [newCouponMaxUsagePerUser, setNewCouponMaxUsagePerUser] = useState('');
   const [newCouponExpirationDays, setNewCouponExpirationDays] = useState('');
@@ -171,31 +173,51 @@ function SettingsView() {
 
   const handleAddCoupon = async () => {
     if (!newCouponCode) {
-      alert('لطفا کد تخفیف را وارد کنید.');
+      alert('لطفا کد را وارد کنید.');
       return;
     }
     const code = newCouponCode.trim().toUpperCase();
-    const percent = Number(newCouponPercent);
-    if (isNaN(percent) || percent <= 0 || percent > 100) {
-      alert('درصد تخفیف معتبر نیست (باید بین ۱ تا ۱۰۰ باشد).');
-      return;
+    
+    let percent = 0;
+    let giftAmount: number | undefined = undefined;
+
+    if (newCouponType === 'discount') {
+      percent = Number(newCouponPercent);
+      if (isNaN(percent) || percent <= 0 || percent > 100) {
+        alert('درصد تخفیف معتبر نیست (باید بین ۱ تا ۱۰۰ باشد).');
+        return;
+      }
+    } else {
+      giftAmount = Number(newCouponGiftAmount);
+      if (isNaN(giftAmount) || giftAmount <= 0) {
+        alert('مبلغ هدیه معتبر نیست (باید بزرگتر از صفر باشد).');
+        return;
+      }
     }
 
     const currentCoupons = state.coupons || [];
     if (currentCoupons.some((c: any) => c.code === code)) {
-      alert('این کد تخفیف قبلاً تعریف شده است.');
+      alert('این کد قبلاً تعریف شده است.');
       return;
     }
 
-    const updatedCoupons = [...currentCoupons, { 
+    const newCoupon: any = { 
       code, 
-      discountPercent: percent,
       maxUsage: newCouponMaxUsage ? parseInt(newCouponMaxUsage) : undefined,
       maxUsagePerUser: newCouponMaxUsagePerUser ? parseInt(newCouponMaxUsagePerUser) : undefined,
       expirationDate: newCouponExpirationDays ? new Date(Date.now() + parseInt(newCouponExpirationDays) * 24 * 60 * 60 * 1000).toISOString() : undefined,
       usedCount: 0,
       usedBy: {}
-    }];
+    };
+
+    if (newCouponType === 'discount') {
+      newCoupon.discountPercent = percent;
+    } else {
+      newCoupon.giftAmount = giftAmount;
+      newCoupon.discountPercent = 0;
+    }
+
+    const updatedCoupons = [...currentCoupons, newCoupon];
     
     setSaving(true);
     const parsedAdminIds = adminIdsStr
@@ -226,10 +248,11 @@ function SettingsView() {
     if (data.success) {
       setState((prev: any) => ({ ...prev, coupons: updatedCoupons }));
       setNewCouponCode('');
+      setNewCouponGiftAmount('');
       setNewCouponMaxUsage('');
       setNewCouponMaxUsagePerUser('');
       setNewCouponExpirationDays('');
-      alert('کد تخفیف با موفقیت ایجاد شد.');
+      alert('کد با موفقیت ایجاد شد.');
     }
     setSaving(false);
   };
@@ -794,17 +817,31 @@ function SettingsView() {
 
       {/* Coupons/Discounts Management Secured Card */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-600"/> مدیریت کدهای تخفیف و کوپن‌ها (Tickets)</h2>
+        <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-600"/> مدیریت کدهای تخفیف و هدیه (Coupons & Gift Codes)</h2>
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end bg-slate-50 p-4 rounded-lg border">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4 items-end bg-slate-50 p-4 rounded-lg border">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">نوع کد</label>
+              <select value={newCouponType} onChange={e => setNewCouponType(e.target.value as any)} className="w-full px-3 py-1.5 border rounded-md text-sm">
+                <option value="discount">کد تخفیف درصددار</option>
+                <option value="gift">کد هدیه (شارژ مستقیم کیف پول)</option>
+              </select>
+            </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">کد (مثال: YALDA)</label>
               <input value={newCouponCode} onChange={e => setNewCouponCode(e.target.value)} type="text" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono text-left" placeholder="OFF50" />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">درصد تخفیف (٪)</label>
-              <input value={newCouponPercent} onChange={e => setNewCouponPercent(Number(e.target.value))} type="number" min="1" max="100" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="20" />
-            </div>
+            {newCouponType === 'discount' ? (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">درصد تخفیف (٪)</label>
+                <input value={newCouponPercent} onChange={e => setNewCouponPercent(Number(e.target.value))} type="number" min="1" max="100" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="20" />
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">مبلغ هدیه (تومان)</label>
+                <input value={newCouponGiftAmount} onChange={e => setNewCouponGiftAmount(e.target.value)} type="number" min="1" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="50000" />
+              </div>
+            )}
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">تعداد مجاز کل (اختیاری)</label>
               <input value={newCouponMaxUsage} onChange={e => setNewCouponMaxUsage(e.target.value)} type="number" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="بدون محدودیت" />
@@ -819,15 +856,15 @@ function SettingsView() {
             </div>
           </div>
           <div>
-            <button onClick={handleAddCoupon} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium text-xs transition">ایجاد کد تخفیف جدید</button>
+            <button onClick={handleAddCoupon} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium text-xs transition">ایجاد کد جدید</button>
           </div>
 
           <div className="border rounded-md overflow-hidden">
              <table className="w-full text-sm text-right">
                 <thead className="bg-slate-100 text-slate-600 border-b">
                   <tr>
-                    <th className="px-4 py-2 font-medium">کد تخفیف</th>
-                    <th className="px-4 py-2 font-medium">درصد</th>
+                    <th className="px-4 py-2 font-medium">کد</th>
+                    <th className="px-4 py-2 font-medium">نوع و مقدار</th>
                     <th className="px-4 py-2 font-medium text-center">جزئیات و محدودیت‌ها</th>
                     <th className="px-4 py-2 font-medium text-left">عملیات</th>
                   </tr>
@@ -836,7 +873,9 @@ function SettingsView() {
                   {(state.coupons || []).map((c: any) => (
                     <tr key={c.code} className="border-b last:border-0 hover:bg-slate-50 transition">
                       <td className="px-4 py-2 font-mono font-bold text-slate-800">{c.code}</td>
-                      <td className="px-4 py-2 font-mono text-indigo-600 font-bold">{c.discountPercent}٪</td>
+                      <td className="px-4 py-2 font-mono text-indigo-600 font-bold">
+                        {c.giftAmount !== undefined ? `🎁 ${c.giftAmount.toLocaleString()} تومان هدیه` : `🎫 ${c.discountPercent}٪ تخفیف`}
+                      </td>
                       <td className="px-4 py-2 text-xs text-slate-600 text-center space-y-1">
                         {c.maxUsage && <div>کل: {c.usedCount || 0}/{c.maxUsage}</div>}
                         {c.maxUsagePerUser && <div>هر کاربر: {c.maxUsagePerUser}</div>}
