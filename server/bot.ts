@@ -65,6 +65,13 @@ function getProductButtonText(user: any, p: any): string {
 let bot: TelegramBot | null = null;
 let isPolling = false;
 const adminSession = new Map<number, string>();
+const giftCodeDrafts = new Map<number, {
+  code?: string;
+  giftAmount?: number;
+  maxUsage?: number;
+  maxUsagePerUser?: number;
+  expirationDays?: number;
+}>();
 const userSession = new Map<number, { 
   action: string; 
   amount?: number; 
@@ -622,13 +629,17 @@ export async function initBot() {
 
   const sendCouponsMenu = (chatId: number) => {
     const state = db.getState();
-    let msg = `🎟 *مدیریت کدهای تخفیف فعال*:\n\n`;
+    let msg = `🎟 *مدیریت کدهای تخفیف و هدیه فعال*:\n\n`;
     const coupons = state.coupons || [];
     if (coupons.length === 0) {
-      msg += `❌ هیچ کد تخفیفی در حال حاضر تعریف نشده است.`;
+      msg += `❌ هیچ کد تخفیف یا هدیه‌ای در حال حاضر تعریف نشده است.`;
     } else {
       coupons.forEach((c: any, idx: number) => {
-        msg += `*${idx + 1}-* 🏷 کد: \`${c.code}\` — %${c.discountPercent} تخفیف\n`;
+        if (c.giftAmount !== undefined) {
+          msg += `*${idx + 1}-* 🎁 کد هدیه: \`${c.code}\` — ${c.giftAmount.toLocaleString()} تومان شارژ مستقیم کیف پول\n`;
+        } else {
+          msg += `*${idx + 1}-* 🏷 کد تخفیف: \`${c.code}\` — %${c.discountPercent} تخفیف\n`;
+        }
         if (c.maxUsage) msg += `   📊 محدودیت مصرف کل: ${c.usedCount || 0} / ${c.maxUsage}\n`;
         if (c.maxUsagePerUser) msg += `   👤 محدودیت هر کاربر: ${c.maxUsagePerUser} بار\n`;
         if (c.expirationDate) {
@@ -644,7 +655,10 @@ export async function initBot() {
     coupons.forEach((c: any) => {
       inline_keyboard.push([{ text: `🗑 حذف "${c.code}"`, callback_data: `del_coupon_${c.code}` }]);
     });
-    inline_keyboard.push([{ text: '➕ تعریف کد تخفیف جدید', callback_data: 'add_coupon' }]);
+    inline_keyboard.push([
+      { text: '➕ تعریف کد تخفیف جدید', callback_data: 'add_coupon' },
+      { text: '🎁 تعریف کد هدیه جدید', callback_data: 'add_gift_code' }
+    ]);
     inline_keyboard.push([{ text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }]);
 
     bot!.sendMessage(chatId, msg, {
@@ -652,6 +666,48 @@ export async function initBot() {
       reply_markup: {
         inline_keyboard
       }
+    });
+  };
+
+  const sendGiftCodeDraftMenu = (chatId: number) => {
+    const draft = giftCodeDrafts.get(chatId) || {};
+    const codeStr = draft.code ? `\`${draft.code}\`` : '🔴 تعیین نشده';
+    const amountStr = draft.giftAmount !== undefined ? `*${draft.giftAmount.toLocaleString()}* تومان` : '🔴 تعیین نشده';
+    const maxUsageStr = draft.maxUsage ? `*${draft.maxUsage}* بار` : 'بدون محدودیت';
+    const maxUsagePerUserStr = draft.maxUsagePerUser ? `*${draft.maxUsagePerUser}* بار` : '۱ بار برای هر کاربر';
+    const expirationStr = draft.expirationDays ? `*${draft.expirationDays}* روز` : 'بدون انقضا';
+
+    const msg = `🎁 *تعریف کد هدیه جدید (پنل شیشه‌ای)*\n\n` +
+      `🏷 کد هدیه: ${codeStr}\n` +
+      `💰 مبلغ شارژ: ${amountStr}\n` +
+      `📊 سقف مصرف کل: ${maxUsageStr}\n` +
+      `👥 سقف مصرف هر کاربر: ${maxUsagePerUserStr}\n` +
+      `📅 مهلت اعتبار: ${expirationStr}\n\n` +
+      `لطفاً با استفاده از دکمه‌های زیر، مشخصات کد هدیه را تکمیل کرده و سپس روی دکمه ثبت نهایی کلیک کنید:`;
+
+    const inline_keyboard = [
+      [
+        { text: '✏️ تنظیم کد هدیه', callback_data: 'edit_gift_draft_code' },
+        { text: '💰 تنظیم مبلغ هدیه', callback_data: 'edit_gift_draft_amount' }
+      ],
+      [
+        { text: '📊 سقف مصرف کل', callback_data: 'edit_gift_draft_max' },
+        { text: '👥 سقف مصرف هر کاربر', callback_data: 'edit_gift_draft_per_user' }
+      ],
+      [
+        { text: '📅 تعداد روز اعتبار', callback_data: 'edit_gift_draft_exp' }
+      ],
+      [
+        { text: '✅ ثبت و ذخیره نهایی', callback_data: 'save_gift_draft' }
+      ],
+      [
+        { text: '❌ انصراف و بازگشت', callback_data: 'cancel_gift_draft' }
+      ]
+    ];
+
+    bot!.sendMessage(chatId, msg, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard }
     });
   };
 
@@ -1224,6 +1280,66 @@ export async function initBot() {
         db.updateState({ coupons: couponsList });
         bot!.sendMessage(chatId, `✅ کد تخفیف *${code}* با تخفیف %${percent} با موفقیت ثبت/بروزرسانی شد.`, { parse_mode: 'Markdown' });
         sendCouponsMenu(chatId);
+        return;
+      }
+      if (sessionType === 'gift_draft_code') {
+        const draft = giftCodeDrafts.get(chatId) || {};
+        draft.code = text.trim().toUpperCase();
+        giftCodeDrafts.set(chatId, draft);
+        adminSession.delete(chatId);
+        sendGiftCodeDraftMenu(chatId);
+        return;
+      }
+      if (sessionType === 'gift_draft_amount') {
+        const amt = parseInt(text.trim());
+        if (isNaN(amt) || amt <= 0) {
+          bot!.sendMessage(chatId, '❌ مبلغ وارد شده نامعتبر است. لطفاً یک عدد بزرگتر از ۰ وارد کنید.');
+          return;
+        }
+        const draft = giftCodeDrafts.get(chatId) || {};
+        draft.giftAmount = amt;
+        giftCodeDrafts.set(chatId, draft);
+        adminSession.delete(chatId);
+        sendGiftCodeDraftMenu(chatId);
+        return;
+      }
+      if (sessionType === 'gift_draft_max') {
+        const max = parseInt(text.trim());
+        if (isNaN(max) || max < 0) {
+          bot!.sendMessage(chatId, '❌ مقدار وارد شده نامعتبر است. عدد مثبت یا ۰ برای نامحدود وارد کنید.');
+          return;
+        }
+        const draft = giftCodeDrafts.get(chatId) || {};
+        draft.maxUsage = max > 0 ? max : undefined;
+        giftCodeDrafts.set(chatId, draft);
+        adminSession.delete(chatId);
+        sendGiftCodeDraftMenu(chatId);
+        return;
+      }
+      if (sessionType === 'gift_draft_per_user') {
+        const perUser = parseInt(text.trim());
+        if (isNaN(perUser) || perUser <= 0) {
+          bot!.sendMessage(chatId, '❌ مقدار وارد شده نامعتبر است. عدد بزرگتر از ۰ وارد کنید.');
+          return;
+        }
+        const draft = giftCodeDrafts.get(chatId) || {};
+        draft.maxUsagePerUser = perUser;
+        giftCodeDrafts.set(chatId, draft);
+        adminSession.delete(chatId);
+        sendGiftCodeDraftMenu(chatId);
+        return;
+      }
+      if (sessionType === 'gift_draft_exp') {
+        const days = parseInt(text.trim());
+        if (isNaN(days) || days < 0) {
+          bot!.sendMessage(chatId, '❌ مقدار وارد شده نامعتبر است. عدد مثبت یا ۰ برای نامحدود وارد کنید.');
+          return;
+        }
+        const draft = giftCodeDrafts.get(chatId) || {};
+        draft.expirationDays = days > 0 ? days : undefined;
+        giftCodeDrafts.set(chatId, draft);
+        adminSession.delete(chatId);
+        sendGiftCodeDraftMenu(chatId);
         return;
       }
       if (sessionType === 'admin_broadcast') {
@@ -2380,6 +2496,120 @@ export async function initBot() {
           'مثال ساده:\n`YALDA,20` (۲۰ درصد تخفیف، بدون محدودیت)\n\n' +
           'مثال کامل:\n`NOROUZ,50,100,1,10` (۵۰ درصد تخفیف، ۱۰۰ بار قابل استفاده، ۱ بار برای هر نفر، تا ۱۰ روز معتبر)';
         bot!.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'add_gift_code') {
+      if (isAdmin) {
+        giftCodeDrafts.set(chatId, {});
+        adminSession.delete(chatId);
+        sendGiftCodeDraftMenu(chatId);
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'edit_gift_draft_code') {
+      if (isAdmin) {
+        adminSession.set(chatId, 'gift_draft_code');
+        bot!.sendMessage(chatId, '✏️ لطفاً کد هدیه جدید را ارسال کنید (مثال: `GIFT100`):', { parse_mode: 'Markdown' });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'edit_gift_draft_amount') {
+      if (isAdmin) {
+        adminSession.set(chatId, 'gift_draft_amount');
+        bot!.sendMessage(chatId, '💰 لطفاً مبلغ شارژ هدیه به *تومان* را به صورت عددی ارسال کنید (مثال: `50000`):', { parse_mode: 'Markdown' });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'edit_gift_draft_max') {
+      if (isAdmin) {
+        adminSession.set(chatId, 'gift_draft_max');
+        bot!.sendMessage(chatId, '📊 لطفاً حداکثر تعداد کل استفاده مجاز را ارسال کنید (برای نامحدود عدد `0` بفرستید):', { parse_mode: 'Markdown' });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'edit_gift_draft_per_user') {
+      if (isAdmin) {
+        adminSession.set(chatId, 'gift_draft_per_user');
+        bot!.sendMessage(chatId, '👥 لطفاً حداکثر تعداد دفعات مجاز استفاده برای هر کاربر را ارسال کنید (پیش‌فرض `1`):', { parse_mode: 'Markdown' });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'edit_gift_draft_exp') {
+      if (isAdmin) {
+        adminSession.set(chatId, 'gift_draft_exp');
+        bot!.sendMessage(chatId, '📅 لطفاً تعداد روزهای اعتبار کد هدیه را از امروز وارد کنید (برای نامحدود عدد `0` بفرستید):', { parse_mode: 'Markdown' });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'cancel_gift_draft') {
+      if (isAdmin) {
+        giftCodeDrafts.delete(chatId);
+        adminSession.delete(chatId);
+        sendCouponsMenu(chatId);
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'save_gift_draft') {
+      if (isAdmin) {
+        const draft = giftCodeDrafts.get(chatId);
+        if (!draft || !draft.code || !draft.giftAmount) {
+          bot!.sendMessage(chatId, '⚠️ لطفاً ابتدا *کد هدیه* و *مبلغ شارژ* را تعیین کنید.', { parse_mode: 'Markdown' });
+          bot!.answerCallbackQuery(query.id);
+          return;
+        }
+
+        const code = draft.code.toUpperCase();
+        const giftAmount = draft.giftAmount;
+        let expirationDate = undefined;
+        if (draft.expirationDays) {
+          const d = new Date();
+          d.setDate(d.getDate() + draft.expirationDays);
+          expirationDate = d.toISOString();
+        }
+
+        const couponsList = state.coupons || [];
+        const existing = couponsList.find((c: any) => c.code === code);
+        
+        const newCoupon = {
+          code, 
+          discountPercent: 0,
+          giftAmount,
+          maxUsage: draft.maxUsage,
+          maxUsagePerUser: draft.maxUsagePerUser,
+          expirationDate,
+          usedCount: existing ? existing.usedCount : 0,
+          usedBy: existing ? existing.usedBy : {}
+        };
+
+        if (existing) {
+          Object.assign(existing, newCoupon);
+        } else {
+          couponsList.push(newCoupon);
+        }
+
+        db.updateState({ coupons: couponsList });
+        giftCodeDrafts.delete(chatId);
+        adminSession.delete(chatId);
+
+        bot!.sendMessage(chatId, `🎉 کد هدیه *${code}* با مبلغ شارژ *${giftAmount.toLocaleString()}* تومان با موفقیت ثبت شد.`, { parse_mode: 'Markdown' });
+        sendCouponsMenu(chatId);
       }
       bot!.answerCallbackQuery(query.id);
       return;
