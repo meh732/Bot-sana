@@ -184,7 +184,7 @@ function getSellerReplyKeyboard(): any {
   return {
     keyboard: [
       [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
-      [{ text: '📋 لیست فروش‌های من', style: 'primary' }],
+      [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '📊 گزارش دقیق فروش و مصرف', style: 'primary' }],
       [{ text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
     ],
     resize_keyboard: true
@@ -491,6 +491,118 @@ export async function initBot() {
            `• فروش به همکاران (سرویس‌دهندگان): <b>${sellerSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${sellerSalesTodayCount})\n\n` +
            `📅 گزارش در تاریخ: <code>${new Date().toLocaleDateString('fa-IR')}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code> تهیه شده است.`;
   };
+
+  async function sendDetailedSellerReport(chatId: number, sellerChatId: number, isAdminContext: boolean = false) {
+    const seller = db.getUser(sellerChatId);
+    if (!seller || !seller.isSeller) {
+      bot!.sendMessage(chatId, '❌ همکار مورد نظر یافت نشد یا نقش همکار ندارد.');
+      return;
+    }
+
+    const loadingMsg = await bot!.sendMessage(chatId, '⏳ در حال محاسبات مالی و دریافت آخرین اطلاعات مصرف از سرور، لطفاً شکیبا باشید...');
+
+    try {
+      const inboundsList = await xui.getInbounds().catch(() => [] as any[]);
+      let allClientsArray: any[] = [];
+      if (inboundsList && Array.isArray(inboundsList)) {
+        inboundsList.forEach(ib => {
+          if (ib.settings) {
+            try {
+              const p = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
+              if (p && p.clients) {
+                allClientsArray = allClientsArray.concat(p.clients);
+              }
+            } catch (e) {}
+          }
+        });
+      }
+
+      const purchases = seller.purchases || [];
+      
+      // Calculate volumes
+      let totalAllocatedGb = 0;
+      let totalUsedBytes = 0;
+      let totalOriginalPrice = 0;
+      let totalFinalPrice = 0;
+      let totalDiscounts = 0;
+
+      purchases.forEach((p: any) => {
+        totalAllocatedGb += p.volumeGb || 0;
+        
+        // Find in XUI clients
+        const clientObj = allClientsArray.find(cl => 
+          cl.id === p.id || 
+          cl.email === p.id || 
+          (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
+        );
+        if (clientObj) {
+          totalUsedBytes += (clientObj.up || 0) + (clientObj.down || 0);
+        }
+
+        const orig = p.originalPrice || p.price || 0;
+        const fin = p.price || 0;
+        totalOriginalPrice += orig;
+        totalFinalPrice += fin;
+        totalDiscounts += Math.max(0, orig - fin);
+      });
+
+      const totalUsedGb = totalUsedBytes / (1024 * 1024 * 1024);
+      const debtVal = seller.debt || 0;
+      const limit = seller.debtLimit !== undefined ? seller.debtLimit : 1000000;
+      const remains = Math.max(0, limit - debtVal);
+      
+      // Calculate total payments made: either stored or (total sales - current debt)
+      const totalPayments = seller.totalPayments !== undefined 
+        ? seller.totalPayments 
+        : Math.max(0, (seller.totalSales || 0) - debtVal);
+
+      const usernameStr = seller.username ? `@${seller.username}` : 'بدون یوزرنیم';
+      const nicknameStr = seller.nickname || 'نامشخص';
+
+      const reportText = `📊 *گزارش دقیق عملکرد و حساب همکار* \n\n` +
+        `👤 *مشخصات همکار:*\n` +
+        `▫️ نام/نیک‌نیم: *${nicknameStr}*\n` +
+        `▫️ یوزرنیم تلگرام: *${usernameStr}*\n` +
+        `▫️ شناسه تلگرام: \`${seller.chatId}\`\n\n` +
+        `📈 *آمار فروش و ترافیک:*\n` +
+        `▫️ تعداد کل کانفیگ‌های ثبت شده: *${purchases.length}* عدد\n` +
+        `▫️ مجموع حجم فروخته شده (Allocated): *${totalAllocatedGb.toFixed(2)}* گیگابایت\n` +
+        `▫️ مجموع مصرف واقعی کل (Real Usage): *${totalUsedGb.toFixed(2)}* گیگابایت\n\n` +
+        `💰 *آمار مالی و پرداخت‌ها (تومان):*\n` +
+        `▫️ ارزش اصلی سرویس‌ها (بدون تخفیف): *${totalOriginalPrice.toLocaleString()}* تومان\n` +
+        `▫️ جمع کل تخفیفات همکار: *${totalDiscounts.toLocaleString()}* تومان\n` +
+        `▫️ بدهی ناخالص کل (هزینه نهایی): *${totalFinalPrice.toLocaleString()}* تومان\n` +
+        `▫️ بدهی فعلی به مدیریت: *${debtVal.toLocaleString()}* تومان\n` +
+        `▫️ مجموع پرداخت‌ها/تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n\n` +
+        `💳 *وضعیت سقف اعتبار خرید:*\n` +
+        `▫️ سقف بدهی مجاز: *${limit.toLocaleString()}* تومان\n` +
+        `▫️ اعتبار خرید باقیمانده: *${remains.toLocaleString()}* تومان\n`;
+
+      const inline_keyboard: any[] = [];
+      if (isAdminContext) {
+        inline_keyboard.push([
+          { text: '💵 تسویه حساب این همکار', callback_data: `admin_settle_specific_${seller.chatId}` },
+          { text: '🟢 افزایش موجودی', callback_data: `add_bal_${seller.chatId}` }
+        ]);
+        inline_keyboard.push([{ text: '🔙 بازگشت به لیست همکاران', callback_data: 'list_sellers_only' }]);
+      } else {
+        inline_keyboard.push([{ text: '🔙 بازگشت به پنل همکار', callback_data: 'seller_panel_inline' }]);
+      }
+
+      await bot!.editMessageText(reportText, {
+        chat_id: chatId,
+        message_id: loadingMsg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard }
+      });
+    } catch (err: any) {
+      console.error('Error calculating seller report:', err);
+      await bot!.editMessageText(`❌ خطایی در محاسبات گزارش رخ داد: ${err.message}`, {
+        chat_id: chatId,
+        message_id: loadingMsg.message_id
+      });
+    }
+  }
 
   const sendAdminMainMenu = (chatId: number) => {
     bot!.sendMessage(chatId, '🔧 *پنل مدیریت ربات سنایی (X-UI)*:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
@@ -1712,6 +1824,8 @@ export async function initBot() {
           sendUsersMenu(chatId);
           return;
         }
+        const settledAmount = targetUser.debt || 0;
+        targetUser.totalPayments = (targetUser.totalPayments || 0) + settledAmount;
         targetUser.debt = 0;
         db.saveUser(targetUser);
         bot!.sendMessage(chatId, `✅ بدهی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت صفر شد (تسویه حساب کامل).`);
@@ -1900,8 +2014,15 @@ export async function initBot() {
         
       bot!.sendMessage(chatId, textResponse, {
         parse_mode: 'Markdown',
-        reply_markup: getSellerReplyKeyboard() as any
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📊 گزارش دقیق فروش و مصرف', callback_data: 'seller_detailed_report' }]
+          ]
+        } as any
       });
+      bot!.sendMessage(chatId, '📱 منوی دکمه‌های همکار برای شما فعال شد:', {
+        reply_markup: getSellerReplyKeyboard() as any
+      }).catch(() => {});
       return;
     }
 
@@ -2001,6 +2122,13 @@ export async function initBot() {
           }
         });
       }
+      return;
+    }
+
+    if (cleanText === '📊 گزارش دقیق فروش و مصرف' || text.includes('گزارش دقیق فروش و مصرف') || text.includes('گزارش دقیق عملکرد')) {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) return;
+      await sendDetailedSellerReport(chatId, chatId, false);
       return;
     }
 
@@ -2448,11 +2576,85 @@ export async function initBot() {
         if (sellers.length === 0) {
           bot!.sendMessage(chatId, '❌ هیچ همکار فروشنده‌ای ثبت نشده است.');
         } else {
-          let text = '👥 لیست کل فروشندگان همکار:\n\n';
+          let text = '👥 *لیست کل فروشندگان همکار*:\n\n' +
+            'جهت مشاهده آمار دقیق‌تر و گزارش فروش، حجم کلی، رئال کلی، تخفیفات و وضعیت مالی هر همکار، روی دکمه شیشه‌ای زیر ضربه بزنید:\n\n';
+          
+          const inline_keyboard: any[] = [];
           sellers.forEach((s, idx) => {
-            text += `${idx + 1}- 👤 ${s.username ? '@' + s.username : 'بدون یوزرنیم'}\n🆔 شناسه کاربری: \`${s.chatId}\`\n📉 بدهی به مدیریت: ${(s.debt || 0).toLocaleString()} تومان\n💰 مجموع کل فروش: ${(s.totalSales || 0).toLocaleString()} تومان\n------------------\n`;
+            const displayName = s.nickname || s.username || `همکار ${s.chatId}`;
+            text += `*${idx + 1}-* 👤 *${displayName}*\n🆔 شناسه: \`${s.chatId}\`\n📉 بدهی: ${(s.debt || 0).toLocaleString()} تومان\n💰 فروش: ${(s.totalSales || 0).toLocaleString()} تومان\n\n`;
+            
+            inline_keyboard.push([{ text: `📊 گزارش دقیق ${displayName}`, callback_data: `admin_seller_rep_${s.chatId}` }]);
           });
-          bot!.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+          
+          inline_keyboard.push([{ text: '🔙 بازگشت به منوی کاربران', callback_data: 'admin_users_menu' }]);
+          
+          bot!.sendMessage(chatId, text, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard }
+          });
+        }
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'seller_detailed_report') {
+      const userObj = db.getUser(chatId);
+      if (userObj && userObj.isSeller) {
+        await sendDetailedSellerReport(chatId, chatId, false);
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data === 'seller_panel_inline') {
+      const userObj = db.getUser(chatId);
+      if (userObj && userObj.isSeller) {
+        const textResponse = `📊 *به پنل اختصاصی همکار خوش آمدید*\n\n` +
+          `جهت ثبت فروش و مشاهده وضعیت اعتبار و بدهی‌های خود، از منوی زیر استفاده کنید:\n\n` +
+          `💰 مجموع کل فروش شما: *${(userObj.totalSales || 0).toLocaleString()}* تومان\n` +
+          `📉 میزان بدهی فعلی: *${(userObj.debt || 0).toLocaleString()}* تومان`;
+        
+        bot!.sendMessage(chatId, textResponse, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📊 گزارش دقیق فروش و مصرف', callback_data: 'seller_detailed_report' }]
+            ]
+          } as any
+        });
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data && data.startsWith('admin_seller_rep_')) {
+      if (isAdmin) {
+        const targetChatId = parseInt(data.replace('admin_seller_rep_', ''));
+        await sendDetailedSellerReport(chatId, targetChatId, true);
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data && data.startsWith('admin_settle_specific_')) {
+      if (isAdmin) {
+        const targetChatId = parseInt(data.replace('admin_settle_specific_', ''));
+        const targetUser = db.getUser(targetChatId);
+        if (targetUser) {
+          const settledAmount = targetUser.debt || 0;
+          targetUser.totalPayments = (targetUser.totalPayments || 0) + settledAmount;
+          targetUser.debt = 0;
+          db.saveUser(targetUser);
+          
+          bot!.sendMessage(chatId, `✅ بدهی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت صفر شد (تسویه حساب کامل).`);
+          bot!.sendMessage(targetUser.chatId, '💵 حساب بدهی شما توسط مدیریت تسویه شد و به صفر بازگشت.').catch(() => {});
+          
+          // Re-send report to reflect changes
+          await sendDetailedSellerReport(chatId, targetChatId, true);
+        } else {
+          bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         }
       }
       bot!.answerCallbackQuery(query.id);
