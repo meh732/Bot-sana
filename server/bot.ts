@@ -525,6 +525,7 @@ export async function initBot() {
       let totalOriginalPrice = 0;
       let totalFinalPrice = 0;
       let totalDiscounts = 0;
+      let sellerChanged = false;
 
       purchases.forEach((p: any) => {
         totalAllocatedGb += p.volumeGb || 0;
@@ -536,7 +537,14 @@ export async function initBot() {
           (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
         );
         if (clientObj) {
-          totalUsedBytes += (clientObj.up || 0) + (clientObj.down || 0);
+          const currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
+          totalUsedBytes += currentUsed;
+          if (currentUsed > (p.lastUsedBytes || 0)) {
+            p.lastUsedBytes = currentUsed;
+            sellerChanged = true;
+          }
+        } else {
+          totalUsedBytes += (p.lastUsedBytes || 0);
         }
 
         const orig = p.originalPrice || p.price || 0;
@@ -545,6 +553,10 @@ export async function initBot() {
         totalFinalPrice += fin;
         totalDiscounts += Math.max(0, orig - fin);
       });
+
+      if (sellerChanged) {
+        db.saveUser(seller);
+      }
 
       const totalUsedGb = totalUsedBytes / (1024 * 1024 * 1024);
       const debtVal = seller.debt || 0;
@@ -2101,7 +2113,7 @@ export async function initBot() {
     if (cleanText === '📋 لیست فروش‌های من' || text.includes('لیست فروش')) {
       const userObj = db.getUser(chatId);
       if (!userObj || !userObj.isSeller) return;
-      const userPurchases = userObj.purchases || [];
+      const userPurchases = (userObj.purchases || []).filter((p: any) => !p.isDeleted);
       if (userPurchases.length === 0) {
         bot!.sendMessage(chatId, '❌ شما هنوز هیچ فروش/خریدی ثبت نکرده‌اید.');
       } else {
@@ -2190,7 +2202,7 @@ export async function initBot() {
     if (cleanText === 'لیست خریدهای من' || cleanText === 'لیست خریدهای' || text.includes('لیست خرید')) {
       const userObj = db.getUser(chatId);
       if (!userObj) return;
-      const userPurchases = userObj.purchases || [];
+      const userPurchases = (userObj.purchases || []).filter((p: any) => !p.isDeleted);
       if (userPurchases.length === 0) {
         bot!.sendMessage(chatId, '❌ شما هنوز هیچ خریدی در ربات ثبت نکرده‌اید.');
       } else {
@@ -2858,7 +2870,7 @@ export async function initBot() {
     }
 
     if (data === 'user_purchases_list') {
-      const userPurchases = user.purchases || [];
+      const userPurchases = (user.purchases || []).filter((p: any) => !p.isDeleted);
       if (userPurchases.length === 0) {
         bot!.sendMessage(chatId, '❌ شما هنوز هیچ خریدی در ربات ثبت نکرده‌اید.');
       } else {
@@ -3392,6 +3404,7 @@ export async function initBot() {
           let userChanged = false;
           
           for (const purchase of user.purchases) {
+              if (purchase.isDeleted) continue;
               const c = allClientsArray.find(cl => cl.id === purchase.id || cl.email === purchase.id || (purchase.subUrl && cl.subId && purchase.subUrl.includes(cl.subId)));
               if (!c) continue;
 
@@ -3431,6 +3444,11 @@ export async function initBot() {
                   }
               }
 
+              if (!purchase.isPayAsYouGo && used > (purchase.lastUsedBytes || 0)) {
+                  purchase.lastUsedBytes = used;
+                  userChanged = true;
+              }
+
               const isVolumeExpired = total > 0 && used >= total;
               const isTimeExpired = expiry > 0 && now >= expiry;
 
@@ -3461,8 +3479,8 @@ export async function initBot() {
                                   await xui.delClient(ibId, cUuid);
                                   bot!.sendMessage(user.chatId, `🗑 <b>حذف سرویس منقضی شده</b>\n\nسرویس <b>${purchase.name}</b> (نام کانفیگ: <code>${purchase.id}</code>) به دلیل گذشت یک هفته از زمان انقضای آن، برای همیشه از سرور حذف گردید.`, { parse_mode: 'HTML' });
                                   
-                                  // remove from user.purchases
-                                  user.purchases = user.purchases.filter((p: any) => p.id !== purchase.id);
+                                  // mark as deleted instead of removing so it persists in financial reports
+                                  purchase.isDeleted = true;
                                   userChanged = true;
                                   continue; // Skip further warnings for this deleted config
                               }

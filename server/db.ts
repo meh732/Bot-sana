@@ -56,6 +56,7 @@ export interface Purchase {
   discountPercent?: number;
   discountAmount?: number;
   expiredAt?: number;
+  isDeleted?: boolean;
 }
 
 export interface User {
