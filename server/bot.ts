@@ -502,20 +502,7 @@ export async function initBot() {
     const loadingMsg = await bot!.sendMessage(chatId, '⏳ در حال محاسبات مالی و دریافت آخرین اطلاعات مصرف از سرور، لطفاً شکیبا باشید...');
 
     try {
-      const inboundsList = await xui.getInbounds().catch(() => [] as any[]);
-      let allClientsArray: any[] = [];
-      if (inboundsList && Array.isArray(inboundsList)) {
-        inboundsList.forEach(ib => {
-          if (ib.settings) {
-            try {
-              const p = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
-              if (p && p.clients) {
-                allClientsArray = allClientsArray.concat(p.clients);
-              }
-            } catch (e) {}
-          }
-        });
-      }
+      const allClientsArray = await xui.getAllClientsWithTraffic().catch(() => [] as any[]);
 
       const purchases = seller.purchases || [];
       
@@ -532,41 +519,60 @@ export async function initBot() {
         
         // Find in XUI clients
         const clientObj = allClientsArray.find(cl => 
-          cl.id === p.id || 
-          cl.email === p.id || 
+          (cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase()) ||
+          (cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase()) ||
           (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
         );
+        let currentUsed = 0;
         if (clientObj) {
-          const currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
+          currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
           totalUsedBytes += currentUsed;
           if (currentUsed > (p.lastUsedBytes || 0)) {
             p.lastUsedBytes = currentUsed;
             sellerChanged = true;
           }
         } else {
-          totalUsedBytes += (p.lastUsedBytes || 0);
+          currentUsed = (p.lastUsedBytes || 0);
+          totalUsedBytes += currentUsed;
         }
 
-        const orig = p.originalPrice || p.price || 0;
-        const fin = p.price || 0;
+        let orig = p.originalPrice || p.price || 0;
+        let fin = p.price || 0;
+
+        if (p.isPayAsYouGo) {
+          const paygGb = currentUsed / (1024 * 1024 * 1024);
+          const paygCost = Math.ceil(paygGb * (p.pricePerGb || 0));
+          orig += paygCost;
+          fin += paygCost;
+        }
+
         totalOriginalPrice += orig;
         totalFinalPrice += fin;
         totalDiscounts += Math.max(0, orig - fin);
       });
+
+      // Ensure seller's total gross sales is strictly synchronized
+      const totalGrossSales = Math.max(totalFinalPrice, seller.totalSales || 0);
+      if (seller.totalSales !== totalGrossSales) {
+        seller.totalSales = totalGrossSales;
+        sellerChanged = true;
+      }
+
+      // Reconcile current debt = total gross sales - total payments settled
+      const totalPayments = seller.totalPayments || 0;
+      const debtVal = Math.max(0, totalGrossSales - totalPayments);
+      if (seller.debt !== debtVal) {
+        seller.debt = debtVal;
+        sellerChanged = true;
+      }
 
       if (sellerChanged) {
         db.saveUser(seller);
       }
 
       const totalUsedGb = totalUsedBytes / (1024 * 1024 * 1024);
-      const debtVal = seller.debt || 0;
       const limit = seller.debtLimit !== undefined ? seller.debtLimit : 1000000;
       const remains = Math.max(0, limit - debtVal);
-      
-      // Calculate total payments made: either stored or (total sales - current debt)
-      const totalPayments = seller.totalPayments !== undefined 
-        ? seller.totalPayments 
-        : Math.max(0, (seller.totalSales || 0) - debtVal);
 
       const usernameStr = seller.username ? `@${seller.username}` : 'بدون یوزرنیم';
       const nicknameStr = seller.nickname || 'نامشخص';
@@ -583,9 +589,9 @@ export async function initBot() {
         `💰 *آمار مالی و پرداخت‌ها (تومان):*\n` +
         `▫️ ارزش اصلی سرویس‌ها (بدون تخفیف): *${totalOriginalPrice.toLocaleString()}* تومان\n` +
         `▫️ جمع کل تخفیفات همکار: *${totalDiscounts.toLocaleString()}* تومان\n` +
-        `▫️ بدهی ناخالص کل (هزینه نهایی): *${totalFinalPrice.toLocaleString()}* تومان\n` +
-        `▫️ بدهی فعلی به مدیریت: *${debtVal.toLocaleString()}* تومان\n` +
-        `▫️ مجموع پرداخت‌ها/تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n\n` +
+        `▫️ بدهی ناخالص کل (کل فروش از ابتدا): *${totalGrossSales.toLocaleString()}* تومان\n` +
+        `▫️ مجموع پرداخت‌ها/تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n` +
+        `▫️ بدهی فعلی به مدیریت: *${debtVal.toLocaleString()}* تومان\n\n` +
         `💳 *وضعیت سقف اعتبار خرید:*\n` +
         `▫️ سقف بدهی مجاز: *${limit.toLocaleString()}* تومان\n` +
         `▫️ اعتبار خرید باقیمانده: *${remains.toLocaleString()}* تومان\n`;
@@ -594,9 +600,12 @@ export async function initBot() {
       if (isAdminContext) {
         inline_keyboard.push([
           { text: '💵 تسویه حساب این همکار', callback_data: `admin_settle_specific_${seller.chatId}` },
-          { text: '🟢 افزایش موجودی', callback_data: `add_bal_${seller.chatId}` }
+          { text: '🔄 اصلاح و همگام‌سازی تراز', callback_data: `admin_recalc_seller_${seller.chatId}` }
         ]);
-        inline_keyboard.push([{ text: '🔙 بازگشت به لیست همکاران', callback_data: 'list_sellers_only' }]);
+        inline_keyboard.push([
+          { text: '🟢 افزایش موجودی', callback_data: `add_bal_${seller.chatId}` },
+          { text: '🔙 بازگشت به لیست همکاران', callback_data: 'list_sellers_only' }
+        ]);
       } else {
         inline_keyboard.push([{ text: '🔙 بازگشت به پنل همکار', callback_data: 'seller_panel_inline' }]);
       }
@@ -2673,6 +2682,22 @@ export async function initBot() {
       return;
     }
 
+    if (data && data.startsWith('admin_recalc_seller_')) {
+      if (isAdmin) {
+        const targetChatId = parseInt(data.replace('admin_recalc_seller_', ''));
+        const targetUser = db.getUser(targetChatId);
+        if (targetUser) {
+          bot!.sendMessage(chatId, '⏳ در حال محاسبه مجدد و همگام‌سازی تراز مالی با آخرین آمار مصرف سرور...');
+          await sendDetailedSellerReport(chatId, targetChatId, true);
+          bot!.sendMessage(chatId, '✅ تراز مالی، کل فروش و بدهی این همکار با موفقیت همگام‌سازی و اصلاح گردید.');
+        } else {
+          bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
+        }
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
     if (data === 'toggle_test_enabled') {
       if (isAdmin) {
         const currentVal = state.freeTestEnabled !== false;
@@ -3380,32 +3405,27 @@ export async function initBot() {
     }
   }, 10 * 60 * 1000); // Check every 10 minutes
 
-  // Start limit check worker Let's check every 30 minutes
+  // Real-time limit check & PAYG billing worker (checks every 30 seconds)
   setInterval(async () => {
     try {
       const state = db.getState();
-      const inboundsList = await xui.getInbounds();
-      if (!inboundsList || inboundsList.length === 0) return;
+      const allClientsArray = await xui.getAllClientsWithTraffic();
+      if (!allClientsArray || allClientsArray.length === 0) return;
 
+      let inboundsList: any[] = [];
       const now = Date.now();
-      
-      let allClientsArray: any[] = [];
-      inboundsList.forEach(ib => {
-          if (ib.settings) {
-              const p = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
-              if (p && p.clients) {
-                  allClientsArray = allClientsArray.concat(p.clients);
-              }
-          }
-      });
 
       for (const user of state.users) {
-          if (!user.purchases) continue;
+          if (!user.purchases || user.purchases.length === 0) continue;
           let userChanged = false;
           
           for (const purchase of user.purchases) {
               if (purchase.isDeleted) continue;
-              const c = allClientsArray.find(cl => cl.id === purchase.id || cl.email === purchase.id || (purchase.subUrl && cl.subId && purchase.subUrl.includes(cl.subId)));
+              const c = allClientsArray.find(cl => 
+                (cl.email && purchase.id && cl.email.toLowerCase() === String(purchase.id).toLowerCase()) ||
+                (cl.id && purchase.id && cl.id.toLowerCase() === String(purchase.id).toLowerCase()) ||
+                (purchase.subUrl && cl.subId && purchase.subUrl.includes(cl.subId))
+              );
               if (!c) continue;
 
               const total = c.total || 0;
@@ -3413,32 +3433,58 @@ export async function initBot() {
               const expiry = c.expiryTime || 0;
               const enable = c.enable !== false;
 
+              // PAY AS YOU GO (مصرف آزاد / بدون محدودیت) Real-time billing
               if (purchase.isPayAsYouGo && enable) {
                   const lastUsed = purchase.lastUsedBytes || 0;
                   if (used > lastUsed) {
                       const diffBytes = used - lastUsed;
                       const diffGb = diffBytes / (1024 * 1024 * 1024);
-                      const cost = Math.ceil(diffGb * (purchase.pricePerGb || 0));
+                      const pricePerGb = purchase.pricePerGb || 0;
+                      const cost = Math.ceil(diffGb * pricePerGb);
                       
-                      purchase.lastUsedBytes = used;
-                      user.balance -= cost;
-                      userChanged = true;
+                      if (cost > 0) {
+                          purchase.lastUsedBytes = used;
+                          
+                          if (user.isSeller) {
+                              user.debt = (user.debt || 0) + cost;
+                              user.totalSales = (user.totalSales || 0) + cost;
+                              userChanged = true;
 
-                      const balanceEquivalentGb = user.balance / (purchase.pricePerGb || 1);
+                              const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
+                              if ((user.debt || 0) >= limit) {
+                                  await xui.updateClientEnable(purchase.id, false);
+                                  purchase.paygDisabled = true;
+                                  bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
+                              }
+                          } else {
+                              user.balance = (user.balance || 0) - cost;
+                              userChanged = true;
 
-                      if (user.balance <= 0) {
-                          user.balance = 0;
-                          await xui.updateClientEnable(c.email, false);
-                          purchase.paygDisabled = true;
-                          bot!.sendMessage(user.chatId, `❌ مشترک گرامی،\nموجودی کیف پول شما به اتمام رسید و سرویس "${purchase.name}" قطعا غیرفعال شد.\nجهت فعالسازی مجدد لطفا کیف پول خود را شارژ کنید.`);
-                      } else if (balanceEquivalentGb < 1) { // less than 1GB equivalent remaining
-                          if (!purchase.warnedPayg) {
-                              bot!.sendMessage(user.chatId, `⚠️ مشترک گرامی،\nموجودی کیف پول شما برای سرویس "${purchase.name}" کمتر از هزینه مصرف ۱ گیگابایت می‌باشد. جهت جلوگیری از قطعی، شارژ کنید.`);
-                              purchase.warnedPayg = true;
-                          }
-                      } else {
-                          if (purchase.warnedPayg) {
-                              purchase.warnedPayg = false;
+                              const balanceEquivalentGb = pricePerGb > 0 ? (user.balance / pricePerGb) : 0;
+
+                              if (user.balance <= 0) {
+                                  user.balance = 0;
+                                  await xui.updateClientEnable(purchase.id, false);
+                                  purchase.paygDisabled = true;
+                                  bot!.sendMessage(user.chatId, `❌ <b>اتمام موجودی کیف پول و قطع سرویس مصرف آزاد</b>\n\n` +
+                                    `📦 <b>سرویس:</b> ${purchase.name}\n` +
+                                    `🆔 <b>شناسه سفارش:</b> <code>${purchase.id}</code>\n\n` +
+                                    `💸 موجودی کیف پول شما به اتمام رسید (۰ تومان) و سرویس شما به طور موقت غیرفعال شد.\n\n` +
+                                    `🔋 <b>جهت اتصال مجدد:</b> کافیست کیف پول خود را شارژ فرمایید. سرویس بلافاصله پس از شارژ خودکار فعال خواهد شد.`, { parse_mode: 'HTML' });
+                              } else if (balanceEquivalentGb < 1) { // less than 1GB equivalent remaining
+                                  if (!purchase.warnedPayg) {
+                                      bot!.sendMessage(user.chatId, `⚠️ <b>هشدار کمبود موجودی سرویس مصرف آزاد (PAYG)</b>\n\n` +
+                                        `📦 <b>سرویس:</b> ${purchase.name}\n` +
+                                        `💰 <b>موجودی باقیمانده:</b> ${user.balance.toLocaleString()} تومان\n` +
+                                        `📊 <b>اعتبار تقریبی باقیمانده:</b> کمتر از ۱ گیگابایت (${balanceEquivalentGb.toFixed(2)} GB)\n\n` +
+                                        `💡 جهت جلوگیری از قطع ناگهانی سرویس، لطفاً نسبت به شارژ کیف پول خود اقدام فرمایید.`, { parse_mode: 'HTML' });
+                                      purchase.warnedPayg = true;
+                                  }
+                              } else {
+                                  if (purchase.warnedPayg) {
+                                      purchase.warnedPayg = false;
+                                  }
+                              }
                           }
                       }
                   }
@@ -3460,13 +3506,20 @@ export async function initBot() {
                       const daysExpired = (now - purchase.expiredAt) / (1000 * 60 * 60 * 24);
                       if (daysExpired >= 7) {
                           try {
+                              if (inboundsList.length === 0) {
+                                inboundsList = await xui.getInbounds();
+                              }
                               let ibId: number | undefined;
                               let cUuid: string | undefined;
                               for (const ib of inboundsList) {
                                   if (ib.settings) {
                                       const p = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
                                       if (p && p.clients) {
-                                          const clientObj = p.clients.find((cl: any) => cl.email === c.email);
+                                          const clientObj = p.clients.find((cl: any) => 
+                                            (cl.email && purchase.id && cl.email.toLowerCase() === String(purchase.id).toLowerCase()) ||
+                                            (cl.id && purchase.id && cl.id.toLowerCase() === String(purchase.id).toLowerCase()) ||
+                                            (purchase.subUrl && cl.subId && purchase.subUrl.includes(cl.subId))
+                                          );
                                           if (clientObj) {
                                               ibId = ib.id;
                                               cUuid = clientObj.id;
@@ -3543,21 +3596,33 @@ export async function initBot() {
     } catch (e: any) {
         console.error('[Limit Check Worker Error]', e.message);
     }
-  }, 5 * 60 * 1000); // Check every 5 minutes
+  }, 30 * 1000); // Check every 30 seconds for near real-time PAYG billing & limits
 }
 
 export async function checkPaygReactivation(user: any) {
-  if (!user || user.balance <= 0 || !user.purchases) return;
+  if (!user || !user.purchases || user.purchases.length === 0) return;
   let userChanged = false;
   for (const purchase of user.purchases) {
-    if (purchase.isPayAsYouGo && purchase.paygDisabled && user.balance > 0) {
-      const balanceEquivalentGb = user.balance / (purchase.pricePerGb || 1);
-      if (balanceEquivalentGb >= 1) { // Only reactivate if they charged at least 1GB
-         await xui.updateClientEnable(purchase.id, true);
-         purchase.paygDisabled = false;
-         purchase.warnedPayg = false;
-         userChanged = true;
-         bot!.sendMessage(user.chatId, `✅ موجودی شما تا سقف مجاز پرداخت در ازای مصرف بالا رفت و سرویس "${purchase.name}" مجددا فعال گردید.`);
+    if (purchase.isPayAsYouGo && purchase.paygDisabled) {
+      if (user.isSeller) {
+        const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
+        if ((user.debt || 0) < limit) {
+          await xui.updateClientEnable(purchase.id, true);
+          purchase.paygDisabled = false;
+          purchase.warnedPayg = false;
+          userChanged = true;
+          bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${purchase.name}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' });
+        }
+      } else if (user.balance > 0) {
+        const pricePerGb = purchase.pricePerGb || 1;
+        const balanceEquivalentGb = user.balance / pricePerGb;
+        if (user.balance >= 1000 || balanceEquivalentGb >= 0.1) {
+           await xui.updateClientEnable(purchase.id, true);
+           purchase.paygDisabled = false;
+           purchase.warnedPayg = false;
+           userChanged = true;
+           bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس <b>${purchase.name}</b> به دلیل افزایش موجودی کیف پول، مجدداً فعال گردید.`, { parse_mode: 'HTML' });
+        }
       }
     }
   }

@@ -309,63 +309,212 @@ class XuiClient {
     }
   }
 
-  public async updateClientEnable(email: string, enable: boolean) {
+  public async getAllClientsWithTraffic(): Promise<Array<{
+    id: string;
+    email: string;
+    subId?: string;
+    up: number;
+    down: number;
+    totalUsed: number;
+    total: number;
+    expiryTime: number;
+    enable: boolean;
+    inboundIds: number[];
+  }>> {
     try {
-      const opts = await this.getAuthOptions();
       const inboundsList = await this.getInbounds();
-      let targetClient: any = null;
-      let primaryInboundId = 0;
-      
+      if (!inboundsList || !Array.isArray(inboundsList) || inboundsList.length === 0) {
+        return [];
+      }
+
+      const clientsMap = new Map<string, {
+        id: string;
+        email: string;
+        subId?: string;
+        up: number;
+        down: number;
+        totalUsed: number;
+        total: number;
+        expiryTime: number;
+        enable: boolean;
+        inboundIds: number[];
+      }>();
+
       for (const ib of inboundsList) {
+        const ibId = Number(ib.id);
+        
+        // 1. Extract settings clients
+        let settingsClients: any[] = [];
         if (ib.settings) {
-          const parsed = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
-          if (parsed && parsed.clients) {
-            const found = parsed.clients.find((c: any) => c.email === email);
-            if (found) {
-              targetClient = found;
-              primaryInboundId = ib.id;
-              break;
+          try {
+            const parsed = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
+            if (parsed && Array.isArray(parsed.clients)) {
+              settingsClients = parsed.clients;
             }
+          } catch (e) {}
+        }
+
+        // 2. Extract clientStats
+        const clientStats: any[] = Array.isArray(ib.clientStats) 
+          ? ib.clientStats 
+          : (Array.isArray(ib.client_stats) 
+            ? ib.client_stats 
+            : (Array.isArray(ib.clientsStats) 
+              ? ib.clientsStats 
+              : (Array.isArray(ib.stat) ? ib.stat : [])));
+
+        // Process settingsClients
+        for (const sc of settingsClients) {
+          const email = String(sc.email || sc.id || '');
+          const id = String(sc.id || sc.password || email);
+          const subId = String(sc.subId || '');
+          const key = (email || id).toLowerCase().trim();
+          if (!key) continue;
+
+          // Find matching stat in clientStats
+          const stat = clientStats.find((s: any) => 
+            (s.email && String(s.email).toLowerCase().trim() === email.toLowerCase().trim()) ||
+            (s.id && String(s.id) === id) ||
+            (s.clientId && String(s.clientId) === id)
+          );
+
+          const up = Number((stat && stat.up !== undefined) ? stat.up : (sc.up || 0)) || 0;
+          const down = Number((stat && stat.down !== undefined) ? stat.down : (sc.down || 0)) || 0;
+          const total = Number((stat && stat.total !== undefined) ? stat.total : (sc.total || (sc.totalGB ? sc.totalGB * 1024 * 1024 * 1024 : 0))) || 0;
+          const expiryTime = Number((stat && stat.expiryTime !== undefined) ? stat.expiryTime : (sc.expiryTime || 0)) || 0;
+          const isEnabled = (stat && stat.enable !== undefined) ? !!stat.enable : (sc.enable !== undefined ? !!sc.enable : true);
+
+          if (clientsMap.has(key)) {
+            const existing = clientsMap.get(key)!;
+            existing.up += up;
+            existing.down += down;
+            existing.totalUsed = existing.up + existing.down;
+            if (!existing.subId && subId) existing.subId = subId;
+            if (total > existing.total) existing.total = total;
+            if (expiryTime > existing.expiryTime) existing.expiryTime = expiryTime;
+            if (!isEnabled) existing.enable = false;
+            if (!existing.inboundIds.includes(ibId)) existing.inboundIds.push(ibId);
+          } else {
+            clientsMap.set(key, {
+              id,
+              email,
+              subId,
+              up,
+              down,
+              totalUsed: up + down,
+              total,
+              expiryTime,
+              enable: isEnabled,
+              inboundIds: [ibId]
+            });
+          }
+        }
+
+        // Also process any clientStats not present in settingsClients
+        for (const cs of clientStats) {
+          const email = String(cs.email || cs.id || '');
+          const id = String(cs.clientId || cs.id || email);
+          const key = (email || id).toLowerCase().trim();
+          if (!key) continue;
+
+          if (!clientsMap.has(key)) {
+            const up = Number(cs.up || 0);
+            const down = Number(cs.down || 0);
+            const total = Number(cs.total || 0);
+            const expiryTime = Number(cs.expiryTime || 0);
+            const isEnabled = cs.enable !== false;
+
+            clientsMap.set(key, {
+              id,
+              email,
+              subId: '',
+              up,
+              down,
+              totalUsed: up + down,
+              total,
+              expiryTime,
+              enable: isEnabled,
+              inboundIds: [ibId]
+            });
           }
         }
       }
 
-      if (!targetClient) {
-        console.error(`[X-UI] Client ${email} not found for update`);
-        return false;
-      }
+      return Array.from(clientsMap.values());
+    } catch (e: any) {
+      console.error('[X-UI] Failed to get clients with traffic:', e.message);
+      return [];
+    }
+  }
 
-      const uuid = targetClient.id || targetClient.password;
-      targetClient.enable = enable;
+  public async updateClientEnable(email: string, enable: boolean) {
+    try {
+      const opts = await this.getAuthOptions();
+      const inboundsList = await this.getInbounds();
+      if (!inboundsList || !Array.isArray(inboundsList) || inboundsList.length === 0) return false;
 
-      const settingsParams = {
-        clients: [targetClient]
-      };
-
-      // Depending on the exact X-UI panel, the payload needs the entire target config for that client
-      const payload = {
-        id: primaryInboundId,
-        settings: JSON.stringify(settingsParams)
-      };
+      let successCount = 0;
+      const cleanIdent = String(email || '').toLowerCase().trim();
+      if (!cleanIdent) return false;
 
       const workingPrefix = this.workingApiPrefix || '/panel/api';
-      const paths = [
-        `${workingPrefix}/inbounds/updateClient/${uuid}`,
-        `${workingPrefix}/inbounds/updateclient/${uuid}`,
-        `/panel/api/inbounds/updateClient/${uuid}`
-      ];
 
-      for (const p of paths) {
+      for (const ib of inboundsList) {
+        if (!ib.settings) continue;
+        let parsed: any;
         try {
-           const res = await this.client.post(`${opts.baseURL}${p}`, payload, { headers: opts.headers, validateStatus: () => true });
-           if (res.data && res.data.success) {
-             console.log(`[X-UI] Successfully updated client enable: ${enable} for ${email}`);
-             return true;
-           }
-        } catch(e) {}
+          parsed = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
+        } catch (e) {
+          continue;
+        }
+        if (!parsed || !Array.isArray(parsed.clients)) continue;
+
+        const targetClient = parsed.clients.find((c: any) => 
+          (c.email && String(c.email).toLowerCase().trim() === cleanIdent) ||
+          (c.id && String(c.id).toLowerCase().trim() === cleanIdent) ||
+          (c.subId && cleanIdent.includes(String(c.subId).toLowerCase().trim()))
+        );
+
+        if (targetClient) {
+          const uuid = targetClient.id || targetClient.password;
+          targetClient.enable = enable;
+
+          const payload = {
+            id: ib.id,
+            settings: JSON.stringify({ clients: [targetClient] })
+          };
+
+          const paths = [
+            `${workingPrefix}/inbounds/updateClient/${uuid}`,
+            `${workingPrefix}/inbounds/updateclient/${uuid}`,
+            `/panel/api/inbounds/updateClient/${uuid}`,
+            `/api/inbounds/updateClient/${uuid}`,
+            `${workingPrefix}/clients/update/${uuid}`
+          ];
+
+          let updatedForThisInbound = false;
+          for (const p of paths) {
+            try {
+              const res = await this.client.post(`${opts.baseURL}${p}`, payload, {
+                headers: { ...opts.headers, 'Content-Type': 'application/json' },
+                validateStatus: () => true,
+                timeout: 6000
+              });
+              if (res.data && res.data.success) {
+                updatedForThisInbound = true;
+                break;
+              }
+            } catch (e) {}
+          }
+
+          if (updatedForThisInbound) {
+            successCount++;
+          }
+        }
       }
 
-      return false;
+      console.log(`[X-UI] updateClientEnable for ${email} -> enable: ${enable}, updated ${successCount} inbounds`);
+      return successCount > 0;
     } catch (e: any) {
       console.error('[X-UI] Error update client enable', e.message);
       return false;
