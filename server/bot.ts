@@ -26,14 +26,14 @@ function normalizePersianText(str: string): string {
     .trim();
 }
 
-export function getSellerDiscountForProduct(user: any, product: any): number {
+export function getSellerDiscountForProduct(user: any, product?: any): number {
   if (!user || !user.isSeller) return 0;
   let sellerDiscount = 0;
   if (user.sellerDiscounts && user.sellerDiscounts.length > 0) {
     const bestSpecific = user.sellerDiscounts
       .filter((d: any) => 
-        (d.type === 'product' && d.targetId === product.id) ||
-        (d.type === 'category' && d.targetId === product.categoryId) ||
+        (product && d.type === 'product' && d.targetId === product.id) ||
+        (product && d.type === 'category' && d.targetId === product.categoryId) ||
         (d.type === 'global')
       )
       .sort((a: any, b: any) => b.percent - a.percent)[0];
@@ -505,14 +505,22 @@ export async function initBot() {
       const allClientsArray = await xui.getAllClientsWithTraffic().catch(() => [] as any[]);
 
       const purchases = seller.purchases || [];
+      let sellerChanged = false;
       
-      // Calculate volumes
+      // Auto-credit any pending balance of the seller towards their debt/payments!
+      if ((seller.balance || 0) > 0) {
+        seller.totalPayments = (seller.totalPayments || 0) + seller.balance;
+        seller.debt = Math.max(0, (seller.debt || 0) - seller.balance);
+        seller.balance = 0;
+        sellerChanged = true;
+      }
+
+      // Calculate volumes and financials
       let totalAllocatedGb = 0;
       let totalUsedBytes = 0;
       let totalOriginalPrice = 0;
       let totalFinalPrice = 0;
       let totalDiscounts = 0;
-      let sellerChanged = false;
 
       purchases.forEach((p: any) => {
         totalAllocatedGb += p.volumeGb || 0;
@@ -536,31 +544,42 @@ export async function initBot() {
           totalUsedBytes += currentUsed;
         }
 
-        let orig = p.originalPrice || p.price || 0;
-        let fin = p.price || 0;
+        let orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
+        let fin = p.price !== undefined ? p.price : 0;
 
         if (p.isPayAsYouGo) {
           const paygGb = currentUsed / (1024 * 1024 * 1024);
-          const paygCost = Math.ceil(paygGb * (p.pricePerGb || 0));
-          orig += paygCost;
-          fin += paygCost;
+          const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
+          const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(seller);
+          const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+
+          const paygOrigCost = Math.ceil(paygGb * rawPricePerGb);
+          const paygFinCost = Math.ceil(paygGb * discountedPricePerGb);
+
+          orig += paygOrigCost;
+          fin += paygFinCost;
+        } else {
+          if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
+            orig = Math.round(fin / (1 - p.discountPercent / 100));
+          }
         }
+
+        if (orig < fin) orig = fin;
 
         totalOriginalPrice += orig;
         totalFinalPrice += fin;
         totalDiscounts += Math.max(0, orig - fin);
       });
 
-      // Ensure seller's total gross sales is strictly synchronized
-      const totalGrossSales = Math.max(totalFinalPrice, seller.totalSales || 0);
-      if (seller.totalSales !== totalGrossSales) {
-        seller.totalSales = totalGrossSales;
+      // Total net purchases with discount applied is the seller's true total sales obligation
+      if (seller.totalSales !== totalFinalPrice) {
+        seller.totalSales = totalFinalPrice;
         sellerChanged = true;
       }
 
-      // Reconcile current debt = total gross sales - total payments settled
+      // Reconcile current debt = total net purchases - total payments settled
       const totalPayments = seller.totalPayments || 0;
-      const debtVal = Math.max(0, totalGrossSales - totalPayments);
+      const debtVal = Math.max(0, totalFinalPrice - totalPayments);
       if (seller.debt !== debtVal) {
         seller.debt = debtVal;
         sellerChanged = true;
@@ -586,12 +605,12 @@ export async function initBot() {
         `▫️ تعداد کل کانفیگ‌های ثبت شده: *${purchases.length}* عدد\n` +
         `▫️ مجموع حجم فروخته شده (Allocated): *${totalAllocatedGb.toFixed(2)}* گیگابایت\n` +
         `▫️ مجموع مصرف واقعی کل (Real Usage): *${totalUsedGb.toFixed(2)}* گیگابایت\n\n` +
-        `💰 *آمار مالی و پرداخت‌ها (تومان):*\n` +
+        `💰 *آمار مالی و تراز حساب همکار (تومان):*\n` +
         `▫️ ارزش اصلی سرویس‌ها (بدون تخفیف): *${totalOriginalPrice.toLocaleString()}* تومان\n` +
         `▫️ جمع کل تخفیفات همکار: *${totalDiscounts.toLocaleString()}* تومان\n` +
-        `▫️ بدهی ناخالص کل (کل فروش از ابتدا): *${totalGrossSales.toLocaleString()}* تومان\n` +
-        `▫️ مجموع پرداخت‌ها/تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n` +
-        `▫️ بدهی فعلی به مدیریت: *${debtVal.toLocaleString()}* تومان\n\n` +
+        `▫️ فاکتور کل خرید همکار (با کسر تخفیف): *${totalFinalPrice.toLocaleString()}* تومان\n` +
+        `▫️ مجموع کل واریزی‌ها و تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n` +
+        `▫️ بدهی قطعی و باقیمانده فعلی: *${debtVal.toLocaleString()}* تومان\n\n` +
         `💳 *وضعیت سقف اعتبار خرید:*\n` +
         `▫️ سقف بدهی مجاز: *${limit.toLocaleString()}* تومان\n` +
         `▫️ اعتبار خرید باقیمانده: *${remains.toLocaleString()}* تومان\n`;
@@ -603,7 +622,10 @@ export async function initBot() {
           { text: '🔄 اصلاح و همگام‌سازی تراز', callback_data: `admin_recalc_seller_${seller.chatId}` }
         ]);
         inline_keyboard.push([
-          { text: '🟢 افزایش موجودی', callback_data: `add_bal_${seller.chatId}` },
+          { text: '➕ ثبت واریزی / پرداخت همکار', callback_data: `add_bal_${seller.chatId}` },
+          { text: '➖ کسر پرداختی', callback_data: `sub_bal_${seller.chatId}` }
+        ]);
+        inline_keyboard.push([
           { text: '🔙 بازگشت به لیست همکاران', callback_data: 'list_sellers_only' }
         ]);
       } else {
@@ -1688,22 +1710,35 @@ export async function initBot() {
         } else {
            const targetUser = db.getUser(targetUid);
            if (targetUser) {
-              targetUser.balance = (targetUser.balance || 0) + amount;
-              db.saveUser(targetUser);
-              checkPaygReactivation(targetUser).catch(console.error);
-              bot!.sendMessage(chatId, `✅ موجودی کاربر با موفقیت مبلغ ${amount.toLocaleString()} تومان افزایش یافت.`);
+              if (targetUser.isSeller) {
+                targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
+                targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
+                db.saveUser(targetUser);
+                checkPaygReactivation(targetUser).catch(console.error);
+                bot!.sendMessage(chatId, `✅ مبلغ *${amount.toLocaleString()}* تومان به عنوان واریزی/پرداخت بدهی همکار با موفقیت ثبت شد.\n\n📉 بدهی باقیمانده فعلی: *${(targetUser.debt || 0).toLocaleString()}* تومان\n💳 مجموع کل پرداخت‌ها: *${(targetUser.totalPayments || 0).toLocaleString()}* تومان`, { parse_mode: 'Markdown' });
 
-              const manualChargeMsg = `🎉 <b>حساب کاربری شما توسط مدیریت مبلغ ${amount.toLocaleString()} تومان شارژ شد!</b>\n\n` +
-                `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
-                `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
-              bot!.sendMessage(targetUid, manualChargeMsg, { 
-                parse_mode: 'HTML',
-                reply_markup: {
-                  inline_keyboard: [
-                    [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
-                  ]
-                }
-              }).catch(() => {});
+                const sellerChargeMsg = `🎉 <b>مبلغ ${amount.toLocaleString()} تومان توسط مدیریت به حساب پرداخت‌های شما منظور شد.</b>\n\n` +
+                  `▫️ کل واریزی‌ها و تسویه‌ها: <b>${(targetUser.totalPayments || 0).toLocaleString()}</b> تومان\n` +
+                  `▫️ بدهی باقیمانده شما به مدیریت: <b>${(targetUser.debt || 0).toLocaleString()}</b> تومان`;
+                bot!.sendMessage(targetUid, sellerChargeMsg, { parse_mode: 'HTML' }).catch(() => {});
+              } else {
+                targetUser.balance = (targetUser.balance || 0) + amount;
+                db.saveUser(targetUser);
+                checkPaygReactivation(targetUser).catch(console.error);
+                bot!.sendMessage(chatId, `✅ موجودی کاربر با موفقیت مبلغ ${amount.toLocaleString()} تومان افزایش یافت.`);
+
+                const manualChargeMsg = `🎉 <b>حساب کاربری شما توسط مدیریت مبلغ ${amount.toLocaleString()} تومان شارژ شد!</b>\n\n` +
+                  `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
+                  `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
+                bot!.sendMessage(targetUid, manualChargeMsg, { 
+                  parse_mode: 'HTML',
+                  reply_markup: {
+                    inline_keyboard: [
+                      [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
+                    ]
+                  }
+                }).catch(() => {});
+              }
            }
         }
         adminSession.delete(chatId);
@@ -1718,9 +1753,16 @@ export async function initBot() {
         } else {
            const targetUser = db.getUser(targetUid);
            if (targetUser) {
-              targetUser.balance = (targetUser.balance || 0) - amount;
-              db.saveUser(targetUser);
-              bot!.sendMessage(chatId, `✅ موجودی کاربر با موفقیت مبلغ ${amount.toLocaleString()} تومان کاهش یافت.`);
+              if (targetUser.isSeller) {
+                targetUser.totalPayments = Math.max(0, (targetUser.totalPayments || 0) - amount);
+                targetUser.debt = (targetUser.debt || 0) + amount;
+                db.saveUser(targetUser);
+                bot!.sendMessage(chatId, `✅ مبلغ ${amount.toLocaleString()} تومان از پرداختی‌های همکار کسر شد.\nبدهی جدید: ${(targetUser.debt || 0).toLocaleString()} تومان\nمجموع پرداختی‌ها: ${(targetUser.totalPayments || 0).toLocaleString()} تومان`);
+              } else {
+                targetUser.balance = (targetUser.balance || 0) - amount;
+                db.saveUser(targetUser);
+                bot!.sendMessage(chatId, `✅ موجودی کاربر با موفقیت مبلغ ${amount.toLocaleString()} تومان کاهش یافت.`);
+              }
            }
         }
         adminSession.delete(chatId);
@@ -1756,22 +1798,34 @@ export async function initBot() {
           sendUsersMenu(chatId);
           return;
         }
-        targetUser.balance = (targetUser.balance || 0) + amount;
-        db.saveUser(targetUser);
-        checkPaygReactivation(targetUser).catch(console.error);
-        bot!.sendMessage(chatId, `✅ حساب کاربر 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} به مقدار *${amount.toLocaleString()}* تومان شارژ دسترسی یافت.`, { parse_mode: 'Markdown' });
-        
-        const chargeNotifyMsg = `🎉 <b>حساب کاربری شما توسط مدیریت مبلغ ${amount.toLocaleString()} تومان شارژ شد!</b>\n\n` +
-          `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
-          `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
-        bot!.sendMessage(targetUser.chatId, chargeNotifyMsg, { 
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
-            ]
-          }
-        }).catch(() => {});
+
+        if (targetUser.isSeller) {
+          targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
+          targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
+          db.saveUser(targetUser);
+          checkPaygReactivation(targetUser).catch(console.error);
+          bot!.sendMessage(chatId, `✅ مبلغ *${amount.toLocaleString()}* تومان به حساب پرداختی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} منظور شد.\nبدهی باقیمانده: *${(targetUser.debt || 0).toLocaleString()}* تومان\nمجموع کل پرداخت‌ها: *${(targetUser.totalPayments || 0).toLocaleString()}* تومان`, { parse_mode: 'Markdown' });
+          
+          const sellerChargeMsg = `🎉 <b>مبلغ ${amount.toLocaleString()} تومان توسط مدیریت به حساب پرداختی شما منظور شد.</b>\n\nبدهی باقیمانده: <b>${(targetUser.debt || 0).toLocaleString()}</b> تومان`;
+          bot!.sendMessage(targetUser.chatId, sellerChargeMsg, { parse_mode: 'HTML' }).catch(() => {});
+        } else {
+          targetUser.balance = (targetUser.balance || 0) + amount;
+          db.saveUser(targetUser);
+          checkPaygReactivation(targetUser).catch(console.error);
+          bot!.sendMessage(chatId, `✅ حساب کاربر 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} به مقدار *${amount.toLocaleString()}* تومان شارژ دسترسی یافت.`, { parse_mode: 'Markdown' });
+          
+          const chargeNotifyMsg = `🎉 <b>حساب کاربری شما توسط مدیریت مبلغ ${amount.toLocaleString()} تومان شارژ شد!</b>\n\n` +
+            `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
+            `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
+          bot!.sendMessage(targetUser.chatId, chargeNotifyMsg, { 
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
+              ]
+            }
+          }).catch(() => {});
+        }
 
         sendUsersMenu(chatId);
         return;
@@ -2315,35 +2369,63 @@ export async function initBot() {
           
           const targetUser = db.getUser(targetChatId);
           if (targetUser) {
-            targetUser.balance = (targetUser.balance || 0) + amount;
+            if (targetUser.isSeller) {
+              targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
+              targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
+            } else {
+              targetUser.balance = (targetUser.balance || 0) + amount;
+            }
             db.saveUser(targetUser);
             checkPaygReactivation(targetUser).catch(console.error);
             
             // Clean up
             db.updateState({ pendingPayments: currentPending.filter(p => p.id !== payId) });
             
-            bot!.sendMessage(chatId, `✅ فیش واریزی کاربر \`${targetChatId}\` تایید شد. مبلغ *${amount.toLocaleString()}* تومان به حساب ایشان اضافه شد.`, { parse_mode: 'Markdown' });
-            
-            if (payment.pendingPurchase) {
-              const pending = payment.pendingPurchase;
-              const product = db.getState().products.find(p => p.id === pending.productId);
-              if (product) {
-                // Inform admin
-                bot!.sendMessage(chatId, `⏳ در حال اجرای خودکار خرید ${product.name} برای کاربر...`);
-                
-                // Trigger purchase
-                executePurchase(targetChatId, product, pending.couponCode, pending.customName)
-                  .then(() => {
-                    bot!.sendMessage(chatId, `✅ خرید خودکار سرویس ${product.name} با موفقیت انجام و برای کاربر ارسال شد.`);
-                  })
-                  .catch(err => {
-                    console.error(`[Auto Purchase Error] Failed auto purchase on deposit approval for user ${targetChatId}:`, err);
-                    bot!.sendMessage(chatId, `❌ خطای سیستمی در اجرای خودکار خرید: ${err.message}`);
-                    bot!.sendMessage(targetChatId, `⚠️ خرید خودکار سرویس شما با خطا مواجه شد. لطفاً به صورت دستی اقدام به خرید کنید یا با پشتیبانی تماس بگیرید. خطا: ${err.message}`);
-                  });
+            if (targetUser.isSeller) {
+              bot!.sendMessage(chatId, `✅ فیش واریزی همکار \`${targetChatId}\` تایید شد.\n\n💰 مبلغ: *${amount.toLocaleString()}* تومان به عنوان پرداخت/تسویه بدهی ثبت گردید.\n📉 بدهی باقیمانده فعلی: *${(targetUser.debt || 0).toLocaleString()}* تومان\n💳 مجموع پرداخت‌ها: *${(targetUser.totalPayments || 0).toLocaleString()}* تومان`, { parse_mode: 'Markdown' });
+              
+              const notifyMsg = `🎉 <b>رسید واریزی شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
+                `▫️ کل واریزی‌ها و تسویه‌های ثبت شده: <b>${(targetUser.totalPayments || 0).toLocaleString()}</b> تومان\n` +
+                `▫️ بدهی باقیمانده شما به مدیریت: <b>${(targetUser.debt || 0).toLocaleString()}</b> تومان\n\n` +
+                `سقف اعتبار خرید شما با موفقیت به‌روزرسانی گردید.`;
+              bot!.sendMessage(targetChatId, notifyMsg, { parse_mode: 'HTML' }).catch(e => console.error("Failed to notify seller on payment approval:", e.message));
+            } else {
+              bot!.sendMessage(chatId, `✅ فیش واریزی کاربر \`${targetChatId}\` تایید شد. مبلغ *${amount.toLocaleString()}* تومان به حساب ایشان اضافه شد.`, { parse_mode: 'Markdown' });
+              
+              if (payment.pendingPurchase) {
+                const pending = payment.pendingPurchase;
+                const product = db.getState().products.find(p => p.id === pending.productId);
+                if (product) {
+                  // Inform admin
+                  bot!.sendMessage(chatId, `⏳ در حال اجرای خودکار خرید ${product.name} برای کاربر...`);
+                  
+                  // Trigger purchase
+                  executePurchase(targetChatId, product, pending.couponCode, pending.customName)
+                    .then(() => {
+                      bot!.sendMessage(chatId, `✅ خرید خودکار سرویس ${product.name} با موفقیت انجام و برای کاربر ارسال شد.`);
+                    })
+                    .catch(err => {
+                      console.error(`[Auto Purchase Error] Failed auto purchase on deposit approval for user ${targetChatId}:`, err);
+                      bot!.sendMessage(chatId, `❌ خطای سیستمی در اجرای خودکار خرید: ${err.message}`);
+                      bot!.sendMessage(targetChatId, `⚠️ خرید خودکار سرویس شما با خطا مواجه شد. لطفاً به صورت دستی اقدام به خرید کنید یا با پشتیبانی تماس بگیرید. خطا: ${err.message}`);
+                    });
+                } else {
+                  bot!.sendMessage(chatId, `⚠️ محصول مربوط به خرید خودکار پیدا نشد. کاربر باید به صورت دستی اقدام کند.`);
+                  
+                  // Notify the user normally (without auto purchase)
+                  const notifyMsg = `🎉 <b>رسید پرداخت شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
+                    `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
+                    `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
+                  bot!.sendMessage(targetChatId, notifyMsg, { 
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                      inline_keyboard: [
+                        [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+                      ]
+                    }
+                  }).catch(e => console.error("Failed to notify user on payment approval:", e.message));
+                }
               } else {
-                bot!.sendMessage(chatId, `⚠️ محصول مربوط به خرید خودکار پیدا نشد. کاربر باید به صورت دستی اقدام کند.`);
-                
                 // Notify the user normally (without auto purchase)
                 const notifyMsg = `🎉 <b>رسید پرداخت شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
                   `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
@@ -2357,19 +2439,6 @@ export async function initBot() {
                   }
                 }).catch(e => console.error("Failed to notify user on payment approval:", e.message));
               }
-            } else {
-              // Notify the user normally (without auto purchase)
-              const notifyMsg = `🎉 <b>رسید پرداخت شما به مبلغ ${amount.toLocaleString()} تومان تایید شد!</b>\n\n` +
-                `💰 موجودی جدید حساب شما: <b>${targetUser.balance.toLocaleString()}</b> تومان\n\n` +
-                `🛒 <b>هم‌اکنون با زدن دکمه زیر می‌توانید محصول یا سرویس مورد نظر خود را خریداری کنید:</b>`;
-              bot!.sendMessage(targetChatId, notifyMsg, { 
-                parse_mode: 'HTML',
-                reply_markup: {
-                  inline_keyboard: [
-                    [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
-                  ]
-                }
-              }).catch(e => console.error("Failed to notify user on payment approval:", e.message));
             }
           } else {
             bot!.sendMessage(chatId, '❌ کاربر مورد نظر یافت نشد.');
@@ -3439,13 +3508,15 @@ export async function initBot() {
                   if (used > lastUsed) {
                       const diffBytes = used - lastUsed;
                       const diffGb = diffBytes / (1024 * 1024 * 1024);
-                      const pricePerGb = purchase.pricePerGb || 0;
-                      const cost = Math.ceil(diffGb * pricePerGb);
+                      const rawPricePerGb = purchase.originalPricePerGb || purchase.pricePerGb || 0;
                       
-                      if (cost > 0) {
-                          purchase.lastUsedBytes = used;
+                      if (user.isSeller) {
+                          const discountPct = purchase.discountPercent !== undefined ? purchase.discountPercent : getSellerDiscountForProduct(user);
+                          const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+                          const cost = Math.ceil(diffGb * discountedPricePerGb);
                           
-                          if (user.isSeller) {
+                          if (cost > 0) {
+                              purchase.lastUsedBytes = used;
                               user.debt = (user.debt || 0) + cost;
                               user.totalSales = (user.totalSales || 0) + cost;
                               userChanged = true;
@@ -3456,10 +3527,15 @@ export async function initBot() {
                                   purchase.paygDisabled = true;
                                   bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
                               }
-                          } else {
+                          }
+                      } else {
+                          const cost = Math.ceil(diffGb * (purchase.pricePerGb || 0));
+                          if (cost > 0) {
+                              purchase.lastUsedBytes = used;
                               user.balance = (user.balance || 0) - cost;
                               userChanged = true;
 
+                              const pricePerGb = purchase.pricePerGb || 1;
                               const balanceEquivalentGb = pricePerGb > 0 ? (user.balance / pricePerGb) : 0;
 
                               if (user.balance <= 0) {
@@ -3668,4 +3744,103 @@ export async function sendDirectMessage(chatId: number, text: string, replyMarku
   } catch (err: any) {
     console.error(`[Bot Error] Failed to send direct message to ${chatId}:`, err.message);
   }
+}
+
+export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount: number }> {
+  let updatedCount = 0;
+  try {
+    const state = db.getState();
+    const allClientsArray = await xui.getAllClientsWithTraffic().catch(() => [] as any[]);
+    const users = state.users || [];
+
+    for (const user of users) {
+      let userChanged = false;
+
+      if (user.isSeller) {
+        // 1. If seller has any positive balance (e.g. from previously approved deposits), convert to totalPayments & reduce debt
+        if ((user.balance || 0) > 0) {
+          user.totalPayments = (user.totalPayments || 0) + user.balance;
+          user.debt = Math.max(0, (user.debt || 0) - user.balance);
+          user.balance = 0;
+          userChanged = true;
+        }
+
+        // 2. Reconcile all purchases with discounts
+        const purchases = user.purchases || [];
+        let totalOriginalPrice = 0;
+        let totalFinalPrice = 0;
+        let totalDiscounts = 0;
+
+        for (const p of purchases) {
+          const clientObj = allClientsArray.find(cl => 
+            (cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase()) ||
+            (cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase()) ||
+            (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
+          );
+          let currentUsed = 0;
+          if (clientObj) {
+            currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
+            if (currentUsed > (p.lastUsedBytes || 0)) {
+              p.lastUsedBytes = currentUsed;
+              userChanged = true;
+            }
+          } else {
+            currentUsed = (p.lastUsedBytes || 0);
+          }
+
+          let orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
+          let fin = p.price !== undefined ? p.price : 0;
+
+          if (p.isPayAsYouGo) {
+            const paygGb = currentUsed / (1024 * 1024 * 1024);
+            const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
+            const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user);
+            const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+
+            const paygOrigCost = Math.ceil(paygGb * rawPricePerGb);
+            const paygFinCost = Math.ceil(paygGb * discountedPricePerGb);
+
+            orig += paygOrigCost;
+            fin += paygFinCost;
+          } else {
+            if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
+              orig = Math.round(fin / (1 - p.discountPercent / 100));
+            }
+          }
+
+          if (orig < fin) orig = fin;
+
+          totalOriginalPrice += orig;
+          totalFinalPrice += fin;
+          totalDiscounts += Math.max(0, orig - fin);
+        }
+
+        // Reconcile totalSales to equal total final net invoice
+        if (user.totalSales !== totalFinalPrice) {
+          user.totalSales = totalFinalPrice;
+          userChanged = true;
+        }
+
+        // Reconcile debt: net sales minus all settled/approved payments
+        const totalPayments = user.totalPayments || 0;
+        const correctDebt = Math.max(0, totalFinalPrice - totalPayments);
+        if (user.debt !== correctDebt) {
+          user.debt = correctDebt;
+          userChanged = true;
+        }
+      }
+
+      if (userChanged) {
+        db.saveUser(user);
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount > 0) {
+      console.log(`[Financials Sync] Successfully reconciled accounts for ${updatedCount} user(s)/seller(s).`);
+    }
+  } catch (err: any) {
+    console.error('[Financials Sync Error]', err.message);
+  }
+  return { updatedCount };
 }

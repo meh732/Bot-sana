@@ -53,6 +53,7 @@ export interface Purchase {
   warnedData?: boolean;
   warnedTime?: boolean;
   originalPrice?: number;
+  originalPricePerGb?: number;
   discountPercent?: number;
   discountAmount?: number;
   expiredAt?: number;

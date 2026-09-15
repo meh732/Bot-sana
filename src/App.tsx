@@ -1753,7 +1753,7 @@ function SellersView() {
   const settleDebt = async (chatId: number) => {
     if (
       !confirm(
-        'آیا مطمئن هستید که می‌خواهید بدهی مالی و حجمی این همکار را صفر (تسویه حساب کامل) کنید؟'
+        'آیا مطمئن هستید که می‌خواهید بدهی مالی و حجمی این همکار را تسویه (صفر) کنید؟ مبلغ بدهی به مجموع واریزی‌های همکار اضافه می‌شود.'
       )
     )
       return;
@@ -1762,10 +1762,25 @@ function SellersView() {
     if (data.success) {
       setUsers(
         users.map((u) =>
-          u.chatId === chatId ? { ...u, debt: 0, debtVolume: 0 } : u
+          u.chatId === chatId ? { ...u, debt: 0, debtVolume: 0, totalPayments: data.totalPayments } : u
         )
       );
-      alert('حساب همکار با موفقیت تسویه گردید.');
+      alert('حساب بدهی همکار با موفقیت تسویه گردید.');
+    }
+  };
+
+  const recalculateSeller = async (chatId: number) => {
+    try {
+      const res = await fetch(`/api/users/${chatId}/recalculate`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.user) {
+        setUsers(users.map((u) => (u.chatId === chatId ? data.user : u)));
+        alert('تراز مالی، تخفیفات و بدهی همکار با موفقیت محاسبه مجدد و همگام‌سازی شد.');
+      } else {
+        alert('خطا در محاسبه مجدد: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطای اتصال: ' + e.message);
     }
   };
 
@@ -2108,7 +2123,10 @@ function SellersView() {
                     <div className="text-xs text-emerald-600 font-semibold mt-0.5">
                       اعتبار باقیمانده: <span className="font-mono">{remains.toLocaleString()}</span> تومان
                     </div>
-                    <div className="text-xs text-blue-600 font-semibold mt-0.5 bg-blue-50 px-1 py-0.5 rounded inline-block">
+                    <div className="text-xs text-purple-700 font-semibold mt-0.5 bg-purple-50 px-1.5 py-0.5 rounded inline-block">
+                      واریزی‌ها / تسویه‌ها: <span className="font-mono">{(u.totalPayments || 0).toLocaleString()}</span> تومان
+                    </div>
+                    <div className="text-xs text-blue-600 font-semibold mt-0.5 bg-blue-50 px-1 py-0.5 rounded block">
                       تخفیف فروشنده: <span className="font-mono">{u.sellerDiscount || 0}%</span>
                     </div>
                   </td>
@@ -2124,6 +2142,13 @@ function SellersView() {
                     </div>
                   </td>
                   <td className="px-6 py-4 text-left flex items-center justify-end gap-2 h-20">
+                    <button
+                      onClick={() => recalculateSeller(u.chatId)}
+                      className="px-2.5 py-1.5 bg-amber-50 text-amber-800 hover:bg-amber-100 rounded-md font-medium text-xs transition border border-amber-200"
+                      title="محاسبه مجدد بدهی، تخفیفات و واریزی‌ها"
+                    >
+                      🔄 همگام‌سازی تراز
+                    </button>
                     <button
                       onClick={() => openDiscountModal(u)}
                       className="px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-md font-medium text-xs transition border border-indigo-100"

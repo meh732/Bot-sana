@@ -6,7 +6,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage } from "./server/bot.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials } from "./server/bot.js";
 import { xui } from "./server/xui.js";
 import { encryptData, decryptData } from "./server/crypto.js";
 
@@ -50,8 +50,11 @@ async function startServer() {
     });
   }
 
-  // Init Telegram Bot
+  // Init Telegram Bot & Synchronize Seller Financials
   initBot();
+  syncAllUsersAndSellersFinancials().catch(err => {
+    console.error('[Startup Financials Sync Error]', err.message);
+  });
 
   // ----- Admin API ----- //
   const api = express.Router();
@@ -457,7 +460,25 @@ async function startServer() {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     const parsedAmount = parseInt(amount);
-    user.balance += parsedAmount;
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'مبلغ نامعتبر است' });
+    }
+
+    if (user.isSeller) {
+      user.totalPayments = (user.totalPayments || 0) + parsedAmount;
+      user.debt = Math.max(0, (user.debt || 0) - parsedAmount);
+      db.saveUser(user);
+      checkPaygReactivation(user).catch(console.error);
+
+      const sellerMsg = `🎉 <b>مبلغ ${parsedAmount.toLocaleString()} تومان توسط مدیریت به حساب واریزی‌ها/پرداخت‌های شما ثبت شد.</b>\n\n` +
+        `▫️ کل واریزی‌ها و تسویه‌ها: <b>${(user.totalPayments || 0).toLocaleString()}</b> تومان\n` +
+        `▫️ بدهی باقیمانده به مدیریت: <b>${(user.debt || 0).toLocaleString()}</b> تومان`;
+      sendDirectMessage(user.chatId, sellerMsg).catch(console.error);
+
+      return res.json({ success: true, balance: user.balance, debt: user.debt, totalPayments: user.totalPayments });
+    }
+
+    user.balance = (user.balance || 0) + parsedAmount;
     db.saveUser(user);
     checkPaygReactivation(user).catch(console.error);
 
@@ -552,10 +573,32 @@ async function startServer() {
   api.post("/users/:chatId/settle", (req, res) => {
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false });
+    const settledAmount = user.debt || 0;
+    user.totalPayments = (user.totalPayments || 0) + settledAmount;
     user.debt = 0;
     user.debtVolume = 0; // Reset active package volume debt too
     db.saveUser(user);
-    res.json({ success: true, debt: user.debt, debtVolume: user.debtVolume });
+
+    const settleMsg = `💵 <b>حساب بدهی شما توسط مدیریت تسویه گردید.</b>\n\n` +
+      `▫️ مبلغ تسویه شده: <b>${settledAmount.toLocaleString()}</b> تومان\n` +
+      `▫️ بدهی فعلی: <b>0</b> تومان\n` +
+      `▫️ مجموع کل پرداخت‌ها و تسویه‌ها: <b>${(user.totalPayments || 0).toLocaleString()}</b> تومان`;
+    sendDirectMessage(user.chatId, settleMsg).catch(console.error);
+
+    res.json({ success: true, debt: user.debt, debtVolume: user.debtVolume, totalPayments: user.totalPayments });
+  });
+
+  api.post("/users/:chatId/recalculate", async (req, res) => {
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
+    await syncAllUsersAndSellersFinancials();
+    const updated = db.getUser(parseInt(req.params.chatId));
+    res.json({ success: true, user: updated });
+  });
+
+  api.post("/sellers/sync-financials", async (req, res) => {
+    const result = await syncAllUsersAndSellersFinancials();
+    res.json({ success: true, updatedCount: result.updatedCount, users: db.getState().users });
   });
 
   app.use("/api", api);
