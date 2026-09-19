@@ -26,6 +26,16 @@ function normalizePersianText(str: string): string {
     .trim();
 }
 
+export function isSellerUnlimitedLimit(user?: { isSeller?: boolean; debtLimit?: number | null; isUnlimitedLimit?: boolean }): boolean {
+  if (!user || !user.isSeller) return false;
+  if (user.isUnlimitedLimit === true) return true;
+  if (user.debtLimit !== undefined && user.debtLimit !== null) {
+    const lim = Number(user.debtLimit);
+    if (!isNaN(lim) && lim <= 0) return true;
+  }
+  return false;
+}
+
 export function getSellerDiscountForProduct(user: any, product?: any): number {
   if (!user || !user.isSeller) return 0;
   let sellerDiscount = 0;
@@ -320,11 +330,13 @@ export async function initBot() {
     }
 
     if (user.isSeller) {
-      const currentDebt = user.debt || 0;
-      const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
-      if (currentDebt + finalPrice > limit) {
-        bot!.sendMessage(chatId, `❌ خطا در خرید: سقف اعتبار شما کافی نیست!\n\nبدهی فعلی شما: ${currentDebt.toLocaleString()} تومان\nهزینه این خرید: ${finalPrice.toLocaleString()} تومان\nسقف اعتبار مجاز: ${limit.toLocaleString()} تومان\n\nجهت آزاد کردن سقف خرید لطفا با ادمین تسویه کنید.`);
-        return;
+      if (!isSellerUnlimitedLimit(user)) {
+        const currentDebt = user.debt || 0;
+        const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+        if (currentDebt + finalPrice > limit) {
+          bot!.sendMessage(chatId, `❌ خطا در خرید: سقف اعتبار شما کافی نیست!\n\nبدهی فعلی شما: ${currentDebt.toLocaleString()} تومان\nهزینه این خرید: ${finalPrice.toLocaleString()} تومان\nسقف اعتبار مجاز: ${limit.toLocaleString()} تومان\n\nجهت آزاد کردن سقف خرید لطفا با ادمین تسویه کنید.`);
+          return;
+        }
       }
     } else {
       if (user.balance < finalPrice) {
@@ -375,30 +387,35 @@ export async function initBot() {
       const client = await xui.addClient(clientEmail, volGb, durDays, selectedInboundIds, product.limitIp || 0, String(chatId), sellerGroupName);
       
       if (user.isSeller) {
-        user.debt = (user.debt || 0) + finalPrice;
-        user.debtVolume = (user.debtVolume || 0) + (isPAYG ? 0 : Number(product.volumeGb || 0));
-        user.totalSales = (user.totalSales || 0) + finalPrice;
+        if (!isPAYG) {
+          user.debt = (user.debt || 0) + finalPrice;
+          user.debtVolume = (user.debtVolume || 0) + Number(product.volumeGb || 0);
+          user.totalSales = (user.totalSales || 0) + finalPrice;
+        }
       } else {
-        user.balance -= finalPrice;
+        if (!isPAYG) {
+          user.balance -= finalPrice;
+        }
       }
       
       // Save purchase record
       const newPurchase: any = {
         id: clientEmail, // use the email as id to trace back to xui client accurately
         name: product.name,
-        price: finalPrice,
+        price: isPAYG ? 0 : finalPrice,
         subUrl: client.subUrl,
         volumeGb: volGb,
         durationDays: durDays,
         createdAt: new Date().toISOString(),
-        originalPrice: product.price,
+        originalPrice: isPAYG ? 0 : product.price,
         discountPercent: effectiveDiscount,
-        discountAmount: product.price - finalPrice
+        discountAmount: isPAYG ? 0 : (product.price - finalPrice)
       };
 
       if (isPAYG) {
         newPurchase.isPayAsYouGo = true;
-        newPurchase.pricePerGb = product.price; // or whatever represents the per Gb price
+        newPurchase.originalPricePerGb = product.price;
+        newPurchase.pricePerGb = effectiveDiscount > 0 ? Math.max(0, Math.round(product.price * (1 - effectiveDiscount / 100))) : product.price;
         newPurchase.lastUsedBytes = 0;
       }
 
@@ -423,7 +440,11 @@ export async function initBot() {
       }
 
       let finalMsg = `✅ <b>خرید با موفقیت انجام شد!</b>\n\n📦 <b>سرویس:</b> ${product.name}\n`;
-      if (effectiveDiscount > 0) {
+      if (isPAYG) {
+        finalMsg += `⚡ <b>نوع سرویس:</b> مصرف آزاد (PAYG - پرداخت بر اساس مصرف)\n` +
+                    `💰 <b>نرخ هر گیگابایت:</b> ${newPurchase.pricePerGb.toLocaleString()} تومان` +
+                    (effectiveDiscount > 0 ? ` (با ${effectiveDiscount}٪ تخفیف اختصاصی همکار)\n\n` : `\n\n`);
+      } else if (effectiveDiscount > 0) {
         finalMsg += `💵 <b>قیمت اصلی:</b> ${product.price.toLocaleString()} تومان\n` +
                     `🏷️ <b>تخفیف اعمال شده:</b> ${effectiveDiscount}٪ (${(product.price - finalPrice).toLocaleString()} تومان)\n` +
                     `💰 <b>قیمت نهایی پرداخت شده:</b> ${finalPrice.toLocaleString()} تومان\n\n`;
@@ -544,8 +565,8 @@ export async function initBot() {
           totalUsedBytes += currentUsed;
         }
 
-        let orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
-        let fin = p.price !== undefined ? p.price : 0;
+        let orig = 0;
+        let fin = 0;
 
         if (p.isPayAsYouGo) {
           const paygGb = currentUsed / (1024 * 1024 * 1024);
@@ -553,12 +574,11 @@ export async function initBot() {
           const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(seller);
           const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
 
-          const paygOrigCost = Math.ceil(paygGb * rawPricePerGb);
-          const paygFinCost = Math.ceil(paygGb * discountedPricePerGb);
-
-          orig += paygOrigCost;
-          fin += paygFinCost;
+          orig = Math.ceil(paygGb * rawPricePerGb);
+          fin = Math.ceil(paygGb * discountedPricePerGb);
         } else {
+          orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
+          fin = p.price !== undefined ? p.price : 0;
           if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
             orig = Math.round(fin / (1 - p.discountPercent / 100));
           }
@@ -590,8 +610,11 @@ export async function initBot() {
       }
 
       const totalUsedGb = totalUsedBytes / (1024 * 1024 * 1024);
-      const limit = seller.debtLimit !== undefined ? seller.debtLimit : 1000000;
-      const remains = Math.max(0, limit - debtVal);
+      const isUnlimited = isSellerUnlimitedLimit(seller);
+      const limit = seller.debtLimit !== undefined && seller.debtLimit > 0 ? seller.debtLimit : 1000000;
+      const remains = isUnlimited ? null : Math.max(0, limit - debtVal);
+      const limitStr = isUnlimited ? '*سقف آزاد (نامحدود)*' : `*${limit.toLocaleString()}* تومان`;
+      const remainsStr = isUnlimited ? '*نامحدود (سقف آزاد)*' : `*${(remains || 0).toLocaleString()}* تومان`;
 
       const usernameStr = seller.username ? `@${seller.username}` : 'بدون یوزرنیم';
       const nicknameStr = seller.nickname || 'نامشخص';
@@ -612,14 +635,18 @@ export async function initBot() {
         `▫️ مجموع کل واریزی‌ها و تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n` +
         `▫️ بدهی قطعی و باقیمانده فعلی: *${debtVal.toLocaleString()}* تومان\n\n` +
         `💳 *وضعیت سقف اعتبار خرید:*\n` +
-        `▫️ سقف بدهی مجاز: *${limit.toLocaleString()}* تومان\n` +
-        `▫️ اعتبار خرید باقیمانده: *${remains.toLocaleString()}* تومان\n`;
+        `▫️ سقف بدهی مجاز: ${limitStr}\n` +
+        `▫️ اعتبار خرید باقیمانده: ${remainsStr}\n`;
 
       const inline_keyboard: any[] = [];
       if (isAdminContext) {
         inline_keyboard.push([
           { text: '💵 تسویه حساب این همکار', callback_data: `admin_settle_specific_${seller.chatId}` },
           { text: '🔄 اصلاح و همگام‌سازی تراز', callback_data: `admin_recalc_seller_${seller.chatId}` }
+        ]);
+        inline_keyboard.push([
+          { text: isUnlimited ? '🔒 تبدیل به سقف محدود عددی' : '⚡ تبدیل به سقف آزاد (نامحدود)', callback_data: `toggle_unlimited_seller_${seller.chatId}` },
+          { text: '⚙️ تنظیم سقف اعتبار عددی', callback_data: `set_seller_limit_${seller.chatId}` }
         ]);
         inline_keyboard.push([
           { text: '➕ ثبت واریزی / پرداخت همکار', callback_data: `add_bal_${seller.chatId}` },
@@ -1769,6 +1796,39 @@ export async function initBot() {
         return;
       }
 
+      if (sessionType.startsWith('set_seller_limit_')) {
+        const targetUid = parseInt(sessionType.replace('set_seller_limit_', ''));
+        const inputStr = text.trim().toLowerCase();
+        const targetUser = db.getUser(targetUid);
+        if (!targetUser) {
+          bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
+        } else {
+          if (inputStr === '0' || inputStr === 'آزاد' || inputStr === 'نامحدود' || inputStr === '-1') {
+            targetUser.isUnlimitedLimit = true;
+            targetUser.debtLimit = 0;
+            db.saveUser(targetUser);
+            await checkPaygReactivation(targetUser);
+            bot!.sendMessage(chatId, `✅ سقف اعتبار همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} به صورت «سقف آزاد (نامحدود)» تنظیم گردید.`);
+            bot!.sendMessage(targetUser.chatId, `📢 سقف اعتبار حساب کاربری شما به صورت آزاد (نامحدود) تنظیم گردید.`).catch(() => {});
+          } else {
+            const newLimit = parseInt(inputStr.replace(/[^0-9]/g, ''));
+            if (isNaN(newLimit) || newLimit < 0) {
+              bot!.sendMessage(chatId, '❌ مبلغ سقف وارد شده نامعتبر است. عملیات لغو شد.');
+            } else {
+              targetUser.isUnlimitedLimit = newLimit === 0;
+              targetUser.debtLimit = newLimit;
+              db.saveUser(targetUser);
+              await checkPaygReactivation(targetUser);
+              bot!.sendMessage(chatId, `✅ سقف اعتبار همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت به ${newLimit.toLocaleString()} تومان تغییر یافت.`);
+              bot!.sendMessage(targetUser.chatId, `📢 سقف اعتبار مجاز شما توسط مدیریت به ${newLimit.toLocaleString()} تومان بروزرسانی شد.`).catch(() => {});
+            }
+          }
+          await sendDetailedSellerReport(chatId, targetUid, true);
+        }
+        adminSession.delete(chatId);
+        return;
+      }
+
       if (sessionType === 'charge_user_bot') {
         const parts = text.trim().split(/\s+/);
         if (parts.length < 2) {
@@ -2105,19 +2165,22 @@ export async function initBot() {
       const user = db.getUser(chatId);
       if (!user || !user.isSeller) return;
       
-      const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
+      const isUnlimited = isSellerUnlimitedLimit(user);
+      const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
       const debtVal = user.debt || 0;
-      const remains = Math.max(0, limit - debtVal);
+      const remains = isUnlimited ? null : Math.max(0, limit - debtVal);
       const volumeDebt = user.debtVolume || 0;
+      const limitStr = isUnlimited ? '*سقف آزاد (نامحدود)*' : `*${limit.toLocaleString()}* تومان`;
+      const remainsStr = isUnlimited ? '*نامحدود (سقف آزاد)*' : `*${(remains || 0).toLocaleString()}* تومان`;
       
       const msgText = `📉 *وضعیت بدهی و اعتبار همکار*:\n\n` +
         `👤 همکار: ${user.username ? `@${user.username}` : `شناسه ${chatId}`}\n` +
         `💰 مجموع کل فروش شما: *${(user.totalSales || 0).toLocaleString()}* تومان\n` +
         `📉 بدهی مالی فعلی شما: *${debtVal.toLocaleString()}* تومان\n` +
         `📦 حجم بدهی فعال شما: *${volumeDebt.toLocaleString()}* GB\n` +
-        `💳 سقف بدهی مجاز شما: *${limit.toLocaleString()}* تومان\n` +
-        `✅ اعتبار خرید باقیمانده: *${remains.toLocaleString()}* تومان\n\n` +
-        `🚨 خرید شما در صورتی که بدهی از سقف مجاز بیشتر شود به صورت هوشمند مسدود خواهد شد.`;
+        `💳 سقف بدهی مجاز شما: ${limitStr}\n` +
+        `✅ اعتبار خرید باقیمانده: ${remainsStr}\n\n` +
+        (isUnlimited ? `✨ شما دارای سقف اعتبار آزاد هستید و هیچ محدودیتی در ثبت سفارش ندارید.` : `🚨 خرید شما در صورتی که بدهی از سقف مجاز بیشتر شود به صورت هوشمند مسدود خواهد شد.`);
         
       bot!.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
       return;
@@ -2135,11 +2198,13 @@ export async function initBot() {
       }
 
       // Check if they exceed debt limit
-      const currentDebt = user.debt || 0;
-      const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
-      if (currentDebt >= limit) {
-        bot!.sendMessage(chatId, `❌ خطا: سقف بدهی مجاز شما به پایان رسیده است و خرید مسدود است!\n\nبدهی شما: ${currentDebt.toLocaleString()} تومان\nسقف مجاز: ${limit.toLocaleString()} تومان\n\nلطفا جهت تسویه با مدیریت در ارتباط باشید.`);
-        return;
+      if (!isSellerUnlimitedLimit(user)) {
+        const currentDebt = user.debt || 0;
+        const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+        if (currentDebt >= limit) {
+          bot!.sendMessage(chatId, `❌ خطا: سقف بدهی مجاز شما به پایان رسیده است و خرید مسدود است!\n\nبدهی شما: ${currentDebt.toLocaleString()} تومان\nسقف مجاز: ${limit.toLocaleString()} تومان\n\nلطفا جهت تسویه با مدیریت در ارتباط باشید.`);
+          return;
+        }
       }
 
       const activeCategories = (stateObj.categories || []).filter(c => !c.disabled);
@@ -2767,6 +2832,49 @@ export async function initBot() {
       return;
     }
 
+    if (data && data.startsWith('toggle_unlimited_seller_')) {
+      if (isAdmin) {
+        const targetChatId = parseInt(data.replace('toggle_unlimited_seller_', ''));
+        const targetUser = db.getUser(targetChatId);
+        if (targetUser) {
+          const wasUnlimited = isSellerUnlimitedLimit(targetUser);
+          targetUser.isUnlimitedLimit = !wasUnlimited;
+          if (targetUser.isUnlimitedLimit) {
+            targetUser.debtLimit = 0;
+          } else {
+            targetUser.debtLimit = 1000000;
+          }
+          db.saveUser(targetUser);
+          await checkPaygReactivation(targetUser);
+          
+          const statusText = targetUser.isUnlimitedLimit ? '⚡ سقف آزاد (نامحدود)' : '🔒 سقف محدود عددی (۱,۰۰۰,۰۰۰ تومان)';
+          bot!.sendMessage(chatId, `✅ وضعیت سقف اعتبار همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} به «${statusText}» تغییر یافت.`);
+          bot!.sendMessage(targetUser.chatId, `📢 وضعیت اعتبار حساب شما توسط مدیریت به «${statusText}» بروزرسانی شد.`).catch(() => {});
+          
+          await sendDetailedSellerReport(chatId, targetChatId, true);
+        } else {
+          bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
+        }
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data && data.startsWith('set_seller_limit_')) {
+      if (isAdmin) {
+        const targetChatId = parseInt(data.replace('set_seller_limit_', ''));
+        const targetUser = db.getUser(targetChatId);
+        if (targetUser) {
+          adminSession.set(chatId, `set_seller_limit_${targetChatId}`);
+          bot!.sendMessage(chatId, `🔢 لطفاً سقف اعتبار جدید همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} را به تومان ارسال کنید (یا عدد 0 یا کلمه «آزاد» را برای سقف نامحدود ارسال فرمایید):`);
+        } else {
+          bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
+        }
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
     if (data === 'toggle_test_enabled') {
       if (isAdmin) {
         const currentVal = state.freeTestEnabled !== false;
@@ -3027,10 +3135,12 @@ export async function initBot() {
           return;
         }
       } else {
-        const debtLimit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
-        if ((user.debt || 0) + finalPrice > debtLimit) {
-           bot!.sendMessage(chatId, `❌ سقف اعتبار شما برای ثبت فروش جدید کافی نیست.\n\nبدهی فعلی: ${(user.debt || 0).toLocaleString()} تومان\nسقف اعتبار: ${debtLimit.toLocaleString()} تومان`);
-           return;
+        if (!isSellerUnlimitedLimit(user)) {
+          const debtLimit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+          if ((user.debt || 0) + finalPrice > debtLimit) {
+             bot!.sendMessage(chatId, `❌ سقف اعتبار شما برای ثبت فروش جدید کافی نیست.\n\nبدهی فعلی: ${(user.debt || 0).toLocaleString()} تومان\nسقف اعتبار: ${debtLimit.toLocaleString()} تومان`);
+             return;
+          }
         }
       }
 
@@ -3521,11 +3631,13 @@ export async function initBot() {
                               user.totalSales = (user.totalSales || 0) + cost;
                               userChanged = true;
 
-                              const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
-                              if ((user.debt || 0) >= limit) {
-                                  await xui.updateClientEnable(purchase.id, false);
-                                  purchase.paygDisabled = true;
-                                  bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
+                              if (!isSellerUnlimitedLimit(user)) {
+                                  const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+                                  if ((user.debt || 0) >= limit) {
+                                      await xui.updateClientEnable(purchase.id, false);
+                                      purchase.paygDisabled = true;
+                                      bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
+                                  }
                               }
                           }
                       } else {
@@ -3681,8 +3793,9 @@ export async function checkPaygReactivation(user: any) {
   for (const purchase of user.purchases) {
     if (purchase.isPayAsYouGo && purchase.paygDisabled) {
       if (user.isSeller) {
-        const limit = user.debtLimit !== undefined ? user.debtLimit : 1000000;
-        if ((user.debt || 0) < limit) {
+        const isUnlimited = isSellerUnlimitedLimit(user);
+        const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+        if (isUnlimited || (user.debt || 0) < limit) {
           await xui.updateClientEnable(purchase.id, true);
           purchase.paygDisabled = false;
           purchase.warnedPayg = false;

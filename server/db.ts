@@ -75,6 +75,7 @@ export interface User {
   debt?: number;
   debtVolume?: number;
   debtLimit?: number;
+  isUnlimitedLimit?: boolean;
   totalSales?: number;
   totalPayments?: number;
   purchases?: Purchase[];

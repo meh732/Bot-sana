@@ -520,22 +520,33 @@ async function startServer() {
   });
 
   api.post("/users/:chatId/seller-limits", (req, res) => {
-    const { debtLimit, debtVolume, debt, sellerDiscount, sellerDiscounts } = req.body;
+    const { debtLimit, debtVolume, debt, sellerDiscount, sellerDiscounts, isUnlimitedLimit } = req.body;
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
     
-    if (debtLimit !== undefined) user.debtLimit = Number(debtLimit);
+    if (debtLimit !== undefined) {
+      const num = Number(debtLimit);
+      user.debtLimit = isNaN(num) ? 0 : num;
+      user.isUnlimitedLimit = user.debtLimit <= 0;
+    }
+    if (isUnlimitedLimit !== undefined) {
+      user.isUnlimitedLimit = !!isUnlimitedLimit;
+      if (user.isUnlimitedLimit) {
+        user.debtLimit = 0;
+      }
+    }
     if (debtVolume !== undefined) user.debtVolume = Number(debtVolume);
     if (debt !== undefined) user.debt = Number(debt);
     if (sellerDiscount !== undefined) user.sellerDiscount = Number(sellerDiscount);
     if (sellerDiscounts !== undefined) user.sellerDiscounts = sellerDiscounts;
     
     db.saveUser(user);
+    checkPaygReactivation(user).catch(console.error);
     res.json({ success: true, user });
   });
 
   api.post("/users/add-seller", (req, res) => {
-    const { chatId, username, debtLimit } = req.body;
+    const { chatId, username, debtLimit, isUnlimitedLimit } = req.body;
     if (!chatId) {
       return res.status(400).json({ success: false, message: 'شناسه عددی کاربری الزاماً باید فرستاده شود.' });
     }
@@ -543,6 +554,10 @@ async function startServer() {
     if (isNaN(numChatId)) {
       return res.status(400).json({ success: false, message: 'شناسه عددی وارد شده معتبر نمی‌باشد.' });
     }
+
+    const rawLimit = debtLimit !== undefined && debtLimit !== '' ? Number(debtLimit) : 1000000;
+    const unlim = isUnlimitedLimit === true || (!isNaN(rawLimit) && rawLimit <= 0);
+    const finalLimit = unlim ? 0 : (isNaN(rawLimit) ? 1000000 : rawLimit);
 
     let user = db.getUser(numChatId);
     if (!user) {
@@ -555,7 +570,8 @@ async function startServer() {
         isSeller: true,
         debt: 0,
         debtVolume: 0,
-        debtLimit: Number(debtLimit) || 1000000,
+        debtLimit: finalLimit,
+        isUnlimitedLimit: unlim,
         totalSales: 0,
         purchases: []
       };
@@ -563,10 +579,12 @@ async function startServer() {
       user.isSeller = true;
       if (user.debt === undefined) user.debt = 0;
       if (user.debtVolume === undefined) user.debtVolume = 0;
-      if (debtLimit !== undefined) user.debtLimit = Number(debtLimit);
+      user.debtLimit = finalLimit;
+      user.isUnlimitedLimit = unlim;
     }
 
     db.saveUser(user);
+    checkPaygReactivation(user).catch(console.error);
     res.json({ success: true, users: db.getState().users });
   });
 
@@ -606,7 +624,12 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          ignored: ['**/db.json', '**/db.json.bak', '**/*.json', '**/backups/**', '**/*.log', '**/auto_backup_*']
+        }
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);

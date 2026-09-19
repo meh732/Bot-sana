@@ -96,6 +96,20 @@ function SettingsView() {
   const [newFjName, setNewFjName] = useState('');
   const [newFjUrl, setNewFjUrl] = useState('');
 
+  const refreshAppState = async () => {
+    try {
+      const res = await fetch('/api/state');
+      const data = await res.json();
+      setState(data);
+      if (data.adminIds) {
+        setAdminIdsStr(data.adminIds.join(', '));
+      }
+      fetchLocalBackups();
+    } catch (e) {
+      console.error('Error refreshing state:', e);
+    }
+  };
+
   const fetchLocalBackups = async () => {
     try {
       const res = await fetch('/api/backup/local-list');
@@ -140,7 +154,7 @@ function SettingsView() {
       const data = await res.json();
       if (data.success) {
         alert('✅ دیتابیس با موفقیت بازگردانی شد و ربات با اطلاعات قدیمی راه‌اندازی گردید.');
-        window.location.reload();
+        await refreshAppState();
       } else {
         alert('در بازیابی خطا رخ داد: ' + data.message);
       }
@@ -478,7 +492,7 @@ function SettingsView() {
           const data = await res.json();
           if (data.success) {
             alert('بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد! تمامی بخش‌ها لود خواهند شد.');
-            window.location.reload();
+            await refreshAppState();
           } else {
             alert('پشتیبان بازیابی نشد: ' + data.message);
           }
@@ -1724,13 +1738,16 @@ function SellersView() {
     }
     setLoading(true);
     try {
+      const limitNum = Number(newLimit);
+      const isUnlimited = limitNum <= 0 && newLimit.trim() !== '';
       const res = await fetch('/api/users/add-seller', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chatId: newChatId,
           username: newUsername,
-          debtLimit: Number(newLimit) || 1000000,
+          debtLimit: isUnlimited ? 0 : (limitNum || 1000000),
+          isUnlimitedLimit: isUnlimited,
         }),
       });
       const data = await res.json();
@@ -1784,10 +1801,36 @@ function SellersView() {
     }
   };
 
-  const changeLimits = async (chatId: number, currentLimit?: number, currentVolumeGob?: number, currentDebt?: number, currentDiscount?: number) => {
+  const toggleUnlimitedLimit = async (chatId: number, currentUnlimited: boolean) => {
+    const newUnlimited = !currentUnlimited;
+    const res = await fetch(`/api/users/${chatId}/seller-limits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        isUnlimitedLimit: newUnlimited,
+        debtLimit: newUnlimited ? 0 : 1000000,
+      }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      setUsers(
+        users.map((u) =>
+          u.chatId === chatId
+            ? {
+                ...u,
+                isUnlimitedLimit: newUnlimited,
+                debtLimit: newUnlimited ? 0 : (u.debtLimit && u.debtLimit > 0 ? u.debtLimit : 1000000),
+              }
+            : u
+        )
+      );
+    }
+  };
+
+  const changeLimits = async (chatId: number, currentLimit?: number, currentVolumeGob?: number, currentDebt?: number, currentDiscount?: number, isUnlimited?: boolean) => {
     const limitPrompt = prompt(
-      'سقف بدهی مجاز همکار را وارد کنید (تومان):',
-      String(currentLimit || 1000000)
+      'سقف بدهی مجاز همکار را به تومان وارد کنید (برای سقف آزاد و نامحدود، عدد 0 را وارد نمایید):',
+      isUnlimited ? '0' : String(currentLimit || 1000000)
     );
     if (limitPrompt === null) return;
     const newLimitNum = Number(limitPrompt);
@@ -1829,14 +1872,17 @@ function SellersView() {
       return;
     }
 
+    const newIsUnlimited = newLimitNum <= 0;
+
     const res = await fetch(`/api/users/${chatId}/seller-limits`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        debtLimit: newLimitNum,
+        debtLimit: newIsUnlimited ? 0 : newLimitNum,
         debtVolume: newVolumeNum,
         debt: newDebtNum,
         sellerDiscount: newDiscountNum,
+        isUnlimitedLimit: newIsUnlimited,
       }),
     });
     const data = await res.json();
@@ -1846,10 +1892,11 @@ function SellersView() {
           u.chatId === chatId
             ? {
                 ...u,
-                debtLimit: newLimitNum,
+                debtLimit: newIsUnlimited ? 0 : newLimitNum,
                 debtVolume: newVolumeNum,
                 debt: newDebtNum,
                 sellerDiscount: newDiscountNum,
+                isUnlimitedLimit: newIsUnlimited,
               }
             : u
         )
@@ -2061,10 +2108,10 @@ function SellersView() {
             />
           </div>
           <div className="text-right">
-            <label className="block text-xs font-medium text-slate-700 mb-1">سقف بدهی مجاز اولیه (تومان)</label>
+            <label className="block text-xs font-medium text-slate-700 mb-1">سقف بدهی اولیه (تومان - 0 یعنی سقف آزاد)</label>
             <input
               type="number"
-              placeholder="1000000"
+              placeholder="1000000 (یا 0 برای آزاد)"
               value={newLimit}
               onChange={(e) => setNewLimit(e.target.value)}
               className="w-full px-3 py-2 border rounded-md text-sm text-left font-mono"
@@ -2098,8 +2145,9 @@ function SellersView() {
           <tbody>
             {sellers.map((u) => {
               const currentDebt = u.debt || 0;
-              const limit = u.debtLimit !== undefined ? u.debtLimit : 1000000;
-              const remains = Math.max(0, limit - currentDebt);
+              const isUnlimited = u.isUnlimitedLimit || (u.debtLimit === 0);
+              const limit = u.debtLimit !== undefined && u.debtLimit > 0 ? u.debtLimit : 1000000;
+              const remains = isUnlimited ? null : Math.max(0, limit - currentDebt);
               return (
                 <tr key={u.chatId} className="border-b last:border-0 hover:bg-slate-50 transition">
                   <td className="px-6 py-4">
@@ -2117,11 +2165,22 @@ function SellersView() {
                     <div className="text-sm font-bold text-red-650">
                       بدهی: <span className="font-mono">{currentDebt.toLocaleString()}</span> تومان
                     </div>
-                    <div className="text-xs text-slate-550 mt-1">
-                      سقف مجاز: <span className="font-mono">{limit.toLocaleString()}</span> تومان
+                    <div className="text-xs text-slate-550 mt-1 flex items-center gap-1.5 flex-wrap">
+                      <span>سقف مجاز:</span>
+                      {isUnlimited ? (
+                        <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[11px] inline-flex items-center gap-1">
+                          ⚡ سقف آزاد (نامحدود)
+                        </span>
+                      ) : (
+                        <span className="font-mono font-semibold">{limit.toLocaleString()} تومان</span>
+                      )}
                     </div>
                     <div className="text-xs text-emerald-600 font-semibold mt-0.5">
-                      اعتبار باقیمانده: <span className="font-mono">{remains.toLocaleString()}</span> تومان
+                      اعتبار باقیمانده: {isUnlimited ? (
+                        <span className="font-bold text-emerald-700">نامحدود (سقف آزاد)</span>
+                      ) : (
+                        <span className="font-mono">{remains?.toLocaleString()} تومان</span>
+                      )}
                     </div>
                     <div className="text-xs text-purple-700 font-semibold mt-0.5 bg-purple-50 px-1.5 py-0.5 rounded inline-block">
                       واریزی‌ها / تسویه‌ها: <span className="font-mono">{(u.totalPayments || 0).toLocaleString()}</span> تومان
@@ -2143,6 +2202,17 @@ function SellersView() {
                   </td>
                   <td className="px-6 py-4 text-left flex items-center justify-end gap-2 h-20">
                     <button
+                      onClick={() => toggleUnlimitedLimit(u.chatId, !!isUnlimited)}
+                      className={`px-2.5 py-1.5 rounded-md font-medium text-xs transition border ${
+                        isUnlimited
+                          ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 border-amber-200'
+                          : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border-emerald-200'
+                      }`}
+                      title="تغییر وضعیت سقف بین آزاد (نامحدود) و عددی"
+                    >
+                      {isUnlimited ? '🔒 محدود کردن سقف' : '⚡ سقف آزاد'}
+                    </button>
+                    <button
                       onClick={() => recalculateSeller(u.chatId)}
                       className="px-2.5 py-1.5 bg-amber-50 text-amber-800 hover:bg-amber-100 rounded-md font-medium text-xs transition border border-amber-200"
                       title="محاسبه مجدد بدهی، تخفیفات و واریزی‌ها"
@@ -2156,7 +2226,7 @@ function SellersView() {
                       تخفیف‌های پیشرفته
                     </button>
                     <button
-                      onClick={() => changeLimits(u.chatId, u.debtLimit, u.debtVolume, u.debt, u.sellerDiscount)}
+                      onClick={() => changeLimits(u.chatId, u.debtLimit, u.debtVolume, u.debt, u.sellerDiscount, isUnlimited)}
                       className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition"
                     >
                       ویرایش سقف و بدهی
