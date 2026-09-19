@@ -6,7 +6,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials } from "./server/bot.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase } from "./server/bot.js";
 import { xui } from "./server/xui.js";
 import { encryptData, decryptData } from "./server/crypto.js";
 
@@ -467,6 +467,7 @@ async function startServer() {
     if (user.isSeller) {
       user.totalPayments = (user.totalPayments || 0) + parsedAmount;
       user.debt = Math.max(0, (user.debt || 0) - parsedAmount);
+      applyPaygSettlementToUser(user, parsedAmount, user.debt === 0);
       db.saveUser(user);
       checkPaygReactivation(user).catch(console.error);
 
@@ -536,7 +537,16 @@ async function startServer() {
       }
     }
     if (debtVolume !== undefined) user.debtVolume = Number(debtVolume);
-    if (debt !== undefined) user.debt = Number(debt);
+    if (debt !== undefined) {
+      const newDebt = Math.max(0, Number(debt));
+      const oldDebt = user.debt || 0;
+      if (newDebt < oldDebt) {
+        const diffSettled = oldDebt - newDebt;
+        user.totalPayments = (user.totalPayments || 0) + diffSettled;
+        applyPaygSettlementToUser(user, diffSettled, newDebt === 0);
+      }
+      user.debt = newDebt;
+    }
     if (sellerDiscount !== undefined) user.sellerDiscount = Number(sellerDiscount);
     if (sellerDiscounts !== undefined) user.sellerDiscounts = sellerDiscounts;
     
@@ -595,15 +605,43 @@ async function startServer() {
     user.totalPayments = (user.totalPayments || 0) + settledAmount;
     user.debt = 0;
     user.debtVolume = 0; // Reset active package volume debt too
+    applyPaygSettlementToUser(user, settledAmount, true);
     db.saveUser(user);
 
     const settleMsg = `💵 <b>حساب بدهی شما توسط مدیریت تسویه گردید.</b>\n\n` +
       `▫️ مبلغ تسویه شده: <b>${settledAmount.toLocaleString()}</b> تومان\n` +
       `▫️ بدهی فعلی: <b>0</b> تومان\n` +
-      `▫️ مجموع کل پرداخت‌ها و تسویه‌ها: <b>${(user.totalPayments || 0).toLocaleString()}</b> تومان`;
+      `▫️ مجموع کل پرداخت‌ها و تسویه‌ها: <b>${(user.totalPayments || 0).toLocaleString()}</b> تومان\n\n` +
+      `⚡ کلیه کانفیگ‌های مصرف آزاد (PAYG) تا حجم مصرفی فعلی تسویه و محاسبه جدید از این به بعد اعمال می‌گردد.`;
     sendDirectMessage(user.chatId, settleMsg).catch(console.error);
 
-    res.json({ success: true, debt: user.debt, debtVolume: user.debtVolume, totalPayments: user.totalPayments });
+    res.json({ success: true, debt: user.debt, debtVolume: user.debtVolume, totalPayments: user.totalPayments, user });
+  });
+
+  api.post("/users/:chatId/purchases/:purchaseId/settle-payg", async (req, res) => {
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
+    const result = settleSinglePaygPurchase(user, req.params.purchaseId);
+    if (!result.success) return res.status(400).json(result);
+    await syncAllUsersAndSellersFinancials();
+    const updated = db.getUser(parseInt(req.params.chatId));
+    res.json({ success: true, message: result.message, user: updated, users: db.getState().users });
+  });
+
+  api.post("/users/:chatId/purchases/:purchaseId/set-base-volume", async (req, res) => {
+    const { baseGb } = req.body;
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
+    const parsedGb = parseFloat(baseGb);
+    if (isNaN(parsedGb) || parsedGb < 0) {
+      return res.status(400).json({ success: false, message: 'مقدار گیگابایت نامعتبر است' });
+    }
+    const baseBytes = Math.round(parsedGb * 1024 * 1024 * 1024);
+    const result = settleSinglePaygPurchase(user, req.params.purchaseId, baseBytes);
+    if (!result.success) return res.status(400).json(result);
+    await syncAllUsersAndSellersFinancials();
+    const updated = db.getUser(parseInt(req.params.chatId));
+    res.json({ success: true, message: result.message, user: updated, users: db.getState().users });
   });
 
   api.post("/users/:chatId/recalculate", async (req, res) => {
@@ -611,7 +649,7 @@ async function startServer() {
     if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
     await syncAllUsersAndSellersFinancials();
     const updated = db.getUser(parseInt(req.params.chatId));
-    res.json({ success: true, user: updated });
+    res.json({ success: true, user: updated, users: db.getState().users });
   });
 
   api.post("/sellers/sync-financials", async (req, res) => {

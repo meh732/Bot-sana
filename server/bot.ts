@@ -57,6 +57,60 @@ export function getSellerDiscountForProduct(user: any, product?: any): number {
   return sellerDiscount;
 }
 
+export function applyPaygSettlementToUser(user: any, amount?: number, isFullSettlement: boolean = false) {
+  if (!user || !user.purchases || user.purchases.length === 0) return;
+  const paygPurchases = user.purchases.filter((p: any) => p.isPayAsYouGo && !p.isDeleted);
+  if (paygPurchases.length === 0) return;
+
+  if (isFullSettlement || (user.debt !== undefined && user.debt <= 0)) {
+    for (const p of paygPurchases) {
+      const currentBytes = p.lastUsedBytes || 0;
+      p.baseSettledBytes = currentBytes;
+    }
+    return;
+  }
+
+  if (amount && amount > 0) {
+    let remaining = amount;
+    for (const p of paygPurchases) {
+      if (remaining <= 0) break;
+      const lastUsed = p.lastUsedBytes || 0;
+      const baseSettled = p.baseSettledBytes || 0;
+      if (lastUsed > baseSettled) {
+        const unsettledBytes = lastUsed - baseSettled;
+        const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 1000;
+        const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user);
+        const discountedPricePerGb = Math.max(1, Math.round(rawPricePerGb * (1 - discountPct / 100)));
+        const unsettledCost = Math.ceil((unsettledBytes / (1024 * 1024 * 1024)) * discountedPricePerGb);
+
+        if (remaining >= unsettledCost) {
+          p.baseSettledBytes = lastUsed;
+          remaining -= unsettledCost;
+        } else {
+          const settledBytes = Math.round((remaining / discountedPricePerGb) * (1024 * 1024 * 1024));
+          p.baseSettledBytes = Math.min(lastUsed, baseSettled + settledBytes);
+          remaining = 0;
+        }
+      }
+    }
+  }
+}
+
+export function settleSinglePaygPurchase(user: any, purchaseId: string, customBaseBytes?: number): { success: boolean; settledGb: number; message: string } {
+  if (!user || !user.purchases) return { success: false, settledGb: 0, message: 'کاربر یا خریدی یافت نشد' };
+  const p = user.purchases.find((item: any) => item.id === purchaseId && item.isPayAsYouGo);
+  if (!p) return { success: false, settledGb: 0, message: 'کانفیگ مصرف آزاد یافت نشد' };
+
+  const targetBytes = customBaseBytes !== undefined ? Math.max(0, customBaseBytes) : (p.lastUsedBytes || 0);
+  p.baseSettledBytes = targetBytes;
+  if ((p.lastUsedBytes || 0) < targetBytes) {
+    p.lastUsedBytes = targetBytes;
+  }
+  const settledGb = Number((targetBytes / (1024 * 1024 * 1024)).toFixed(2));
+  db.saveUser(user);
+  return { success: true, settledGb, message: `مصرف تا حجم ${settledGb} گیگابایت تسویه شد و از این حجم به بعد محاسبه خواهد شد.` };
+}
+
 function getProductButtonText(user: any, p: any): string {
   const isPayG = !!p.isPayAsYouGo;
   const unit = isPayG ? 'تومان/گیگ' : 'تومان';
@@ -137,7 +191,11 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       `📑 *شماره سفارش*: \`${purchase.id}\`\n` +
       `📦 *حجم*: ${volumeText} | ⏳ *مدت*: ${durationText}\n` +
       (purchase.isPayAsYouGo ? `💸 *هزینه هر گیگ مصرف*: ${purchase.pricePerGb?.toLocaleString()} تومان\n` : '') +
-      (purchase.isPayAsYouGo ? `📊 *مصرف فعلی*: ${((purchase.lastUsedBytes || 0) / (1024*1024*1024)).toFixed(2)} گیگابایت\n\n` : '\n') +
+      (purchase.isPayAsYouGo ? (
+        `📊 *کل مصرف تا امروز*: ${((purchase.lastUsedBytes || 0) / (1024*1024*1024)).toFixed(2)} گیگابایت\n` +
+        ((purchase.baseSettledBytes || 0) > 0 ? `💳 *حجم تسویه شده*: ${((purchase.baseSettledBytes || 0) / (1024*1024*1024)).toFixed(2)} گیگابایت\n` : '') +
+        `📈 *مصرف دوره جاری (از تسویه به بعد)*: ${(Math.max(0, (purchase.lastUsedBytes || 0) - (purchase.baseSettledBytes || 0)) / (1024*1024*1024)).toFixed(2)} گیگابایت\n\n`
+      ) : '\n') +
       `🔗 *لینک اشتراک شما (سابسکریپشن)*:\n\`${purchase.subUrl}\`\n\n` +
       `✅ جهت استفاده، بارکد بالا را اسکن کنید و یا لینک فوق را کپی کرده و در نرم‌افزار ایمپورت نمایید. (سپس از منوی نرم‌افزار Update Subscription را بزنید)`;
 
@@ -417,6 +475,7 @@ export async function initBot() {
         newPurchase.originalPricePerGb = product.price;
         newPurchase.pricePerGb = effectiveDiscount > 0 ? Math.max(0, Math.round(product.price * (1 - effectiveDiscount / 100))) : product.price;
         newPurchase.lastUsedBytes = 0;
+        newPurchase.baseSettledBytes = 0;
       }
 
       user.purchases = user.purchases || [];
@@ -542,6 +601,7 @@ export async function initBot() {
       let totalOriginalPrice = 0;
       let totalFinalPrice = 0;
       let totalDiscounts = 0;
+      let paygDetailsList: string[] = [];
 
       purchases.forEach((p: any) => {
         totalAllocatedGb += p.volumeGb || 0;
@@ -569,13 +629,27 @@ export async function initBot() {
         let fin = 0;
 
         if (p.isPayAsYouGo) {
-          const paygGb = currentUsed / (1024 * 1024 * 1024);
+          const baseSettled = p.baseSettledBytes || 0;
+          const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
+          const billableBytes = Math.max(0, currentUsed - effectiveBase);
+          const billableGb = billableBytes / (1024 * 1024 * 1024);
+          const settledGb = effectiveBase / (1024 * 1024 * 1024);
+
           const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
           const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(seller);
           const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
 
-          orig = Math.ceil(paygGb * rawPricePerGb);
-          fin = Math.ceil(paygGb * discountedPricePerGb);
+          const settledOrig = Math.ceil(settledGb * rawPricePerGb);
+          const settledFin = Math.ceil(settledGb * discountedPricePerGb);
+
+          const currentOrig = Math.ceil(billableGb * rawPricePerGb);
+          const currentFin = Math.ceil(billableGb * discountedPricePerGb);
+
+          orig = settledOrig + currentOrig;
+          fin = settledFin + currentFin;
+
+          const configName = p.name || p.id || 'سرویس مصرف آزاد';
+          paygDetailsList.push(`▫️ *${configName}*:\n   کل مصرف: ${((currentUsed)/(1024*1024*1024)).toFixed(2)} GB | تسویه شده: ${(settledGb).toFixed(2)} GB | محاسبه جدید: *${(billableGb).toFixed(2)} GB* (*${currentFin.toLocaleString()}* ت)`);
         } else {
           orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
           fin = p.price !== undefined ? p.price : 0;
@@ -636,7 +710,8 @@ export async function initBot() {
         `▫️ بدهی قطعی و باقیمانده فعلی: *${debtVal.toLocaleString()}* تومان\n\n` +
         `💳 *وضعیت سقف اعتبار خرید:*\n` +
         `▫️ سقف بدهی مجاز: ${limitStr}\n` +
-        `▫️ اعتبار خرید باقیمانده: ${remainsStr}\n`;
+        `▫️ اعتبار خرید باقیمانده: ${remainsStr}\n\n` +
+        (paygDetailsList.length > 0 ? `⚡ *وضعیت کانفیگ‌های مصرف آزاد (PAYG):*\n${paygDetailsList.join('\n\n')}\n\n` : '');
 
       const inline_keyboard: any[] = [];
       if (isAdminContext) {
@@ -644,6 +719,11 @@ export async function initBot() {
           { text: '💵 تسویه حساب این همکار', callback_data: `admin_settle_specific_${seller.chatId}` },
           { text: '🔄 اصلاح و همگام‌سازی تراز', callback_data: `admin_recalc_seller_${seller.chatId}` }
         ]);
+        if (paygDetailsList.length > 0) {
+          inline_keyboard.push([
+            { text: '⚡ تسویه مصرف لحظه‌ای تا حجم فعلی', callback_data: `admin_settle_payg_${seller.chatId}` }
+          ]);
+        }
         inline_keyboard.push([
           { text: isUnlimited ? '🔒 تبدیل به سقف محدود عددی' : '⚡ تبدیل به سقف آزاد (نامحدود)', callback_data: `toggle_unlimited_seller_${seller.chatId}` },
           { text: '⚙️ تنظیم سقف اعتبار عددی', callback_data: `set_seller_limit_${seller.chatId}` }
@@ -1740,6 +1820,7 @@ export async function initBot() {
               if (targetUser.isSeller) {
                 targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
                 targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
+                applyPaygSettlementToUser(targetUser, amount, targetUser.debt === 0);
                 db.saveUser(targetUser);
                 checkPaygReactivation(targetUser).catch(console.error);
                 bot!.sendMessage(chatId, `✅ مبلغ *${amount.toLocaleString()}* تومان به عنوان واریزی/پرداخت بدهی همکار با موفقیت ثبت شد.\n\n📉 بدهی باقیمانده فعلی: *${(targetUser.debt || 0).toLocaleString()}* تومان\n💳 مجموع کل پرداخت‌ها: *${(targetUser.totalPayments || 0).toLocaleString()}* تومان`, { parse_mode: 'Markdown' });
@@ -1862,6 +1943,7 @@ export async function initBot() {
         if (targetUser.isSeller) {
           targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
           targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
+          applyPaygSettlementToUser(targetUser, amount, targetUser.debt === 0);
           db.saveUser(targetUser);
           checkPaygReactivation(targetUser).catch(console.error);
           bot!.sendMessage(chatId, `✅ مبلغ *${amount.toLocaleString()}* تومان به حساب پرداختی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} منظور شد.\nبدهی باقیمانده: *${(targetUser.debt || 0).toLocaleString()}* تومان\nمجموع کل پرداخت‌ها: *${(targetUser.totalPayments || 0).toLocaleString()}* تومان`, { parse_mode: 'Markdown' });
@@ -1962,6 +2044,7 @@ export async function initBot() {
         const settledAmount = targetUser.debt || 0;
         targetUser.totalPayments = (targetUser.totalPayments || 0) + settledAmount;
         targetUser.debt = 0;
+        applyPaygSettlementToUser(targetUser, settledAmount, true);
         db.saveUser(targetUser);
         bot!.sendMessage(chatId, `✅ بدهی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت صفر شد (تسویه حساب کامل).`);
         bot!.sendMessage(targetUser.chatId, '💵 حساب بدهی شما توسط مدیریت تسویه شد و به صفر بازگشت.').catch(() => {});
@@ -2437,6 +2520,7 @@ export async function initBot() {
             if (targetUser.isSeller) {
               targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
               targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
+              applyPaygSettlementToUser(targetUser, amount, targetUser.debt === 0);
             } else {
               targetUser.balance = (targetUser.balance || 0) + amount;
             }
@@ -2801,12 +2885,30 @@ export async function initBot() {
           const settledAmount = targetUser.debt || 0;
           targetUser.totalPayments = (targetUser.totalPayments || 0) + settledAmount;
           targetUser.debt = 0;
+          applyPaygSettlementToUser(targetUser, settledAmount, true);
           db.saveUser(targetUser);
           
-          bot!.sendMessage(chatId, `✅ بدهی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت صفر شد (تسویه حساب کامل).`);
+          bot!.sendMessage(chatId, `✅ بدهی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت صفر شد (تسویه حساب کامل). تمام کانفیگ‌های مصرف لحظه‌ای نیز تا این حجم تسویه شدند.`);
           bot!.sendMessage(targetUser.chatId, '💵 حساب بدهی شما توسط مدیریت تسویه شد و به صفر بازگشت.').catch(() => {});
           
           // Re-send report to reflect changes
+          await sendDetailedSellerReport(chatId, targetChatId, true);
+        } else {
+          bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
+        }
+      }
+      bot!.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (data && data.startsWith('admin_settle_payg_')) {
+      if (isAdmin) {
+        const targetChatId = parseInt(data.replace('admin_settle_payg_', ''));
+        const targetUser = db.getUser(targetChatId);
+        if (targetUser) {
+          applyPaygSettlementToUser(targetUser, undefined, true);
+          db.saveUser(targetUser);
+          bot!.sendMessage(chatId, `⚡ تمام کانفیگ‌های مصرف لحظه‌ای (PAYG) همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} تا حجم مصرفی فعلی تسویه شدند و از این حجم به بعد محاسبه خواهند شد.`);
           await sendDetailedSellerReport(chatId, targetChatId, true);
         } else {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
@@ -3614,9 +3716,16 @@ export async function initBot() {
 
               // PAY AS YOU GO (مصرف آزاد / بدون محدودیت) Real-time billing
               if (purchase.isPayAsYouGo && enable) {
-                  const lastUsed = purchase.lastUsedBytes || 0;
-                  if (used > lastUsed) {
-                      const diffBytes = used - lastUsed;
+                  const baseSettled = purchase.baseSettledBytes || 0;
+                  // Handle case if traffic in X-UI was reset to less than baseSettled
+                  if (used < (purchase.lastUsedBytes || 0) && used < baseSettled) {
+                      purchase.baseSettledBytes = 0;
+                      purchase.lastUsedBytes = used;
+                  }
+
+                  const effectiveLastUsed = Math.max(purchase.baseSettledBytes || 0, purchase.lastUsedBytes || 0);
+                  if (used > effectiveLastUsed) {
+                      const diffBytes = used - effectiveLastUsed;
                       const diffGb = diffBytes / (1024 * 1024 * 1024);
                       const rawPricePerGb = purchase.originalPricePerGb || purchase.pricePerGb || 0;
                       
@@ -3675,6 +3784,9 @@ export async function initBot() {
                               }
                           }
                       }
+                  } else if (used > (purchase.lastUsedBytes || 0)) {
+                      purchase.lastUsedBytes = used;
+                      userChanged = true;
                   }
               }
 
@@ -3905,16 +4017,24 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
           let fin = p.price !== undefined ? p.price : 0;
 
           if (p.isPayAsYouGo) {
-            const paygGb = currentUsed / (1024 * 1024 * 1024);
+            const baseSettled = p.baseSettledBytes || 0;
+            const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
+            const billableBytes = Math.max(0, currentUsed - effectiveBase);
+            const billableGb = billableBytes / (1024 * 1024 * 1024);
+            const settledGb = effectiveBase / (1024 * 1024 * 1024);
+
             const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
             const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user);
             const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
 
-            const paygOrigCost = Math.ceil(paygGb * rawPricePerGb);
-            const paygFinCost = Math.ceil(paygGb * discountedPricePerGb);
+            const settledOrig = Math.ceil(settledGb * rawPricePerGb);
+            const settledFin = Math.ceil(settledGb * discountedPricePerGb);
 
-            orig += paygOrigCost;
-            fin += paygFinCost;
+            const currentOrig = Math.ceil(billableGb * rawPricePerGb);
+            const currentFin = Math.ceil(billableGb * discountedPricePerGb);
+
+            orig = settledOrig + currentOrig;
+            fin = settledFin + currentFin;
           } else {
             if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
               orig = Math.round(fin / (1 - p.discountPercent / 100));

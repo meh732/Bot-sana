@@ -48,6 +48,7 @@ export interface Purchase {
   isPayAsYouGo?: boolean;
   pricePerGb?: number;
   lastUsedBytes?: number;
+  baseSettledBytes?: number; // Volume in bytes already settled / paid for
   paygDisabled?: boolean;
   warnedPayg?: boolean;
   warnedData?: boolean;
