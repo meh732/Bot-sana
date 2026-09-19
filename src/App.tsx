@@ -1702,6 +1702,39 @@ function UsersView() {
   )
 }
 
+function parseAmountInput(input: any): number | null {
+  if (input === null || input === undefined) return null;
+  let str = String(input).trim().toLowerCase();
+  if (str === '') return null;
+  
+  if (['0', 'آزاد', 'نامحدود', 'سقف آزاد', 'unlimited', 'free', '-1', 'ندارد'].includes(str)) {
+    return 0;
+  }
+  
+  // Convert Persian & Arabic digits
+  str = str.replace(/[۰-۹]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1728));
+  str = str.replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1584));
+  
+  // Check for million / ملیون / میلیون / mil / million / m
+  const millionMatch = str.match(/([\d\.]+)\s*(میلیون|ملیون|mil|million|m)/i);
+  if (millionMatch) {
+    const num = parseFloat(millionMatch[1]);
+    if (!isNaN(num)) return Math.round(num * 1000000);
+  }
+  
+  // Check for thousand / هزار / k / thousand / hezar
+  const thousandMatch = str.match(/([\d\.]+)\s*(هزار|k|thousand|hezar)/i);
+  if (thousandMatch) {
+    const num = parseFloat(thousandMatch[1]);
+    if (!isNaN(num)) return Math.round(num * 1000);
+  }
+  
+  // Remove non-numeric characters except digits and decimal point
+  str = str.replace(/[^\d\.]/g, '');
+  const num = parseFloat(str);
+  return isNaN(num) ? null : Math.round(num);
+}
+
 function SellersView() {
   const [users, setUsers] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -1783,15 +1816,16 @@ function SellersView() {
     }
     setLoading(true);
     try {
-      const limitNum = Number(newLimit);
-      const isUnlimited = limitNum <= 0 && newLimit.trim() !== '';
+      const parsedLimit = parseAmountInput(newLimit);
+      const isUnlimited = parsedLimit !== null && parsedLimit <= 0;
+      const finalLimit = isUnlimited ? 0 : (parsedLimit === null ? 1000000 : parsedLimit);
       const res = await fetch('/api/users/add-seller', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chatId: newChatId,
           username: newUsername,
-          debtLimit: isUnlimited ? 0 : (limitNum || 1000000),
+          debtLimit: finalLimit,
           isUnlimitedLimit: isUnlimited,
         }),
       });
@@ -1874,12 +1908,12 @@ function SellersView() {
 
   const changeLimits = async (chatId: number, currentLimit?: number, currentVolumeGob?: number, currentDebt?: number, currentDiscount?: number, isUnlimited?: boolean) => {
     const limitPrompt = prompt(
-      'سقف بدهی مجاز همکار را به تومان وارد کنید (برای سقف آزاد و نامحدود، عدد 0 را وارد نمایید):',
+      'سقف بدهی مجاز همکار را وارد کنید (به تومان، مثلاً 4000000 یا ۴ میلیون | برای سقف آزاد عدد 0 یا کلمه «آزاد» را وارد نمایید):',
       isUnlimited ? '0' : String(currentLimit || 1000000)
     );
     if (limitPrompt === null) return;
-    const newLimitNum = Number(limitPrompt);
-    if (isNaN(newLimitNum)) {
+    const parsedLimit = parseAmountInput(limitPrompt);
+    if (parsedLimit === null || parsedLimit < 0) {
       alert('مقدار سقف بدهی وارد شده معتبر نیست.');
       return;
     }
@@ -1889,18 +1923,20 @@ function SellersView() {
       String(currentVolumeGob || 0)
     );
     if (valVolumePrompt === null) return;
-    const newVolumeNum = Number(valVolumePrompt);
+    const parsedVolume = parseAmountInput(valVolumePrompt);
+    const newVolumeNum = parsedVolume !== null ? parsedVolume : Number(valVolumePrompt);
     if (isNaN(newVolumeNum)) {
       alert('مقدار حجم بدهی وارد شده معتبر نیست.');
       return;
     }
 
     const valDebtPrompt = prompt(
-      'میزان بدهی مالی فعلی همکار را وارد کنید (تومان):',
+      'میزان بدهی مالی فعلی همکار را وارد کنید (تومان - مثلاً 0 یا 50000):',
       String(currentDebt || 0)
     );
     if (valDebtPrompt === null) return;
-    const newDebtNum = Number(valDebtPrompt);
+    const parsedDebt = parseAmountInput(valDebtPrompt);
+    const newDebtNum = parsedDebt !== null ? parsedDebt : Number(valDebtPrompt);
     if (isNaN(newDebtNum)) {
       alert('مقدار بدهی مالی وارد شده معتبر نیست.');
       return;
@@ -1917,13 +1953,13 @@ function SellersView() {
       return;
     }
 
-    const newIsUnlimited = newLimitNum <= 0;
+    const newIsUnlimited = parsedLimit === 0;
 
     const res = await fetch(`/api/users/${chatId}/seller-limits`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        debtLimit: newIsUnlimited ? 0 : newLimitNum,
+        debtLimit: parsedLimit,
         debtVolume: newVolumeNum,
         debt: newDebtNum,
         sellerDiscount: newDiscountNum,
@@ -1932,20 +1968,11 @@ function SellersView() {
     });
     const data = await res.json();
     if (data.success) {
-      setUsers(
-        users.map((u) =>
-          u.chatId === chatId
-            ? {
-                ...u,
-                debtLimit: newIsUnlimited ? 0 : newLimitNum,
-                debtVolume: newVolumeNum,
-                debt: newDebtNum,
-                sellerDiscount: newDiscountNum,
-                isUnlimitedLimit: newIsUnlimited,
-              }
-            : u
-        )
-      );
+      if (data.users) {
+        setUsers(data.users);
+      } else if (data.user) {
+        setUsers(users.map((u) => (u.chatId === chatId ? data.user : u)));
+      }
       alert('تغییرات با موفقیت ذخیره گردید.');
     }
   };
@@ -2324,7 +2351,7 @@ function SellersView() {
           <tbody>
             {sellers.map((u) => {
               const currentDebt = u.debt || 0;
-              const isUnlimited = u.isUnlimitedLimit || (u.debtLimit === 0);
+              const isUnlimited = u.isUnlimitedLimit || (u.debtLimit !== undefined && u.debtLimit <= 0);
               const limit = u.debtLimit !== undefined && u.debtLimit > 0 ? u.debtLimit : 1000000;
               const remains = isUnlimited ? null : Math.max(0, limit - currentDebt);
               return (
@@ -2354,11 +2381,13 @@ function SellersView() {
                         <span className="font-mono font-semibold">{limit.toLocaleString()} تومان</span>
                       )}
                     </div>
-                    <div className="text-xs text-emerald-600 font-semibold mt-0.5">
+                    <div className="text-xs font-semibold mt-0.5">
                       اعتبار باقیمانده: {isUnlimited ? (
                         <span className="font-bold text-emerald-700">نامحدود (سقف آزاد)</span>
+                      ) : remains! > 0 ? (
+                        <span className="font-mono text-emerald-700 font-bold">{remains?.toLocaleString()} تومان</span>
                       ) : (
-                        <span className="font-mono">{remains?.toLocaleString()} تومان</span>
+                        <span className="font-mono text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-bold">۰ تومان (سقف پر شده)</span>
                       )}
                     </div>
                     <div className="text-xs text-purple-700 font-semibold mt-0.5 bg-purple-50 px-1.5 py-0.5 rounded inline-block">

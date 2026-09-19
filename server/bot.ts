@@ -26,6 +26,39 @@ function normalizePersianText(str: string): string {
     .trim();
 }
 
+export function parseAmountInput(input: any): number | null {
+  if (input === null || input === undefined) return null;
+  let str = String(input).trim().toLowerCase();
+  if (str === '') return null;
+  
+  if (['0', 'آزاد', 'نامحدود', 'سقف آزاد', 'unlimited', 'free', '-1', 'ندارد'].includes(str)) {
+    return 0;
+  }
+  
+  // Convert Persian & Arabic digits
+  str = str.replace(/[۰-۹]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1728));
+  str = str.replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1584));
+  
+  // Check for million / ملیون / میلیون / mil / million / m
+  const millionMatch = str.match(/([\d\.]+)\s*(میلیون|ملیون|mil|million|m)/i);
+  if (millionMatch) {
+    const num = parseFloat(millionMatch[1]);
+    if (!isNaN(num)) return Math.round(num * 1000000);
+  }
+  
+  // Check for thousand / هزار / k / thousand / hezar
+  const thousandMatch = str.match(/([\d\.]+)\s*(هزار|k|thousand|hezar)/i);
+  if (thousandMatch) {
+    const num = parseFloat(thousandMatch[1]);
+    if (!isNaN(num)) return Math.round(num * 1000);
+  }
+  
+  // Remove non-numeric characters except digits and decimal point
+  str = str.replace(/[^\d\.]/g, '');
+  const num = parseFloat(str);
+  return isNaN(num) ? null : Math.round(num);
+}
+
 export function isSellerUnlimitedLimit(user?: { isSeller?: boolean; debtLimit?: number | null; isUnlimitedLimit?: boolean }): boolean {
   if (!user || !user.isSeller) return false;
   if (user.isUnlimitedLimit === true) return true;
@@ -702,34 +735,28 @@ export async function initBot() {
       }
 
       // Reconcile current debt:
-      // For pure PAYG sellers, active debt can ONLY be the unsettled active usage of the current cycle.
-      // For sellers with fixed packages, settled PAYG must NEVER be counted into debt!
-      const hasOnlyPayg = purchases.length > 0 && purchases.every((p: any) => p.isPayAsYouGo);
-      let debtVal = seller.debt || 0;
+      // 1. Unsettled active PAYG traffic is ALWAYS active debt of the current billing cycle.
+      // 2. Fixed packages: totalFixedFin is the sum of fixed package prices.
+      // 3. Recorded payments: seller.totalPayments is total money paid/settled by the seller.
+      // 4. Settled PAYG accounts for totalPaygSettledFin of the recorded payments.
+      // 5. Any payments beyond settled PAYG cover fixed packages.
+      const recordedPayments = seller.totalPayments || 0;
+      const paymentsForFixed = Math.max(0, recordedPayments - totalPaygSettledFin);
+      const activeFixedDebt = Math.max(0, totalFixedFin - paymentsForFixed);
+      const trueActiveDebt = activeFixedDebt + totalPaygActiveDebt;
 
-      if (hasOnlyPayg) {
-        if (debtVal !== totalPaygActiveDebt) {
-          debtVal = totalPaygActiveDebt;
-          seller.debt = debtVal;
-          sellerChanged = true;
-        }
-      } else if (hasPayg) {
-        const maxPossibleDebt = Math.max(0, totalFixedFin + totalPaygActiveDebt);
-        if (debtVal > maxPossibleDebt) {
-          debtVal = maxPossibleDebt;
-          seller.debt = debtVal;
-          sellerChanged = true;
-        }
-      } else {
-        if (debtVal > totalFinalPrice) {
-          debtVal = totalFinalPrice;
-          seller.debt = debtVal;
-          sellerChanged = true;
-        }
+      let debtVal = trueActiveDebt;
+      if (purchases.length === 0) {
+        debtVal = seller.debt || 0;
       }
 
-      // Total payments is the difference between total sales and active debt
-      const totalPayments = Math.max(seller.totalPayments || 0, totalFinalPrice - debtVal);
+      if (seller.debt !== debtVal) {
+        seller.debt = debtVal;
+        sellerChanged = true;
+      }
+
+      // Total payments is at least recordedPayments or totalFinalPrice - debtVal
+      const totalPayments = Math.max(recordedPayments, totalFinalPrice - debtVal);
       if (seller.totalPayments !== totalPayments) {
         seller.totalPayments = totalPayments;
         sellerChanged = true;
@@ -1935,32 +1962,49 @@ export async function initBot() {
 
       if (sessionType.startsWith('set_seller_limit_')) {
         const targetUid = parseInt(sessionType.replace('set_seller_limit_', ''));
-        const inputStr = text.trim().toLowerCase();
+        const inputStr = text.trim();
         const targetUser = db.getUser(targetUid);
         if (!targetUser) {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         } else {
-          if (inputStr === '0' || inputStr === 'آزاد' || inputStr === 'نامحدود' || inputStr === '-1') {
+          const parsed = parseAmountInput(inputStr);
+          if (parsed === null || parsed < 0) {
+            bot!.sendMessage(
+              chatId,
+              '❌ مبلغ یا عبارت وارد شده نامعتبر است.\n\nشما می‌توانید مبلغ را به تومان ارسال کنید (مثلاً `4000000` یا `۴ میلیون` یا `4 ملیون`) یا برای سقف نامحدود عدد `0` یا کلمه «آزاد» را ارسال نمایید.',
+              { parse_mode: 'Markdown' }
+            );
+          } else if (parsed === 0) {
             targetUser.isUnlimitedLimit = true;
             targetUser.debtLimit = 0;
             db.saveUser(targetUser);
-            await checkPaygReactivation(targetUser);
-            bot!.sendMessage(chatId, `✅ سقف اعتبار همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} به صورت «سقف آزاد (نامحدود)» تنظیم گردید.`);
-            bot!.sendMessage(targetUser.chatId, `📢 سقف اعتبار حساب کاربری شما به صورت آزاد (نامحدود) تنظیم گردید.`).catch(() => {});
+            await syncAllUsersAndSellersFinancials();
+            const updated = db.getUser(targetUid) || targetUser;
+            await checkPaygReactivation(updated);
+            bot!.sendMessage(chatId, `✅ سقف اعتبار همکار 👤 ${updated.username ? '@' + updated.username : updated.chatId} به صورت «سقف آزاد (نامحدود)» تنظیم گردید.`);
+            bot!.sendMessage(updated.chatId, `📢 سقف اعتبار حساب کاربری شما توسط مدیریت به صورت آزاد (نامحدود) تنظیم گردید.`).catch(() => {});
+            await sendDetailedSellerReport(chatId, targetUid, true);
           } else {
-            const newLimit = parseInt(inputStr.replace(/[^0-9]/g, ''));
-            if (isNaN(newLimit) || newLimit < 0) {
-              bot!.sendMessage(chatId, '❌ مبلغ سقف وارد شده نامعتبر است. عملیات لغو شد.');
+            targetUser.isUnlimitedLimit = false;
+            targetUser.debtLimit = parsed;
+            db.saveUser(targetUser);
+            await syncAllUsersAndSellersFinancials();
+            const updated = db.getUser(targetUid) || targetUser;
+            await checkPaygReactivation(updated);
+
+            const curDebt = updated.debt || 0;
+            const remaining = Math.max(0, parsed - curDebt);
+            let extraNote = '';
+            if (remaining === 0 && curDebt >= parsed) {
+              extraNote = `\n\n⚠️ *توجه*: بدهی فعلی همکار (*${curDebt.toLocaleString()}* تومان) به اندازه سقف تعیین شده یا بیشتر از آن است؛ لذا اعتبار باقیمانده فعلاً ۰ تومان است. در صورت تمایل می‌توانید سقف را بالاتر ببرید یا از گزینه «تسویه حساب» برای صفر کردن بدهی قبلی استفاده فرمایید.`;
             } else {
-              targetUser.isUnlimitedLimit = newLimit === 0;
-              targetUser.debtLimit = newLimit;
-              db.saveUser(targetUser);
-              await checkPaygReactivation(targetUser);
-              bot!.sendMessage(chatId, `✅ سقف اعتبار همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت به ${newLimit.toLocaleString()} تومان تغییر یافت.`);
-              bot!.sendMessage(targetUser.chatId, `📢 سقف اعتبار مجاز شما توسط مدیریت به ${newLimit.toLocaleString()} تومان بروزرسانی شد.`).catch(() => {});
+              extraNote = `\n▫️ اعتبار قابل خرید باقیمانده: *${remaining.toLocaleString()}* تومان`;
             }
+
+            bot!.sendMessage(chatId, `✅ سقف اعتبار همکار 👤 ${updated.username ? '@' + updated.username : updated.chatId} با موفقیت به *${parsed.toLocaleString()}* تومان تغییر یافت.${extraNote}`, { parse_mode: 'Markdown' });
+            bot!.sendMessage(updated.chatId, `📢 سقف اعتبار مجاز شما توسط مدیریت به *${parsed.toLocaleString()}* تومان بروزرسانی شد.`, { parse_mode: 'Markdown' }).catch(() => {});
+            await sendDetailedSellerReport(chatId, targetUid, true);
           }
-          await sendDetailedSellerReport(chatId, targetUid, true);
         }
         adminSession.delete(chatId);
         return;
@@ -4162,34 +4206,28 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
         }
 
         // Reconcile debt:
-        // For pure PAYG sellers: active debt is strictly the unsettled traffic of current billing cycle (totalPaygActiveDebt).
-        // For mixed sellers: debt cannot exceed total fixed packages + active unsettled PAYG. Settled PAYG is never debt!
-        const hasOnlyPayg = purchases.length > 0 && purchases.every((p: any) => p.isPayAsYouGo);
-        let correctDebt = user.debt || 0;
+        // 1. Unsettled active PAYG traffic is ALWAYS active debt of the current billing cycle.
+        // 2. Fixed packages: totalFixedFin is the sum of fixed package prices.
+        // 3. Recorded payments: user.totalPayments is total money paid/settled by the seller.
+        // 4. Settled PAYG accounts for totalPaygSettledFin of the recorded payments.
+        // 5. Any payments beyond settled PAYG cover fixed packages.
+        const recordedPayments = user.totalPayments || 0;
+        const paymentsForFixed = Math.max(0, recordedPayments - totalPaygSettledFin);
+        const activeFixedDebt = Math.max(0, totalFixedFin - paymentsForFixed);
+        const trueActiveDebt = activeFixedDebt + totalPaygActiveDebt;
 
-        if (hasOnlyPayg) {
-          if (correctDebt !== totalPaygActiveDebt) {
-            correctDebt = totalPaygActiveDebt;
-            user.debt = correctDebt;
-            userChanged = true;
-          }
-        } else if (hasPayg) {
-          const maxPossibleDebt = Math.max(0, totalFixedFin + totalPaygActiveDebt);
-          if (correctDebt > maxPossibleDebt) {
-            correctDebt = maxPossibleDebt;
-            user.debt = correctDebt;
-            userChanged = true;
-          }
-        } else {
-          if (correctDebt > totalFinalPrice) {
-            correctDebt = totalFinalPrice;
-            user.debt = correctDebt;
-            userChanged = true;
-          }
+        let correctDebt = trueActiveDebt;
+        if (purchases.length === 0) {
+          correctDebt = user.debt || 0;
+        }
+
+        if (user.debt !== correctDebt) {
+          user.debt = correctDebt;
+          userChanged = true;
         }
 
         // Reconcile totalPayments so that totalSales - totalPayments = debt
-        const correctPayments = Math.max(user.totalPayments || 0, totalFinalPrice - correctDebt);
+        const correctPayments = Math.max(recordedPayments, totalFinalPrice - correctDebt);
         if (user.totalPayments !== correctPayments) {
           user.totalPayments = correctPayments;
           userChanged = true;

@@ -6,7 +6,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase } from "./server/bot.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit } from "./server/bot.js";
 import { xui } from "./server/xui.js";
 import { encryptData, decryptData } from "./server/crypto.js";
 
@@ -520,15 +520,17 @@ async function startServer() {
     res.json({ success: true, testUsed: user.testUsed });
   });
 
-  api.post("/users/:chatId/seller-limits", (req, res) => {
+  api.post("/users/:chatId/seller-limits", async (req, res) => {
     const { debtLimit, debtVolume, debt, sellerDiscount, sellerDiscounts, isUnlimitedLimit } = req.body;
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
     
     if (debtLimit !== undefined) {
-      const num = Number(debtLimit);
-      user.debtLimit = isNaN(num) ? 0 : num;
-      user.isUnlimitedLimit = user.debtLimit <= 0;
+      const parsed = parseAmountInput(debtLimit);
+      if (parsed !== null) {
+        user.debtLimit = parsed;
+        user.isUnlimitedLimit = parsed <= 0;
+      }
     }
     if (isUnlimitedLimit !== undefined) {
       user.isUnlimitedLimit = !!isUnlimitedLimit;
@@ -536,9 +538,10 @@ async function startServer() {
         user.debtLimit = 0;
       }
     }
-    if (debtVolume !== undefined) user.debtVolume = Number(debtVolume);
+    if (debtVolume !== undefined) user.debtVolume = Number(debtVolume) || 0;
     if (debt !== undefined) {
-      const newDebt = Math.max(0, Number(debt));
+      const parsedDebt = parseAmountInput(debt);
+      const newDebt = parsedDebt !== null ? Math.max(0, parsedDebt) : Math.max(0, Number(debt) || 0);
       const oldDebt = user.debt || 0;
       if (newDebt < oldDebt) {
         const diffSettled = oldDebt - newDebt;
@@ -547,15 +550,17 @@ async function startServer() {
       }
       user.debt = newDebt;
     }
-    if (sellerDiscount !== undefined) user.sellerDiscount = Number(sellerDiscount);
+    if (sellerDiscount !== undefined) user.sellerDiscount = Number(sellerDiscount) || 0;
     if (sellerDiscounts !== undefined) user.sellerDiscounts = sellerDiscounts;
     
     db.saveUser(user);
-    checkPaygReactivation(user).catch(console.error);
-    res.json({ success: true, user });
+    await syncAllUsersAndSellersFinancials();
+    const updatedUser = db.getUser(user.chatId) || user;
+    await checkPaygReactivation(updatedUser).catch(console.error);
+    res.json({ success: true, user: updatedUser, users: db.getState().users });
   });
 
-  api.post("/users/add-seller", (req, res) => {
+  api.post("/users/add-seller", async (req, res) => {
     const { chatId, username, debtLimit, isUnlimitedLimit } = req.body;
     if (!chatId) {
       return res.status(400).json({ success: false, message: 'شناسه عددی کاربری الزاماً باید فرستاده شود.' });
@@ -565,9 +570,9 @@ async function startServer() {
       return res.status(400).json({ success: false, message: 'شناسه عددی وارد شده معتبر نمی‌باشد.' });
     }
 
-    const rawLimit = debtLimit !== undefined && debtLimit !== '' ? Number(debtLimit) : 1000000;
-    const unlim = isUnlimitedLimit === true || (!isNaN(rawLimit) && rawLimit <= 0);
-    const finalLimit = unlim ? 0 : (isNaN(rawLimit) ? 1000000 : rawLimit);
+    const parsedLimit = parseAmountInput(debtLimit);
+    const unlim = isUnlimitedLimit === true || (parsedLimit !== null && parsedLimit <= 0);
+    const finalLimit = unlim ? 0 : (parsedLimit === null ? 1000000 : parsedLimit);
 
     let user = db.getUser(numChatId);
     if (!user) {
@@ -583,19 +588,22 @@ async function startServer() {
         debtLimit: finalLimit,
         isUnlimitedLimit: unlim,
         totalSales: 0,
+        totalPayments: 0,
+        sellerDiscount: 0,
+        sellerDiscounts: [],
         purchases: []
       };
     } else {
       user.isSeller = true;
-      if (user.debt === undefined) user.debt = 0;
-      if (user.debtVolume === undefined) user.debtVolume = 0;
+      if (username) user.username = username;
       user.debtLimit = finalLimit;
       user.isUnlimitedLimit = unlim;
     }
-
     db.saveUser(user);
-    checkPaygReactivation(user).catch(console.error);
-    res.json({ success: true, users: db.getState().users });
+    await syncAllUsersAndSellersFinancials();
+    const updated = db.getUser(numChatId) || user;
+    await checkPaygReactivation(updated).catch(console.error);
+    res.json({ success: true, user: updated, users: db.getState().users });
   });
 
   api.post("/users/:chatId/settle", (req, res) => {
