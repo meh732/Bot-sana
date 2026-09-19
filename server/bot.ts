@@ -66,6 +66,8 @@ export function applyPaygSettlementToUser(user: any, amount?: number, isFullSett
     for (const p of paygPurchases) {
       const currentBytes = p.lastUsedBytes || 0;
       p.baseSettledBytes = currentBytes;
+      p.paygDisabled = false;
+      p.warnedPayg = false;
     }
     return;
   }
@@ -79,12 +81,14 @@ export function applyPaygSettlementToUser(user: any, amount?: number, isFullSett
       if (lastUsed > baseSettled) {
         const unsettledBytes = lastUsed - baseSettled;
         const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 1000;
-        const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user);
+        const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user, p);
         const discountedPricePerGb = Math.max(1, Math.round(rawPricePerGb * (1 - discountPct / 100)));
         const unsettledCost = Math.ceil((unsettledBytes / (1024 * 1024 * 1024)) * discountedPricePerGb);
 
         if (remaining >= unsettledCost) {
           p.baseSettledBytes = lastUsed;
+          p.paygDisabled = false;
+          p.warnedPayg = false;
           remaining -= unsettledCost;
         } else {
           const settledBytes = Math.round((remaining / discountedPricePerGb) * (1024 * 1024 * 1024));
@@ -102,12 +106,29 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
   if (!p) return { success: false, settledGb: 0, message: 'کانفیگ مصرف آزاد یافت نشد' };
 
   const targetBytes = customBaseBytes !== undefined ? Math.max(0, customBaseBytes) : (p.lastUsedBytes || 0);
+  const oldBase = p.baseSettledBytes || 0;
+
+  if (targetBytes > oldBase) {
+    const newlySettledBytes = targetBytes - oldBase;
+    const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 1000;
+    const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user, p);
+    const discountedPricePerGb = Math.max(1, Math.round(rawPricePerGb * (1 - discountPct / 100)));
+    const newlySettledCost = Math.ceil((newlySettledBytes / (1024 * 1024 * 1024)) * discountedPricePerGb);
+
+    user.debt = Math.max(0, (user.debt || 0) - newlySettledCost);
+    user.totalPayments = (user.totalPayments || 0) + newlySettledCost;
+  }
+
   p.baseSettledBytes = targetBytes;
   if ((p.lastUsedBytes || 0) < targetBytes) {
     p.lastUsedBytes = targetBytes;
   }
+  p.paygDisabled = false;
+  p.warnedPayg = false;
+
   const settledGb = Number((targetBytes / (1024 * 1024 * 1024)).toFixed(2));
   db.saveUser(user);
+  checkPaygReactivation(user).catch(console.error);
   return { success: true, settledGb, message: `مصرف تا حجم ${settledGb} گیگابایت تسویه شد و از این حجم به بعد محاسبه خواهد شد.` };
 }
 
@@ -601,6 +622,10 @@ export async function initBot() {
       let totalOriginalPrice = 0;
       let totalFinalPrice = 0;
       let totalDiscounts = 0;
+      let totalPaygActiveDebt = 0;
+      let totalPaygSettledFin = 0;
+      let totalFixedFin = 0;
+      let hasPayg = false;
       let paygDetailsList: string[] = [];
 
       purchases.forEach((p: any) => {
@@ -629,6 +654,7 @@ export async function initBot() {
         let fin = 0;
 
         if (p.isPayAsYouGo) {
+          hasPayg = true;
           const baseSettled = p.baseSettledBytes || 0;
           const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
           const billableBytes = Math.max(0, currentUsed - effectiveBase);
@@ -636,7 +662,7 @@ export async function initBot() {
           const settledGb = effectiveBase / (1024 * 1024 * 1024);
 
           const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
-          const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(seller);
+          const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(seller, p);
           const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
 
           const settledOrig = Math.ceil(settledGb * rawPricePerGb);
@@ -648,6 +674,9 @@ export async function initBot() {
           orig = settledOrig + currentOrig;
           fin = settledFin + currentFin;
 
+          totalPaygActiveDebt += currentFin;
+          totalPaygSettledFin += settledFin;
+
           const configName = p.name || p.id || 'سرویس مصرف آزاد';
           paygDetailsList.push(`▫️ *${configName}*:\n   کل مصرف: ${((currentUsed)/(1024*1024*1024)).toFixed(2)} GB | تسویه شده: ${(settledGb).toFixed(2)} GB | محاسبه جدید: *${(billableGb).toFixed(2)} GB* (*${currentFin.toLocaleString()}* ت)`);
         } else {
@@ -656,6 +685,7 @@ export async function initBot() {
           if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
             orig = Math.round(fin / (1 - p.discountPercent / 100));
           }
+          totalFixedFin += fin;
         }
 
         if (orig < fin) orig = fin;
@@ -671,11 +701,37 @@ export async function initBot() {
         sellerChanged = true;
       }
 
-      // Reconcile current debt = total net purchases - total payments settled
-      const totalPayments = seller.totalPayments || 0;
-      const debtVal = Math.max(0, totalFinalPrice - totalPayments);
-      if (seller.debt !== debtVal) {
-        seller.debt = debtVal;
+      // Reconcile current debt:
+      // For pure PAYG sellers, active debt can ONLY be the unsettled active usage of the current cycle.
+      // For sellers with fixed packages, settled PAYG must NEVER be counted into debt!
+      const hasOnlyPayg = purchases.length > 0 && purchases.every((p: any) => p.isPayAsYouGo);
+      let debtVal = seller.debt || 0;
+
+      if (hasOnlyPayg) {
+        if (debtVal !== totalPaygActiveDebt) {
+          debtVal = totalPaygActiveDebt;
+          seller.debt = debtVal;
+          sellerChanged = true;
+        }
+      } else if (hasPayg) {
+        const maxPossibleDebt = Math.max(0, totalFixedFin + totalPaygActiveDebt);
+        if (debtVal > maxPossibleDebt) {
+          debtVal = maxPossibleDebt;
+          seller.debt = debtVal;
+          sellerChanged = true;
+        }
+      } else {
+        if (debtVal > totalFinalPrice) {
+          debtVal = totalFinalPrice;
+          seller.debt = debtVal;
+          sellerChanged = true;
+        }
+      }
+
+      // Total payments is the difference between total sales and active debt
+      const totalPayments = Math.max(seller.totalPayments || 0, totalFinalPrice - debtVal);
+      if (seller.totalPayments !== totalPayments) {
+        seller.totalPayments = totalPayments;
         sellerChanged = true;
       }
 
@@ -2885,8 +2941,13 @@ export async function initBot() {
           const settledAmount = targetUser.debt || 0;
           targetUser.totalPayments = (targetUser.totalPayments || 0) + settledAmount;
           targetUser.debt = 0;
+          targetUser.debtVolume = 0;
           applyPaygSettlementToUser(targetUser, settledAmount, true);
+          if (targetUser.totalSales) {
+            targetUser.totalPayments = targetUser.totalSales;
+          }
           db.saveUser(targetUser);
+          await checkPaygReactivation(targetUser);
           
           bot!.sendMessage(chatId, `✅ بدهی همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} با موفقیت صفر شد (تسویه حساب کامل). تمام کانفیگ‌های مصرف لحظه‌ای نیز تا این حجم تسویه شدند.`);
           bot!.sendMessage(targetUser.chatId, '💵 حساب بدهی شما توسط مدیریت تسویه شد و به صفر بازگشت.').catch(() => {});
@@ -2907,7 +2968,14 @@ export async function initBot() {
         const targetUser = db.getUser(targetChatId);
         if (targetUser) {
           applyPaygSettlementToUser(targetUser, undefined, true);
+          const hasOnlyPayg = targetUser.purchases && targetUser.purchases.length > 0 && targetUser.purchases.every((p: any) => p.isPayAsYouGo);
+          if (hasOnlyPayg) {
+            const oldDebt = targetUser.debt || 0;
+            targetUser.debt = 0;
+            targetUser.totalPayments = (targetUser.totalPayments || 0) + oldDebt;
+          }
           db.saveUser(targetUser);
+          await checkPaygReactivation(targetUser);
           bot!.sendMessage(chatId, `⚡ تمام کانفیگ‌های مصرف لحظه‌ای (PAYG) همکار 👤 ${targetUser.username ? '@' + targetUser.username : targetUser.chatId} تا حجم مصرفی فعلی تسویه شدند و از این حجم به بعد محاسبه خواهند شد.`);
           await sendDetailedSellerReport(chatId, targetChatId, true);
         } else {
@@ -2924,6 +2992,7 @@ export async function initBot() {
         const targetUser = db.getUser(targetChatId);
         if (targetUser) {
           bot!.sendMessage(chatId, '⏳ در حال محاسبه مجدد و همگام‌سازی تراز مالی با آخرین آمار مصرف سرور...');
+          await syncAllUsersAndSellersFinancials();
           await sendDetailedSellerReport(chatId, targetChatId, true);
           bot!.sendMessage(chatId, '✅ تراز مالی، کل فروش و بدهی این همکار با موفقیت همگام‌سازی و اصلاح گردید.');
         } else {
@@ -3743,9 +3812,11 @@ export async function initBot() {
                               if (!isSellerUnlimitedLimit(user)) {
                                   const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
                                   if ((user.debt || 0) >= limit) {
-                                      await xui.updateClientEnable(purchase.id, false);
-                                      purchase.paygDisabled = true;
-                                      bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
+                                      if (!purchase.paygDisabled) {
+                                          await xui.updateClientEnable(purchase.id, false);
+                                          purchase.paygDisabled = true;
+                                          bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
+                                      }
                                   }
                               }
                           }
@@ -3761,13 +3832,15 @@ export async function initBot() {
 
                               if (user.balance <= 0) {
                                   user.balance = 0;
-                                  await xui.updateClientEnable(purchase.id, false);
-                                  purchase.paygDisabled = true;
-                                  bot!.sendMessage(user.chatId, `❌ <b>اتمام موجودی کیف پول و قطع سرویس مصرف آزاد</b>\n\n` +
-                                    `📦 <b>سرویس:</b> ${purchase.name}\n` +
-                                    `🆔 <b>شناسه سفارش:</b> <code>${purchase.id}</code>\n\n` +
-                                    `💸 موجودی کیف پول شما به اتمام رسید (۰ تومان) و سرویس شما به طور موقت غیرفعال شد.\n\n` +
-                                    `🔋 <b>جهت اتصال مجدد:</b> کافیست کیف پول خود را شارژ فرمایید. سرویس بلافاصله پس از شارژ خودکار فعال خواهد شد.`, { parse_mode: 'HTML' });
+                                  if (!purchase.paygDisabled) {
+                                      await xui.updateClientEnable(purchase.id, false);
+                                      purchase.paygDisabled = true;
+                                      bot!.sendMessage(user.chatId, `❌ <b>اتمام موجودی کیف پول و قطع سرویس مصرف آزاد</b>\n\n` +
+                                        `📦 <b>سرویس:</b> ${purchase.name}\n` +
+                                        `🆔 <b>شناسه سفارش:</b> <code>${purchase.id}</code>\n\n` +
+                                        `💸 موجودی کیف پول شما به اتمام رسید (۰ تومان) و سرویس شما به طور موقت غیرفعال شد.\n\n` +
+                                        `🔋 <b>جهت اتصال مجدد:</b> کافیست کیف پول خود را شارژ فرمایید. سرویس بلافاصله پس از شارژ خودکار فعال خواهد شد.`, { parse_mode: 'HTML' });
+                                  }
                               } else if (balanceEquivalentGb < 1) { // less than 1GB equivalent remaining
                                   if (!purchase.warnedPayg) {
                                       bot!.sendMessage(user.chatId, `⚠️ <b>هشدار کمبود موجودی سرویس مصرف آزاد (PAYG)</b>\n\n` +
@@ -3787,6 +3860,31 @@ export async function initBot() {
                   } else if (used > (purchase.lastUsedBytes || 0)) {
                       purchase.lastUsedBytes = used;
                       userChanged = true;
+                  }
+              }
+
+              // Auto-reactivate disabled PAYG if seller debt dropped below limit or client wallet was recharged
+              if (purchase.isPayAsYouGo && purchase.paygDisabled) {
+                  if (user.isSeller) {
+                      const isUnlimited = isSellerUnlimitedLimit(user);
+                      const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+                      if (isUnlimited || (user.debt || 0) < limit) {
+                          try {
+                              await xui.updateClientEnable(purchase.id, true);
+                              purchase.paygDisabled = false;
+                              purchase.warnedPayg = false;
+                              userChanged = true;
+                              bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${purchase.name}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
+                          } catch (e) {}
+                      }
+                  } else if ((user.balance || 0) >= 1000) {
+                      try {
+                          await xui.updateClientEnable(purchase.id, true);
+                          purchase.paygDisabled = false;
+                          purchase.warnedPayg = false;
+                          userChanged = true;
+                          bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس <b>${purchase.name}</b> به دلیل افزایش موجودی کیف پول، مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
+                      } catch (e) {}
                   }
               }
 
@@ -3995,6 +4093,10 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
         let totalOriginalPrice = 0;
         let totalFinalPrice = 0;
         let totalDiscounts = 0;
+        let totalPaygActiveDebt = 0;
+        let totalPaygSettledFin = 0;
+        let totalFixedFin = 0;
+        let hasPayg = false;
 
         for (const p of purchases) {
           const clientObj = allClientsArray.find(cl => 
@@ -4017,6 +4119,7 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
           let fin = p.price !== undefined ? p.price : 0;
 
           if (p.isPayAsYouGo) {
+            hasPayg = true;
             const baseSettled = p.baseSettledBytes || 0;
             const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
             const billableBytes = Math.max(0, currentUsed - effectiveBase);
@@ -4024,7 +4127,7 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
             const settledGb = effectiveBase / (1024 * 1024 * 1024);
 
             const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
-            const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user);
+            const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user, p);
             const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
 
             const settledOrig = Math.ceil(settledGb * rawPricePerGb);
@@ -4035,10 +4138,14 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
 
             orig = settledOrig + currentOrig;
             fin = settledFin + currentFin;
+
+            totalPaygActiveDebt += currentFin;
+            totalPaygSettledFin += settledFin;
           } else {
             if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
               orig = Math.round(fin / (1 - p.discountPercent / 100));
             }
+            totalFixedFin += fin;
           }
 
           if (orig < fin) orig = fin;
@@ -4054,12 +4161,57 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
           userChanged = true;
         }
 
-        // Reconcile debt: net sales minus all settled/approved payments
-        const totalPayments = user.totalPayments || 0;
-        const correctDebt = Math.max(0, totalFinalPrice - totalPayments);
-        if (user.debt !== correctDebt) {
-          user.debt = correctDebt;
+        // Reconcile debt:
+        // For pure PAYG sellers: active debt is strictly the unsettled traffic of current billing cycle (totalPaygActiveDebt).
+        // For mixed sellers: debt cannot exceed total fixed packages + active unsettled PAYG. Settled PAYG is never debt!
+        const hasOnlyPayg = purchases.length > 0 && purchases.every((p: any) => p.isPayAsYouGo);
+        let correctDebt = user.debt || 0;
+
+        if (hasOnlyPayg) {
+          if (correctDebt !== totalPaygActiveDebt) {
+            correctDebt = totalPaygActiveDebt;
+            user.debt = correctDebt;
+            userChanged = true;
+          }
+        } else if (hasPayg) {
+          const maxPossibleDebt = Math.max(0, totalFixedFin + totalPaygActiveDebt);
+          if (correctDebt > maxPossibleDebt) {
+            correctDebt = maxPossibleDebt;
+            user.debt = correctDebt;
+            userChanged = true;
+          }
+        } else {
+          if (correctDebt > totalFinalPrice) {
+            correctDebt = totalFinalPrice;
+            user.debt = correctDebt;
+            userChanged = true;
+          }
+        }
+
+        // Reconcile totalPayments so that totalSales - totalPayments = debt
+        const correctPayments = Math.max(user.totalPayments || 0, totalFinalPrice - correctDebt);
+        if (user.totalPayments !== correctPayments) {
+          user.totalPayments = correctPayments;
           userChanged = true;
+        }
+
+        // Auto-reactivate disabled PAYG if seller's debt is within limit
+        const isUnlimited = isSellerUnlimitedLimit(user);
+        const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+        if (isUnlimited || (user.debt || 0) < limit) {
+          for (const p of purchases) {
+            if (p.isPayAsYouGo && p.paygDisabled) {
+              try {
+                await xui.updateClientEnable(p.id, true);
+                p.paygDisabled = false;
+                p.warnedPayg = false;
+                userChanged = true;
+                if (bot) {
+                  bot.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${p.name || p.id}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
+                }
+              } catch (e) {}
+            }
+          }
         }
       }
 
