@@ -206,76 +206,254 @@ const purchaseLocks = new Set<number>();
 
 async function sendServiceInfo(chatId: number, purchase: any) {
   if (!bot) return;
-  bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات کانفیگ‌ها و تولید بارکد...').catch(()=>{});
+  bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات دقیق، حجم، زمان و لینک ساب از سرور...').catch(() => {});
   try {
-    const buffer = await QRCode.toBuffer(purchase.subUrl, { width: 400 });
-    let subContent = '';
+    let clientObj: any = null;
+    let allClients: any[] = [];
     try {
-      const resp = await axios.get(purchase.subUrl, { timeout: 4000 });
-      const text = resp.data;
-      if (typeof text === 'string') {
-        try {
-          const decoded = Buffer.from(text, 'base64').toString('utf-8');
-          if (decoded.includes('vless://') || decoded.includes('vmess://') || decoded.includes('trojan://')) {
-            subContent = decoded.trim();
-          } else {
-            subContent = text.trim();
-          }
-        } catch {
-          subContent = text.trim();
-        }
-      }
-    } catch (e) {
-       // Ignore fetch errors
+      allClients = await xui.getAllClientsWithTraffic();
+    } catch (e: any) {
+      console.error('[Bot] sendServiceInfo error fetching xui clients:', e.message);
     }
 
-    let configsText = '';
-    if (subContent) {
-      if (subContent.length > 3000) {
-        configsText = `⚙️ *کانفیگ‌ها*:\n\`\`\`\n${subContent.slice(0, 3000)}\n...\n\`\`\`\n\n`;
-      } else {
-        configsText = `⚙️ *کانفیگ‌ها*:\n\`\`\`\n${subContent}\n\`\`\`\n\n`;
-      }
-    }
+    const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
+    const cleanPName = purchase.name ? String(purchase.name).trim().toLowerCase() : '';
+    const urlSubId = purchase.subUrl ? purchase.subUrl.split('/sub/')[1]?.split('?')[0]?.split('/')[0] : null;
 
-    const volumeText = purchase.isPayAsYouGo ? 'نامحدود (PAYG)' : `${purchase.volumeGb} GB`;
-    const durationText = purchase.isPayAsYouGo ? 'نامحدود' : `${purchase.durationDays} روز`;
+    if (allClients && allClients.length > 0) {
+      clientObj = allClients.find((cl: any) => {
+        const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
+        const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
+        const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
 
-    const caption = `🔑 *اطلاعات سرویس (${purchase.name})*\n\n` +
-      `📑 *شماره سفارش*: \`${purchase.id}\`\n` +
-      `📦 *حجم*: ${volumeText} | ⏳ *مدت*: ${durationText}\n` +
-      (purchase.isPayAsYouGo ? `💸 *هزینه هر گیگ مصرف*: ${purchase.pricePerGb?.toLocaleString()} تومان\n` : '') +
-      (purchase.isPayAsYouGo ? (
-        `📊 *کل مصرف تا امروز*: ${((purchase.lastUsedBytes || 0) / (1024*1024*1024)).toFixed(2)} گیگابایت\n` +
-        ((purchase.baseSettledBytes || 0) > 0 ? `💳 *حجم تسویه شده*: ${((purchase.baseSettledBytes || 0) / (1024*1024*1024)).toFixed(2)} گیگابایت\n` : '') +
-        `📈 *مصرف دوره جاری (از تسویه به بعد)*: ${(Math.max(0, (purchase.lastUsedBytes || 0) - (purchase.baseSettledBytes || 0)) / (1024*1024*1024)).toFixed(2)} گیگابایت\n\n`
-      ) : '\n') +
-      `🔗 *لینک اشتراک شما (سابسکریپشن)*:\n\`${purchase.subUrl}\`\n\n` +
-      `✅ جهت استفاده، بارکد بالا را اسکن کنید و یا لینک فوق را کپی کرده و در نرم‌افزار ایمپورت نمایید. (سپس از منوی نرم‌افزار Update Subscription را بزنید)`;
-
-    await bot.sendPhoto(chatId, buffer, { caption, parse_mode: 'Markdown' });
-
-    if (configsText) {
-      await bot.sendMessage(chatId, configsText, { parse_mode: 'Markdown' });
-    }
-
-    if (purchase.price > 0 && purchase.volumeGb > 0 && purchase.durationDays > 0) {
-      await bot.sendMessage(chatId, `♻️ *تمدید سرویس*\n\nشما می‌توانید این سرویس را دقیقاً با همین تنظیمات تمدید کنید.\n\n` + 
-        `🔸 حجم: ${purchase.volumeGb} گیگابایت\n` +
-        `🔸 زمان: ${purchase.durationDays} روز\n` +
-        `💰 هزینه تمدید: ${purchase.price.toLocaleString()} تومان\n\n` +
-        `⚠️ با تمدید سرویس، نیازی به وارد کردن کانفیگ جدید نیست و همان اشتراک قبلی شما شارژ می‌شود و قابل استفاده خواهد بود. مبلغ از موجودی (یا حساب دفتری همکار) کسر می‌گردد.`, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-           inline_keyboard: [
-             [{ text: '♻️ تمدید سرویس (کسر از موجودی)', callback_data: `renew_service_${purchase.id}`, style: 'success' }]
-           ]
-         }
+        if (cleanPId && (clEmail === cleanPId || clId === cleanPId)) return true;
+        if (cleanPName && clEmail === cleanPName) return true;
+        if (clSubId && purchase.subUrl && purchase.subUrl.includes(cl.subId)) return true;
+        if (clEmail && purchase.subUrl && purchase.subUrl.includes(cl.email)) return true;
+        if (urlSubId && (clSubId === urlSubId.toLowerCase() || clId === urlSubId.toLowerCase() || clEmail === urlSubId.toLowerCase())) return true;
+        return false;
       });
     }
 
-  } catch (err) {
-    bot.sendMessage(chatId, `❌ خطا در پردازش اطلاعات سرویس. ${purchase.subUrl}`);
+    // Heal / update subUrl if missing or outdated
+    const state = db.getState();
+    let subUrl = (purchase.subUrl || '').trim();
+    const effectiveSubId = clientObj?.subId || urlSubId;
+
+    if ((!subUrl || !subUrl.includes('/sub/')) && effectiveSubId && state.panel?.url) {
+      const domain = new URL(state.panel.url).hostname;
+      if (state.panel.subUrlBase && state.panel.subUrlBase.trim() !== '') {
+        let base = state.panel.subUrlBase.trim();
+        if (!base.endsWith('/')) base += '/';
+        subUrl = `${base}${effectiveSubId}`;
+      } else {
+        const panelPortMatch = state.panel.url.match(/:(\d+)$/);
+        const panelPort = panelPortMatch ? panelPortMatch[1] : (state.panel.url.startsWith('https') ? '443' : '80');
+        const protocol = state.panel.url.startsWith('https') ? 'https' : 'http';
+        subUrl = `${protocol}://${domain}:${panelPort}/sub/${effectiveSubId}`;
+      }
+      purchase.subUrl = subUrl;
+      const currentUser = db.getUser(chatId);
+      if (currentUser && currentUser.purchases) {
+        const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
+        if (pItem) {
+          pItem.subUrl = subUrl;
+          db.saveUser(currentUser);
+        }
+      }
+    }
+
+    // Save latest used bytes if available
+    if (clientObj) {
+      const currentUsed = clientObj.totalUsed || ((clientObj.up || 0) + (clientObj.down || 0));
+      if (currentUsed > (purchase.lastUsedBytes || 0)) {
+        purchase.lastUsedBytes = currentUsed;
+        const currentUser = db.getUser(chatId);
+        if (currentUser && currentUser.purchases) {
+          const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
+          if (pItem) {
+            pItem.lastUsedBytes = currentUsed;
+            db.saveUser(currentUser);
+          }
+        }
+      }
+    }
+
+    // 1. VOLUME CALCULATION
+    let totalVolStr = '';
+    let usedVolStr = '';
+    let remainingVolStr = '';
+    let progressBar = '';
+    let isExpired = false;
+
+    if (purchase.isPayAsYouGo) {
+      totalVolStr = 'نامحدود (سرویس مصرف آزاد - PAYG)';
+      const usedBytes = clientObj ? (clientObj.totalUsed || ((clientObj.up || 0) + (clientObj.down || 0))) : (purchase.lastUsedBytes || 0);
+      const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+      usedVolStr = `${usedGb} گیگابایت`;
+      remainingVolStr = 'نامحدود (محاسبه بر اساس مصرف)';
+    } else {
+      let totalBytes = 0;
+      if (clientObj && clientObj.total > 0) {
+        totalBytes = clientObj.total;
+      } else if (purchase.volumeGb > 0) {
+        totalBytes = purchase.volumeGb * 1024 * 1024 * 1024;
+      }
+
+      if (totalBytes > 0) {
+        const totalGb = (totalBytes / (1024 * 1024 * 1024)).toFixed(2);
+        totalVolStr = `${totalGb} گیگابایت`;
+
+        const usedBytes = clientObj ? (clientObj.totalUsed || ((clientObj.up || 0) + (clientObj.down || 0))) : (purchase.lastUsedBytes || 0);
+        let usedDisplay = '';
+        if (usedBytes >= 1024 * 1024 * 1024) {
+          usedDisplay = `${(usedBytes / (1024 * 1024 * 1024)).toFixed(2)} گیگابایت`;
+        } else {
+          usedDisplay = `${(usedBytes / (1024 * 1024)).toFixed(1)} مگابایت`;
+        }
+
+        let upDownStr = '';
+        if (clientObj) {
+          const upMb = (clientObj.up / (1024 * 1024)).toFixed(1);
+          const downMb = (clientObj.down / (1024 * 1024)).toFixed(1);
+          upDownStr = `(⬇️ ${downMb} MB | ⬆️ ${upMb} MB)`;
+        }
+        usedVolStr = `${usedDisplay} ${upDownStr}`.trim();
+
+        const remBytes = Math.max(0, totalBytes - usedBytes);
+        const remGb = (remBytes / (1024 * 1024 * 1024)).toFixed(2);
+        const pctUsed = Math.min(100, Math.max(0, Math.round((usedBytes / totalBytes) * 100)));
+        const pctRem = 100 - pctUsed;
+
+        if (remBytes <= 0) {
+          remainingVolStr = '❌ ۰ گیگابایت (حجم پایان یافته)';
+          isExpired = true;
+        } else {
+          remainingVolStr = `${remGb} گیگابایت (${pctRem}٪ باقیمانده)`;
+        }
+
+        const filledBlocks = Math.min(10, Math.max(0, Math.round(pctUsed / 10)));
+        const emptyBlocks = 10 - filledBlocks;
+        progressBar = `▫️ <b>وضعیت مصرف:</b> [${'🔴'.repeat(filledBlocks)}${'🟢'.repeat(emptyBlocks)}] (${pctUsed}٪ مصرف شده)`;
+      } else {
+        totalVolStr = purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود';
+        usedVolStr = 'نامشخص';
+        remainingVolStr = 'نامحدود';
+      }
+    }
+
+    // 2. TIME / EXPIRY CALCULATION
+    let remainingTimeStr = '';
+    let expiryDateStr = '';
+
+    const expTime = clientObj && clientObj.expiryTime !== undefined ? clientObj.expiryTime : 0;
+    if (expTime > 0) {
+      const remainingMs = expTime - Date.now();
+      if (remainingMs <= 0) {
+        remainingTimeStr = '❌ منقضی شده';
+        isExpired = true;
+      } else {
+        const days = Math.floor(remainingMs / 86400000);
+        const hours = Math.floor((remainingMs % 86400000) / 3600000);
+        const mins = Math.floor((remainingMs % 3600000) / 60000);
+        if (days > 0) {
+          remainingTimeStr = `${days} روز و ${hours} ساعت باقیمانده`;
+        } else if (hours > 0) {
+          remainingTimeStr = `${hours} ساعت و ${mins} دقیقه باقیمانده`;
+        } else {
+          remainingTimeStr = `${mins} دقیقه باقیمانده (در حال اتمام)`;
+        }
+      }
+      const expDate = new Date(expTime);
+      expiryDateStr = `${expDate.toLocaleDateString('fa-IR')} (ساعت ${expDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})`;
+    } else if (expTime < 0) {
+      const days = Math.round(Math.abs(expTime) / 86400000);
+      remainingTimeStr = `${days} روز (شروع شمارش پس از اولین اتصال)`;
+      expiryDateStr = 'پس از اولین اتصال فعال می‌شود';
+    } else {
+      if (purchase.durationDays && purchase.durationDays > 0) {
+        remainingTimeStr = `${purchase.durationDays} روز (شروع پس از اولین اتصال یا بدون انقضا)`;
+        expiryDateStr = 'نامحدود تا اتصال';
+      } else {
+        remainingTimeStr = 'نامحدود (بدون انقضا)';
+        expiryDateStr = 'همیشگی';
+      }
+    }
+
+    // 3. CONNECTION & STATUS
+    let statusText = '🟢 فعال و متصل';
+    if (clientObj && clientObj.enable === false) {
+      statusText = '🔴 غیرفعال (مسدود شده در سرور)';
+    } else if (isExpired) {
+      statusText = '⚠️ نیاز به تمدید (حجم پایان یافته یا منقضی)';
+    }
+
+    const caption = `🔑 <b>اطلاعات کامل سرویس (${escapeHtml(purchase.name || 'سرویس اشتراکی')})</b>\n\n` +
+      `📋 <b>شناسه سفارش:</b> <code>${escapeHtml(String(purchase.id || ''))}</code>\n` +
+      `🔰 <b>وضعیت اکانت:</b> ${statusText}\n\n` +
+      `📊 <b>اطلاعات حجم سرویس:</b>\n` +
+      `▫️ <b>کل حجم:</b> ${totalVolStr}\n` +
+      `▫️ <b>حجم مصرف شده:</b> ${usedVolStr}\n` +
+      `▫️ <b>حجم باقیمانده:</b> <b>${remainingVolStr}</b>\n` +
+      (progressBar ? `${progressBar}\n\n` : '\n') +
+      `⏳ <b>اطلاعات زمان و انقضا:</b>\n` +
+      `▫️ <b>زمان باقیمانده:</b> <b>${remainingTimeStr}</b>\n` +
+      `▫️ <b>تاریخ انقضا:</b> ${expiryDateStr}\n\n` +
+      (purchase.isPayAsYouGo ? (
+        `💸 <b>هزینه هر گیگ:</b> ${purchase.pricePerGb?.toLocaleString()} تومان\n` +
+        `📈 <b>مصرف دوره جاری:</b> ${(Math.max(0, (purchase.lastUsedBytes || 0) - (purchase.baseSettledBytes || 0)) / (1024*1024*1024)).toFixed(2)} گیگابایت\n\n`
+      ) : '') +
+      (subUrl ? (
+        `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n` +
+        `<code>${escapeHtml(subUrl)}</code>\n\n` +
+        `💡 <i>با لمس لینک بالا، به صورت خودکار در حافظه کپی می‌شود.</i>\n\n`
+      ) : '⚠️ <i>لینک سابسکریپشن در حال حاضر در دسترس نیست.</i>\n\n') +
+      `📱 <b>راهنمای اتصال:</b>\n` +
+      `۱. بارکد QR بالا را اسکن کرده یا لینک سابسکریپشن را کپی و اضافه نمایید.\n` +
+      `۲. در نرم‌افزار (V2rayNG / Streisand / V2rayN / Sing-box / Shadowrocket) گزینه <b>Update Subscription</b> را بزنید.`;
+
+    const inlineButtons: any[] = [
+      [
+        { text: '🔄 بروزرسانی وضعیت لحظه‌ای', callback_data: `refresh_service_${purchase.id}` },
+        { text: '⚙️ دریافت کانفیگ مستقیم', callback_data: `direct_configs_${purchase.id}` }
+      ]
+    ];
+
+    if (purchase.price > 0 && purchase.volumeGb > 0 && purchase.durationDays > 0) {
+      inlineButtons.push([
+        { text: '♻️ تمدید سرویس', callback_data: `renew_service_${purchase.id}` }
+      ]);
+    }
+
+    inlineButtons.push([
+      { text: '📋 بازگشت به لیست خریدها', callback_data: 'user_purchases_list' }
+    ]);
+
+    let photoSent = false;
+    if (subUrl) {
+      try {
+        const buffer = await QRCode.toBuffer(subUrl, { width: 450, margin: 2 });
+        await bot.sendPhoto(chatId, buffer, {
+          caption: caption.length <= 1024 ? caption : caption.slice(0, 1020) + '...',
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineButtons }
+        });
+        photoSent = true;
+      } catch (err: any) {
+        console.error('[Bot] sendPhoto failed:', err.message);
+      }
+    }
+
+    if (!photoSent) {
+      await bot.sendMessage(chatId, caption, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: inlineButtons }
+      });
+    }
+
+  } catch (err: any) {
+    console.error('[Bot] sendServiceInfo error:', err);
+    bot.sendMessage(chatId, `❌ خطا در استعلام سرویس: ${err.message}\n\n` + (purchase.subUrl ? `🔗 لینک ساب:\n<code>${escapeHtml(purchase.subUrl)}</code>` : ''), { parse_mode: 'HTML' });
   }
 }
 
@@ -2428,18 +2606,21 @@ export async function initBot() {
       if (userPurchases.length === 0) {
         bot!.sendMessage(chatId, '❌ شما هنوز هیچ فروش/خریدی ثبت نکرده‌اید.');
       } else {
-        let msgReply = `📋 *لیست کل فروش‌ها و کانفیگ‌های ساخته شده توسط شما*:\n\n`;
+        let msgReply = `📋 <b>لیست کل فروش‌ها و کانفیگ‌های ساخته شده توسط شما:</b>\n\n`;
         const inlineKeyboard: any[] = [];
         userPurchases.forEach((p: any, idx: number) => {
-          msgReply += `💎 ${idx + 1}- سفارش: \`${p.id}\`\n` +
-            `🔹 نام: *${p.name}*\n` +
+          const volStr = p.isPayAsYouGo ? 'نامحدود (PAYG)' : (p.volumeGb ? `${p.volumeGb} گیگابایت` : 'نامحدود');
+          const durStr = p.isPayAsYouGo ? 'نامحدود' : (p.durationDays ? `${p.durationDays} روز` : 'نامحدود');
+          msgReply += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
+            `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
+            `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: inlineKeyboard
           }
@@ -2517,18 +2698,21 @@ export async function initBot() {
       if (userPurchases.length === 0) {
         bot!.sendMessage(chatId, '❌ شما هنوز هیچ خریدی در ربات ثبت نکرده‌اید.');
       } else {
-        let msgReply = `📋 *لیست سرویس‌ها و خریدهای شما*:\n\n`;
+        let msgReply = `📋 <b>لیست سرویس‌ها و خریدهای شما:</b>\n\n`;
         const inlineKeyboard: any[] = [];
         userPurchases.forEach((p: any, idx: number) => {
-          msgReply += `💎 ${idx + 1}- سفارش: \`${p.id}\`\n` +
-            `🔹 نام سرویس: *${p.name}*\n` +
+          const volStr = p.isPayAsYouGo ? 'نامحدود (PAYG)' : (p.volumeGb ? `${p.volumeGb} گیگابایت` : 'نامحدود');
+          const durStr = p.isPayAsYouGo ? 'نامحدود' : (p.durationDays ? `${p.durationDays} روز` : 'نامحدود');
+          msgReply += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
+            `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
+            `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: inlineKeyboard
           }
@@ -3287,22 +3471,26 @@ export async function initBot() {
     }
 
     if (data === 'user_purchases_list') {
-      const userPurchases = (user.purchases || []).filter((p: any) => !p.isDeleted);
+      const currentUser = db.getUser(chatId) || user;
+      const userPurchases = (currentUser.purchases || []).filter((p: any) => !p.isDeleted);
       if (userPurchases.length === 0) {
         bot!.sendMessage(chatId, '❌ شما هنوز هیچ خریدی در ربات ثبت نکرده‌اید.');
       } else {
-        let msg = `📋 *لیست سرویس‌ها و خریدهای شما*:\n\n`;
-        const inlineKeyboard = [];
+        let msg = `📋 <b>لیست سرویس‌ها و خریدهای شما:</b>\n\n`;
+        const inlineKeyboard: any[] = [];
         userPurchases.forEach((p: any, idx: number) => {
-          msg += `💎 ${idx + 1}- سفارش: \`${p.id}\`\n` +
-            `🔹 نام سرویس: *${p.name}*\n` +
+          const volStr = p.isPayAsYouGo ? 'نامحدود (PAYG)' : (p.volumeGb ? `${p.volumeGb} گیگابایت` : 'نامحدود');
+          const durStr = p.isPayAsYouGo ? 'نامحدود' : (p.durationDays ? `${p.durationDays} روز` : 'نامحدود');
+          msg += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
+            `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
+            `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔗 دریافت اطلاعات سرویس ${idx + 1}`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msg, {
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: inlineKeyboard
           }
@@ -3313,11 +3501,50 @@ export async function initBot() {
     }
 
     if (data && data.startsWith('resend_link_')) {
-      bot!.answerCallbackQuery(query.id);
+      bot!.answerCallbackQuery(query.id, { text: '🔍 در حال دریافت اطلاعات سرویس...' });
       const purchaseId = data.replace('resend_link_', '');
-      const userPurchases = user.purchases || [];
-      const purchase = userPurchases.find((p: any) => p.id === purchaseId);
+      const currentUser = db.getUser(chatId) || user;
+      const userPurchases = currentUser?.purchases || [];
       
+      let purchase = userPurchases.find((p: any) => 
+        String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+        (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+        (p.subUrl && p.subUrl.includes(purchaseId)) ||
+        (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+      );
+
+      if (!purchase && !isNaN(Number(purchaseId))) {
+        const idx = parseInt(purchaseId, 10);
+        if (idx >= 0 && idx < userPurchases.length) {
+          purchase = userPurchases[idx];
+        }
+      }
+      
+      if (purchase) {
+        await sendServiceInfo(chatId, purchase);
+      } else {
+        bot!.sendMessage(chatId, '❌ سرویس مورد نظر در لیست شما یافت نشد.');
+      }
+      return;
+    }
+
+    if (data && data.startsWith('refresh_service_')) {
+      bot!.answerCallbackQuery(query.id, { text: '🔄 در حال استعلام وضعیت لحظه‌ای...' });
+      const purchaseId = data.replace('refresh_service_', '');
+      const currentUser = db.getUser(chatId) || user;
+      const userPurchases = currentUser?.purchases || [];
+      let purchase = userPurchases.find((p: any) => 
+        String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+        (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+        (p.subUrl && p.subUrl.includes(purchaseId)) ||
+        (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+      );
+      if (!purchase && !isNaN(Number(purchaseId))) {
+        const idx = parseInt(purchaseId, 10);
+        if (idx >= 0 && idx < userPurchases.length) {
+          purchase = userPurchases[idx];
+        }
+      }
       if (purchase) {
         await sendServiceInfo(chatId, purchase);
       } else {
@@ -3326,12 +3553,73 @@ export async function initBot() {
       return;
     }
 
+    if (data && data.startsWith('direct_configs_')) {
+      bot!.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت کانفیگ‌ها...' });
+      const purchaseId = data.replace('direct_configs_', '');
+      const currentUser = db.getUser(chatId) || user;
+      const userPurchases = currentUser?.purchases || [];
+      let purchase = userPurchases.find((p: any) => 
+        String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+        (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+        (p.subUrl && p.subUrl.includes(purchaseId)) ||
+        (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+      );
+      if (!purchase && !isNaN(Number(purchaseId))) {
+        const idx = parseInt(purchaseId, 10);
+        if (idx >= 0 && idx < userPurchases.length) {
+          purchase = userPurchases[idx];
+        }
+      }
+      if (!purchase || !purchase.subUrl) {
+        bot!.sendMessage(chatId, '❌ لینک ساب برای این سرویس یافت نشد.');
+        return;
+      }
+
+      try {
+        const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
+        let text = resp.data;
+        if (typeof text === 'string') {
+          try {
+            const decoded = Buffer.from(text, 'base64').toString('utf-8');
+            if (decoded.includes('://')) {
+              text = decoded;
+            }
+          } catch {}
+        }
+        if (typeof text === 'string' && text.includes('://')) {
+          const configs = text.trim();
+          if (configs.length > 3500) {
+            await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs.slice(0, 3500))}</code>`, { parse_mode: 'HTML' });
+          } else {
+            await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs)}</code>`, { parse_mode: 'HTML' });
+          }
+        } else {
+          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در برنامه V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
+        }
+      } catch (e: any) {
+        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
+      }
+      return;
+    }
+
     if (data && data.startsWith('renew_service_')) {
       bot!.answerCallbackQuery(query.id);
       if (!user) return;
       const purchaseId = data.replace('renew_service_', '');
-      const userPurchases = user.purchases || [];
-      const purchase = userPurchases.find((p: any) => p.id === purchaseId);
+      const currentUser = db.getUser(chatId) || user;
+      const userPurchases = currentUser?.purchases || [];
+      let purchase = userPurchases.find((p: any) => 
+        String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+        (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+        (p.subUrl && p.subUrl.includes(purchaseId)) ||
+        (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+      );
+      if (!purchase && !isNaN(Number(purchaseId))) {
+        const idx = parseInt(purchaseId, 10);
+        if (idx >= 0 && idx < userPurchases.length) {
+          purchase = userPurchases[idx];
+        }
+      }
 
       if (!purchase) {
         bot!.sendMessage(chatId, '❌ سرویس مورد نظر یافت نشد.');
