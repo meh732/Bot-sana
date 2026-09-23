@@ -269,7 +269,7 @@ class Database {
   }
 
   public saveUser(user: User) {
-    const idx = this.state.users.findIndex(u => u.chatId === user.chatId);
+    const idx = this.state.users.findIndex(u => String(u.chatId) === String(user.chatId));
     if (idx >= 0) {
       this.state.users[idx] = user;
     } else {
@@ -278,8 +278,8 @@ class Database {
     this.save();
   }
 
-  public getUser(chatId: number): User | undefined {
-    return this.state.users.find(u => u.chatId === chatId);
+  public getUser(chatId: number | string): User | undefined {
+    return this.state.users.find(u => String(u.chatId) === String(chatId));
   }
 
   public getUserByUsername(username: string): User | undefined {

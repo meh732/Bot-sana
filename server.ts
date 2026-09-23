@@ -150,6 +150,66 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Dedicated endpoint for Sanaei (3X-UI) Panel ONLY - Never touches Rebecca
+  api.post("/api/update-sanaei-panel", async (req, res) => {
+    try {
+      const srcPanel = req.body.panel || req.body;
+      const currentState = db.getState();
+      const currentPanel = currentState.panel || { url: '', username: '', password: '', panelType: 'xui' as const };
+      const newPanel = { ...currentPanel, panelType: 'xui' as const };
+
+      if (srcPanel.url !== undefined) newPanel.url = String(srcPanel.url).trim();
+      if (srcPanel.username !== undefined) newPanel.username = String(srcPanel.username).trim();
+      if (srcPanel.password && srcPanel.password !== '********') newPanel.password = String(srcPanel.password);
+      if (srcPanel.inboundId !== undefined) newPanel.inboundId = parseInboundId(srcPanel.inboundId);
+      if (srcPanel.inboundIds !== undefined) newPanel.inboundIds = parseInboundIds(srcPanel.inboundIds);
+      if (srcPanel.apiKey !== undefined) newPanel.apiKey = String(srcPanel.apiKey).trim();
+      if (srcPanel.subUrlBase !== undefined) newPanel.subUrlBase = String(srcPanel.subUrlBase).trim();
+
+      db.updateState({ panel: newPanel });
+      res.json({ success: true, message: 'تنظیمات پنل سنایی (3X-UI) با موفقیت ذخیره شد.', panel: { ...newPanel, password: newPanel.password ? '********' : '' } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در ذخیره پنل سنایی' });
+    }
+  });
+
+  // Dedicated endpoint for Rebecca Panel ONLY - Never touches Sanaei
+  api.post("/api/update-rebecca-panel", async (req, res) => {
+    try {
+      const srcReb = req.body.rebeccaPanel || req.body;
+      const currentState = db.getState();
+      const currentReb = currentState.rebeccaPanel || { url: '', username: '', password: '', panelType: 'rebecca' as const };
+      const newReb = { ...currentReb, panelType: 'rebecca' as const };
+
+      if (srcReb.url !== undefined) newReb.url = String(srcReb.url).trim();
+      if (srcReb.username !== undefined) newReb.username = String(srcReb.username).trim();
+      if (srcReb.password && srcReb.password !== '********') newReb.password = String(srcReb.password);
+      if (srcReb.inboundId !== undefined) newReb.inboundId = parseInboundId(srcReb.inboundId);
+      if (srcReb.inboundIds !== undefined) newReb.inboundIds = parseInboundIds(srcReb.inboundIds);
+      if (srcReb.apiKey !== undefined) newReb.apiKey = String(srcReb.apiKey).trim();
+      if (srcReb.subUrlBase !== undefined) newReb.subUrlBase = String(srcReb.subUrlBase).trim();
+
+      db.updateState({ rebeccaPanel: newReb });
+      res.json({ success: true, message: 'تنظیمات پنل ربکا (Rebecca) با موفقیت ذخیره شد.', rebeccaPanel: { ...newReb, password: newReb.password ? '********' : '' } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در ذخیره پنل ربکا' });
+    }
+  });
+
+  // Dedicated endpoint for Active Mode toggling
+  api.post("/api/update-active-panel-mode", async (req, res) => {
+    try {
+      const { activePanelMode } = req.body;
+      if (activePanelMode && ['xui', 'rebecca', 'both'].includes(activePanelMode)) {
+        db.updateState({ activePanelMode });
+        return res.json({ success: true, activePanelMode });
+      }
+      res.status(400).json({ success: false, message: 'مقدار حالت پنل معتبر نیست.' });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
   api.post("/update-panel", async (req, res) => {
     const { 
       panel,
@@ -160,37 +220,55 @@ async function startServer() {
     const currentState = db.getState();
     const updates: any = {};
 
-    if (activePanelMode !== undefined) {
+    if (activePanelMode !== undefined && ['xui', 'rebecca', 'both'].includes(activePanelMode)) {
       updates.activePanelMode = activePanelMode;
     }
 
-    // 1. Process Sanaei (3X-UI) panel configuration
-    const srcPanel = panel || (url !== undefined || username !== undefined || password !== undefined || apiKey !== undefined || inboundIds !== undefined || subUrlBase !== undefined ? req.body : null);
-    if (srcPanel) {
-      const newPanel = { ...currentState.panel, panelType: 'xui' as const };
-      if (srcPanel.url !== undefined) newPanel.url = srcPanel.url;
-      if (srcPanel.username !== undefined) newPanel.username = srcPanel.username;
-      if (srcPanel.password && srcPanel.password !== '********') newPanel.password = srcPanel.password;
+    // 1. Process Sanaei (3X-UI) panel configuration ONLY when explicitly provided or typed as xui
+    const isExplicitSanaei = Boolean(panel || (panelType === 'xui'));
+    if (isExplicitSanaei) {
+      const srcPanel = panel || req.body;
+      const newPanel = { ...(currentState.panel || {}), panelType: 'xui' as const };
+      if (srcPanel.url !== undefined) newPanel.url = String(srcPanel.url).trim();
+      if (srcPanel.username !== undefined) newPanel.username = String(srcPanel.username).trim();
+      if (srcPanel.password && srcPanel.password !== '********') newPanel.password = String(srcPanel.password);
       if (srcPanel.inboundId !== undefined) newPanel.inboundId = parseInboundId(srcPanel.inboundId);
       if (srcPanel.inboundIds !== undefined) {
         newPanel.inboundIds = parseInboundIds(srcPanel.inboundIds);
       }
-      if (srcPanel.apiKey !== undefined) newPanel.apiKey = srcPanel.apiKey;
-      if (srcPanel.subUrlBase !== undefined) newPanel.subUrlBase = srcPanel.subUrlBase;
+      if (srcPanel.apiKey !== undefined) newPanel.apiKey = String(srcPanel.apiKey).trim();
+      if (srcPanel.subUrlBase !== undefined) newPanel.subUrlBase = String(srcPanel.subUrlBase).trim();
       updates.panel = newPanel;
     }
 
-    // 2. Process Rebecca panel configuration
-    if (rebeccaPanel) {
+    // 2. Process Rebecca panel configuration ONLY when explicitly provided or typed as rebecca
+    const isExplicitRebecca = Boolean(rebeccaPanel || (panelType === 'rebecca'));
+    if (isExplicitRebecca) {
+      const srcReb = rebeccaPanel || req.body;
       const currentReb = currentState.rebeccaPanel || { url: '', username: '', password: '', panelType: 'rebecca' as const };
       const newReb = { ...currentReb, panelType: 'rebecca' as const };
-      if (rebeccaPanel.url !== undefined) newReb.url = rebeccaPanel.url;
-      if (rebeccaPanel.username !== undefined) newReb.username = rebeccaPanel.username;
-      if (rebeccaPanel.password && rebeccaPanel.password !== '********') newReb.password = rebeccaPanel.password;
-      if (rebeccaPanel.apiKey !== undefined) newReb.apiKey = rebeccaPanel.apiKey;
-      if (rebeccaPanel.subUrlBase !== undefined) newReb.subUrlBase = rebeccaPanel.subUrlBase;
-      if (rebeccaPanel.inboundIds !== undefined) newReb.inboundIds = parseInboundIds(rebeccaPanel.inboundIds);
+      if (srcReb.url !== undefined) newReb.url = String(srcReb.url).trim();
+      if (srcReb.username !== undefined) newReb.username = String(srcReb.username).trim();
+      if (srcReb.password && srcReb.password !== '********') newReb.password = String(srcReb.password);
+      if (srcReb.inboundId !== undefined) newReb.inboundId = parseInboundId(srcReb.inboundId);
+      if (srcReb.inboundIds !== undefined) newReb.inboundIds = parseInboundIds(srcReb.inboundIds);
+      if (srcReb.apiKey !== undefined) newReb.apiKey = String(srcReb.apiKey).trim();
+      if (srcReb.subUrlBase !== undefined) newReb.subUrlBase = String(srcReb.subUrlBase).trim();
       updates.rebeccaPanel = newReb;
+    }
+
+    // Fallback for legacy requests without panel/rebeccaPanel/panelType
+    if (!isExplicitSanaei && !isExplicitRebecca && url !== undefined) {
+      // Default to xui only if not specified
+      const newPanel = { ...(currentState.panel || {}), panelType: 'xui' as const };
+      if (url !== undefined) newPanel.url = String(url).trim();
+      if (username !== undefined) newPanel.username = String(username).trim();
+      if (password && password !== '********') newPanel.password = String(password);
+      if (inboundId !== undefined) newPanel.inboundId = parseInboundId(inboundId);
+      if (inboundIds !== undefined) newPanel.inboundIds = parseInboundIds(inboundIds);
+      if (apiKey !== undefined) newPanel.apiKey = String(apiKey).trim();
+      if (subUrlBase !== undefined) newPanel.subUrlBase = String(subUrlBase).trim();
+      updates.panel = newPanel;
     }
 
     db.updateState(updates);

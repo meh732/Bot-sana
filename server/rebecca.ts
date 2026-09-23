@@ -47,10 +47,11 @@ export class RebeccaService {
     if (state.rebeccaPanel && state.rebeccaPanel.url) {
       return state.rebeccaPanel;
     }
-    if (state.panel?.panelType === 'rebecca' || state.activePanelMode === 'rebecca') {
-      return state.panel || {};
+    // Only fall back to state.panel if state.panel is explicitly typed as rebecca (legacy single-panel setups)
+    if (state.panel?.panelType === 'rebecca') {
+      return state.panel;
     }
-    return state.rebeccaPanel || state.panel || {};
+    return state.rebeccaPanel || { panelType: 'rebecca', url: '', username: '', password: '', apiKey: '', subUrlBase: '', inboundIds: [] };
   }
 
   private getBaseUrl(panelOverride?: any): string {

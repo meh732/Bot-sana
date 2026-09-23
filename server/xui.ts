@@ -161,7 +161,10 @@ class XuiClient {
   public getActiveMode(): 'xui' | 'rebecca' | 'both' {
     const state = db.getState();
     if (state.activePanelMode) return state.activePanelMode;
-    if (state.panel?.panelType === 'rebecca') return 'rebecca';
+    const hasXui = !!(state.panel?.url && state.panel?.panelType !== 'rebecca');
+    const hasRebecca = !!(state.rebeccaPanel?.url || (state.panel?.panelType === 'rebecca' && state.panel?.url));
+    if (hasXui && hasRebecca) return 'both';
+    if (hasRebecca) return 'rebecca';
     return 'xui';
   }
 
