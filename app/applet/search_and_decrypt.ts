@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { decryptData } from './server/crypto';
+import { decryptData } from '../../server/crypto.js';
 
 // Broadly search for transcript.jsonl starting from root /
 function findFile(dir: string, fileName: string): string | null {

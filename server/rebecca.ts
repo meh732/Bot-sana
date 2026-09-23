@@ -412,7 +412,7 @@ export class RebeccaClient {
       username: cleanUser,
       proxies,
       data_limit: dataLimitBytes,
-      expire: expireTimestamp || null,
+      expire: expireTimestamp || 0,
       data_limit_reset_strategy: 'no_reset',
       status: 'active',
       note: note || ''
@@ -552,7 +552,38 @@ export class RebeccaClient {
     try {
       const { baseURL, headers } = await this.getAuthHeaders();
       const status = enable ? 'active' : 'disabled';
-      const res = await this.client.put(`${baseURL}/api/user/${username}`, { status }, {
+      
+      const existingUser = await this.getClient(username);
+      const proxies = existingUser?.proxies || {
+        vless: {},
+        vmess: {},
+        trojan: {},
+        shadowsocks: {}
+      };
+
+      const payload: any = {
+        username,
+        status,
+        proxies
+      };
+
+      if (existingUser?.inbounds) {
+        payload.inbounds = existingUser.inbounds;
+      }
+      if (existingUser?.data_limit !== undefined) {
+        payload.data_limit = existingUser.data_limit;
+      }
+      if (existingUser?.expire !== undefined) {
+        payload.expire = existingUser.expire;
+      }
+      if (existingUser?.note !== undefined) {
+        payload.note = existingUser.note;
+      }
+      if (existingUser?.data_limit_reset_strategy !== undefined) {
+        payload.data_limit_reset_strategy = existingUser.data_limit_reset_strategy;
+      }
+
+      const res = await this.client.put(`${baseURL}/api/user/${username}`, payload, {
         headers,
         validateStatus: () => true,
         timeout: 6000
@@ -581,11 +612,31 @@ export class RebeccaClient {
       } catch (e) {}
 
       // 2. Update limit & expiry
-      const payload: any = {
-        status: 'active',
-        data_limit: dataLimitBytes,
-        expire: expireTimestamp || null
+      const existingUser = await this.getClient(username);
+      const proxies = existingUser?.proxies || {
+        vless: {},
+        vmess: {},
+        trojan: {},
+        shadowsocks: {}
       };
+
+      const payload: any = {
+        username,
+        status: 'active',
+        proxies,
+        data_limit: dataLimitBytes,
+        expire: expireTimestamp || 0
+      };
+
+      if (existingUser?.inbounds) {
+        payload.inbounds = existingUser.inbounds;
+      }
+      if (existingUser?.note !== undefined) {
+        payload.note = existingUser.note;
+      }
+      if (existingUser?.data_limit_reset_strategy !== undefined) {
+        payload.data_limit_reset_strategy = existingUser.data_limit_reset_strategy;
+      }
 
       const res = await this.client.put(`${baseURL}/api/user/${username}`, payload, {
         headers,
