@@ -482,7 +482,8 @@ function SettingsView() {
         freeTestPanel: state.freeTestPanel || 'sanaei',
         freeTestInboundId: state.freeTestInboundId ? Number(state.freeTestInboundId) : undefined,
         freeTestInboundIds: state.freeTestInboundIds || [],
-        freeTestRebeccaInbounds: state.freeTestRebeccaInbounds || [],
+        freeTestRebeccaInbounds: state.freeTestRebeccaTags || state.freeTestRebeccaInbounds || [],
+        freeTestRebeccaTags: state.freeTestRebeccaTags || state.freeTestRebeccaInbounds || [],
         supportUsername: state.supportUsername,
         referralRewardToman: Number(state.referralRewardToman) || 0,
         cardNumber: state.cardNumber,
@@ -528,6 +529,8 @@ function SettingsView() {
       const data = await res.json();
       if (data.success) {
         alert('✅ تنظیمات و اطلاعات اتصال پنل ربکا ذخیره شد.');
+        const updatedState = await fetch('/api/state').then(r => r.json());
+        setState(updatedState);
       } else {
         alert('❌ خطا در ذخیره پنل ربکا: ' + data.message);
       }

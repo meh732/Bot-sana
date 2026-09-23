@@ -71,6 +71,20 @@ export function isSellerUnlimitedLimit(user?: { isSeller?: boolean; debtLimit?: 
   return false;
 }
 
+export function sanitizeChannelId(rawId: string): string {
+  if (!rawId) return '';
+  let str = String(rawId).trim();
+  if (str.includes('t.me/')) {
+    const parts = str.split('t.me/');
+    str = parts[parts.length - 1].split('/')[0].split('?')[0].trim();
+  }
+  if (!str.startsWith('-100') && !/^-?\d+$/.test(str)) {
+    str = str.replace(/@/g, '');
+    if (str) str = `@${str}`;
+  }
+  return str;
+}
+
 export function getSellerDiscountForProduct(user: any, product?: any): number {
   if (!user || !user.isSeller) return 0;
   let sellerDiscount = 0;
@@ -1334,15 +1348,15 @@ export async function initBot() {
        let unjoinedChannels: any[] = [];
        for (const channel of state.forceJoinChannels) {
            if (!channel.id) continue;
+           const chId = sanitizeChannelId(channel.id);
+           if (!chId) continue;
            try {
-              const member = await bot!.getChatMember(channel.id, chatId);
+              const member = await bot!.getChatMember(chId, chatId);
               if (member.status === 'left' || member.status === 'kicked') {
                  unjoinedChannels.push(channel);
               }
            } catch (e) {
-              // If bot is not admin in the channel or invalid id, we assume error and maybe skip or force.
-              // To prevent locking users if bot is removed, we'll assume they need to join if we can't check?
-              // Actually, if bot throws error, it's safer to just skip checking that channel.
+              console.error(`[ForceJoin Check Ignored] ${chId}:`, (e as any)?.message);
            }
        }
 
@@ -1381,10 +1395,10 @@ export async function initBot() {
               return;
            }
        } else if (text === '✅ عضو شدم') {
+           const userObj = db.getUser(chatId);
            bot!.sendMessage(chatId, '✅ از عضویت شما سپاسگزاریم.\nاکنون می‌توانید از امکانات ربات استفاده کنید.', {
-              reply_markup: { remove_keyboard: true } // Then they will /start typically
+              reply_markup: getUserReplyKeyboard(userObj, state, isAdmin)
            });
-           bot!.sendMessage(chatId, 'لطفا /start را مجددا ارسال نمایید تا منو باز شود.');
            return;
        }
     }
@@ -2827,11 +2841,7 @@ export async function initBot() {
        let unjoinedChannels: any[] = [];
        for (const channel of state.forceJoinChannels) {
            if (!channel.id) continue;
-           let chId = String(channel.id).trim();
-           if (!chId.startsWith('-100') && !/^-?\d+$/.test(chId)) {
-              chId = chId.replace(/@/g, '');
-              if (chId) chId = `@${chId}`;
-           }
+           const chId = sanitizeChannelId(channel.id);
            if (!chId) continue;
 
            try {

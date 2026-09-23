@@ -88,6 +88,7 @@ async function startServer() {
       freeTestInboundId, 
       freeTestInboundIds,
       freeTestRebeccaInbounds,
+      freeTestRebeccaTags,
       referralRewardToman, 
       adminIds, 
       cardNumber, 
@@ -118,6 +119,7 @@ async function startServer() {
     if (forceJoinEnabled !== undefined) updates.forceJoinEnabled = Boolean(forceJoinEnabled);
     if (forceJoinChannels !== undefined) updates.forceJoinChannels = forceJoinChannels;
     if (freeTestRebeccaInbounds !== undefined) updates.freeTestRebeccaInbounds = freeTestRebeccaInbounds;
+    if (freeTestRebeccaTags !== undefined) updates.freeTestRebeccaTags = freeTestRebeccaTags;
     if (freeTestInboundId !== undefined) {
       updates.freeTestInboundId = parseInboundId(freeTestInboundId);
     }
