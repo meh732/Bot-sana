@@ -320,9 +320,12 @@ class XuiClient {
       }
 
       if (mode === 'both') {
+        const hasXui = !!(state.panel?.url && state.panel.url.trim() !== '');
+        const hasRebecca = !!(state.rebeccaPanel?.url && state.rebeccaPanel.url.trim() !== '');
+
         const [xuiRes, rebRes] = await Promise.allSettled([
-          this.getXuiInboundsDirect(),
-          rebecca.getInbounds()
+          hasXui ? this.getXuiInboundsDirect() : Promise.resolve([]),
+          hasRebecca ? rebecca.getInbounds() : Promise.resolve([])
         ]);
 
         const list: any[] = [];

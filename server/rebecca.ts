@@ -47,11 +47,10 @@ export class RebeccaService {
     if (state.rebeccaPanel && state.rebeccaPanel.url) {
       return state.rebeccaPanel;
     }
-    // Only fall back to state.panel if state.panel is explicitly typed as rebecca (legacy single-panel setups)
-    if (state.panel?.panelType === 'rebecca') {
-      return state.panel;
+    if (state.panel?.panelType === 'rebecca' || state.activePanelMode === 'rebecca') {
+      return state.panel || {};
     }
-    return state.rebeccaPanel || { panelType: 'rebecca', url: '', username: '', password: '', apiKey: '', subUrlBase: '', inboundIds: [] };
+    return state.rebeccaPanel || state.panel || {};
   }
 
   private getBaseUrl(panelOverride?: any): string {
@@ -270,6 +269,10 @@ export class RebeccaService {
    */
   public async getInbounds(panelOverride?: any): Promise<RebeccaInbound[]> {
     try {
+      const baseUrl = this.getBaseUrl(panelOverride);
+      if (!baseUrl) {
+        return [];
+      }
       const data = await this.request('get', '/api/inbounds', null, null, panelOverride);
       const inbounds: RebeccaInbound[] = [];
 
@@ -534,6 +537,10 @@ export class RebeccaService {
     links?: string[];
   }>> {
     try {
+      const baseUrl = this.getBaseUrl();
+      if (!baseUrl) {
+        return [];
+      }
       const data = await this.request('get', '/api/users', null, { limit: 1000, offset: 0 });
       let usersList: any[] = [];
       if (data && Array.isArray(data.users)) {

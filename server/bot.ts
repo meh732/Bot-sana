@@ -575,8 +575,20 @@ function getSellerReplyKeyboard(): any {
 
 export async function initBot() {
   const state = db.getState();
-  if (!state.botToken) {
-    console.log('[Bot] No Bot Token configured. Bot not started.');
+  const token = (state.botToken || '').trim();
+  if (!token || token === 'BOM_TEST_TOKEN' || !token.includes(':') || token.length < 20) {
+    console.log('[Bot] No valid Bot Token configured. Bot is waiting for configuration.');
+    if (bot) {
+      try {
+        const activeBot = bot;
+        bot = null;
+        if (typeof activeBot.stopPolling === 'function') {
+          await activeBot.stopPolling();
+        }
+        activeBot.removeAllListeners();
+      } catch {}
+      isPolling = false;
+    }
     return;
   }
 
@@ -599,17 +611,28 @@ export async function initBot() {
   await new Promise(resolve => setTimeout(resolve, 1500));
 
   try {
-    console.log(`[Bot] Initializing Telegram Bot with token ending in ...${state.botToken.substring(state.botToken.length - 8 || 0)}`);
-    bot = new TelegramBot(state.botToken, { polling: true });
+    console.log(`[Bot] Initializing Telegram Bot with token ending in ...${token.substring(token.length - 8 || 0)}`);
+    bot = new TelegramBot(token, { polling: true });
     isPolling = true;
 
     // Attach crucial error listeners to avoid crashing or unhandled rejections
-    bot.on('polling_error', (error: any) => {
-      console.error('[Bot Error] Polling error:', error.message || error);
+    bot.on('polling_error', async (error: any) => {
+      const errMsg = error?.message || String(error);
+      if (errMsg.includes('404') || errMsg.includes('401') || errMsg.includes('ETELEGRAM: 404') || errMsg.includes('ETELEGRAM: 401')) {
+        console.warn(`[Bot Warning] Telegram Bot Token is invalid (${errMsg}). Polling halted.`);
+        if (bot && typeof bot.stopPolling === 'function') {
+          try {
+            await bot.stopPolling();
+          } catch {}
+          isPolling = false;
+        }
+        return;
+      }
+      console.error('[Bot Error] Polling error:', errMsg);
     });
 
     bot.on('error', (error: any) => {
-      console.error('[Bot Error] General error:', error.message || error);
+      console.error('[Bot Error] General error:', error?.message || error);
     });
 
     bot.setMyCommands([
@@ -756,7 +779,29 @@ export async function initBot() {
         clientEmail = `${emailPrefix}_${uniqueSuffix}`;
       }
 
-      const client = await xui.addClient(clientEmail, volGb, durDays, selectedInboundIds, product.limitIp || 0, String(chatId), sellerGroupName, product.panelType);
+      let effectiveProductPanelType: 'xui' | 'rebecca' | undefined = product.panelType;
+      if (!effectiveProductPanelType) {
+        const category = (state.categories || []).find((c: any) => String(c.id) === String(product.categoryId));
+        if (
+          category?.panelType === 'rebecca' ||
+          category?.name?.includes('ربکا') ||
+          category?.name?.toLowerCase().includes('rebecca') ||
+          product.name?.includes('ربکا') ||
+          product.name?.toLowerCase().includes('rebecca')
+        ) {
+          effectiveProductPanelType = 'rebecca';
+        } else if (
+          category?.panelType === 'xui' ||
+          category?.name?.includes('سنایی') ||
+          category?.name?.toLowerCase().includes('sanaei') ||
+          product.name?.includes('سنایی') ||
+          product.name?.toLowerCase().includes('sanaei')
+        ) {
+          effectiveProductPanelType = 'xui';
+        }
+      }
+
+      const client = await xui.addClient(clientEmail, volGb, durDays, selectedInboundIds, product.limitIp || 0, String(chatId), sellerGroupName, effectiveProductPanelType);
       
       if (user.isSeller) {
         if (!isPAYG) {
@@ -778,7 +823,7 @@ export async function initBot() {
         subUrl: client.subUrl,
         volumeGb: volGb,
         durationDays: durDays,
-        panelType: client.panelType || product.panelType || 'xui',
+        panelType: client.panelType || effectiveProductPanelType || 'xui',
         createdAt: new Date().toISOString(),
         originalPrice: isPAYG ? 0 : product.price,
         discountPercent: effectiveDiscount,

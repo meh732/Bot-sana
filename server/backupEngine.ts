@@ -73,26 +73,53 @@ export function restoreAnyBackup(rawContent: string, providedPassword?: string):
 
     // 2. Check if encrypted
     if (parsedInitial && typeof parsedInitial === 'object' && parsedInitial.type === 'sanaei_bot_secured_backup' && parsedInitial.iv && parsedInitial.encryptedData) {
-      if (!providedPassword || !providedPassword.trim()) {
-        return {
-          success: false,
-          isPasswordRequired: true,
-          message: 'این فایل پشتیبان با رمز عبور محافظت شده است. لطفاً رمز عبور فایل را وارد نمایید.'
-        };
-      }
+      const currentState = db.getState();
+      let decryptedText: string | null = null;
 
-      const decResult = tryDecrypt(parsedInitial, providedPassword);
-      if (!decResult.success || !decResult.data) {
-        return {
-          success: false,
-          message: decResult.error || 'رمز عبور فایل بکاپ نامعتبر است.'
-        };
+      // Try provided password first
+      if (providedPassword && providedPassword.trim()) {
+        const decResult = tryDecrypt(parsedInitial, providedPassword.trim());
+        if (decResult.success && decResult.data) {
+          decryptedText = decResult.data;
+        } else {
+          return {
+            success: false,
+            message: 'رمز عبور وارد شده برای این فایل پشتیبان نادرست است.'
+          };
+        }
+      } else {
+        // Automatically try system keys and configured backup password
+        const autoPasswordsToTry = [
+          currentState.autoBackupPassword,
+          'XUI_PANEL_SECURE_BACKUP_KEY_2024',
+          'XUI_PANEL_BACKUP_SECURE_KEY_2024',
+          'backup_master_key'
+        ].filter(Boolean) as string[];
+
+        for (const pass of autoPasswordsToTry) {
+          const res = tryDecrypt(parsedInitial, pass);
+          if (res.success && res.data) {
+            try {
+              JSON.parse(res.data);
+              decryptedText = res.data;
+              break;
+            } catch {}
+          }
+        }
+
+        if (!decryptedText) {
+          return {
+            success: false,
+            isPasswordRequired: true,
+            message: 'این فایل پشتیبان دارای رمز عبور است. لطفاً رمز عبور فایل را وارد نمایید.'
+          };
+        }
       }
 
       try {
-        rawDataObj = JSON.parse(decResult.data);
+        rawDataObj = JSON.parse(decryptedText);
       } catch (err: any) {
-        return { success: false, message: 'محتوای رمزگشایی شده قابل تبدیل به JSON نیست.' };
+        return { success: false, message: 'محتوای رمزگشایی شده فایل پشتیبان قابل تبدیل به JSON نیست.' };
       }
     }
 
