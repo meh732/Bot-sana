@@ -385,6 +385,27 @@ export class RebeccaClient {
           inboundsPayload[proto].push(tag);
         }
       }
+    } else {
+      // Auto-fallback: if no inbound tags specified, try to retrieve all from Rebecca panel to avoid 422 errors
+      try {
+        const activeInbounds = await this.getInbounds();
+        if (activeInbounds && activeInbounds.length > 0) {
+          inboundsPayload = {};
+          for (const matched of activeInbounds) {
+            let proto = 'vless';
+            if (matched.protocol) {
+              const p = matched.protocol.toLowerCase();
+              if (p.includes('vmess')) proto = 'vmess';
+              else if (p.includes('trojan')) proto = 'trojan';
+              else if (p.includes('shadowsocks') || p.includes('ss')) proto = 'shadowsocks';
+            }
+            if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
+            inboundsPayload[proto].push(matched.tag);
+          }
+        }
+      } catch (e) {
+        console.error('[Rebecca Autoresolve Inbounds Error]', e);
+      }
     }
 
     const payload: any = {
