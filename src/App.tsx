@@ -688,6 +688,7 @@ function SettingsView() {
     url: '',
     username: '',
     password: '',
+    apiKey: '',
     subUrlBase: '',
     inboundTags: [],
     enabled: true
@@ -975,6 +976,22 @@ function SettingsView() {
                   className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500 text-sm" 
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">کلید API Key یا توکن اختصاصی ربکا (API Key / Bearer Token - اختیاری جهت اتصال مستقیم)</label>
+              <input 
+                type="text" 
+                value={rebeccaData.apiKey || ''} 
+                onChange={e => setState({
+                  ...state, 
+                  rebeccaPanel: { ...rebeccaData, apiKey: e.target.value }
+                })} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="Bearer eyJhbGciOi..." 
+              />
+              <p className="text-xs text-slate-400 mt-1">💡 در صورت وارد کردن توکن API، سیستم به صورت مستقیم با API Key احراز هویت می‌کند.</p>
             </div>
 
             <div>

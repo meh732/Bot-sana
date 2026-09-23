@@ -180,17 +180,99 @@ class Database {
     this.load();
   }
 
+  private sanitizeState(rawState: any): AppState {
+    const sanitized: AppState = {
+      ...defaultState,
+      ...(typeof rawState === 'object' && rawState !== null ? rawState : {})
+    };
+
+    // Sanitize users
+    if (!Array.isArray(sanitized.users)) {
+      sanitized.users = [];
+    } else {
+      sanitized.users = sanitized.users
+        .filter((u: any) => u && (u.chatId !== undefined && u.chatId !== null))
+        .map((u: any) => ({
+          ...u,
+          chatId: Number(u.chatId),
+          balance: typeof u.balance === 'number' && !isNaN(u.balance) ? u.balance : Number(u.balance || 0),
+          debt: typeof u.debt === 'number' && !isNaN(u.debt) ? u.debt : Number(u.debt || 0),
+          testUsed: Boolean(u.testUsed),
+          registeredAt: u.registeredAt || u.joinedAt || new Date().toISOString(),
+          purchases: Array.isArray(u.purchases) ? u.purchases.map((p: any) => ({
+            ...p,
+            id: p.id ? String(p.id) : `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            name: p.name || 'سرویس',
+            price: Number(p.price || 0),
+            volumeGb: Number(p.volumeGb || 0),
+            durationDays: Number(p.durationDays || 0),
+            createdAt: p.createdAt || new Date().toISOString()
+          })) : []
+        }));
+    }
+
+    // Sanitize products
+    if (!Array.isArray(sanitized.products)) {
+      sanitized.products = [];
+    } else {
+      sanitized.products = sanitized.products
+        .filter((p: any) => p && p.id)
+        .map((p: any) => ({
+          ...p,
+          id: String(p.id),
+          name: p.name || 'محصول بدون نام',
+          price: Number(p.price || 0),
+          volumeGb: Number(p.volumeGb || 0),
+          durationDays: Number(p.durationDays || 0),
+          panelType: p.panelType || 'sanaei'
+        }));
+    }
+
+    // Sanitize categories
+    if (!Array.isArray(sanitized.categories)) {
+      sanitized.categories = [];
+    } else {
+      sanitized.categories = sanitized.categories
+        .filter((c: any) => c && c.id)
+        .map((c: any) => ({
+          ...c,
+          id: String(c.id),
+          name: c.name || 'دسته'
+        }));
+    }
+
+    // Sanitize adminIds
+    if (!Array.isArray(sanitized.adminIds)) {
+      sanitized.adminIds = [];
+    } else {
+      sanitized.adminIds = sanitized.adminIds.map((id: any) => Number(id)).filter((id: number) => !isNaN(id));
+    }
+
+    // Sanitize coupons
+    if (!Array.isArray(sanitized.coupons)) {
+      sanitized.coupons = [];
+    }
+
+    // Sanitize pendingPayments
+    if (!Array.isArray(sanitized.pendingPayments)) {
+      sanitized.pendingPayments = [];
+    }
+
+    return sanitized;
+  }
+
   private load() {
     try {
       if (fs.existsSync(DB_PATH)) {
         const data = fs.readFileSync(DB_PATH, 'utf-8');
         const parsed = JSON.parse(data);
-        this.state = { ...defaultState, ...parsed };
+        this.state = this.sanitizeState(parsed);
       } else {
         this.save();
       }
     } catch (e) {
       console.error('Failed to load db.json', e);
+      this.state = { ...defaultState };
     }
   }
 

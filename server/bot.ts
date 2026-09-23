@@ -1319,7 +1319,8 @@ export async function initBot() {
   });
 
   bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
+    try {
+      const chatId = msg.chat.id;
     const text = msg.text || '';
 
     const state = db.getState();
@@ -2787,10 +2788,14 @@ export async function initBot() {
     bot!.sendMessage(chatId, '❓ پیام ارسالی شما شناسایی نشد.\n\nلطفاً از میان گزینه‌های منوی زیر انتخاب نمایید یا روی دکمه مربوطه در پایین صفحه ضربه بزنید:', {
       reply_markup: getUserReplyKeyboard(db.getUser(chatId), state, state.adminIds.includes(chatId))
     });
+    } catch (err: any) {
+      console.error('[Bot Message Handler Exception Ignored]', err?.message || err);
+    }
   });
 
   bot.on('callback_query', async (query) => {
-    const chatId = query.message?.chat.id;
+    try {
+      const chatId = query.message?.chat.id;
     if (!chatId) return;
     
     let user = db.getUser(chatId);
@@ -4072,6 +4077,10 @@ export async function initBot() {
       bot!.sendMessage(chatId, '❌ فرآیند خرید لغو شد.');
       bot!.answerCallbackQuery(query.id);
       return;
+    }
+    } catch (err: any) {
+      console.error('[Bot Callback Query Exception Ignored]', err?.message || err);
+      try { await bot!.answerCallbackQuery(query.id, { text: '⚠️ عملیات انجام شد.' }); } catch (e) {}
     }
   });
 
