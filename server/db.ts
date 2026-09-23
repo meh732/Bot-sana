@@ -136,6 +136,7 @@ export interface AppState {
   freeTestInboundId?: number | string;
   freeTestInboundIds?: (number | string)[];
   freeTestRebeccaInbounds?: string[];
+  freeTestRebeccaTags?: string[];
   forceJoinEnabled?: boolean;
   forceJoinChannels?: { id: string; name: string; url: string }[];
   adminIds: number[];

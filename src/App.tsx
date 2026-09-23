@@ -1179,33 +1179,147 @@ function SettingsView() {
               </div>
 
               {/* Free test specific inbounds */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+              <div className="space-y-4 pt-3 border-t border-slate-200">
+                {/* Sanaei Inbounds Selector */}
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">اینباند اختصاصی تست رایگان سنایی (Inbound ID)</label>
-                  <input 
-                    type="number" 
-                    value={state.freeTestInboundId || ''} 
-                    onChange={e => setState({...state, freeTestInboundId: e.target.value ? parseInt(e.target.value) : undefined})} 
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono bg-white" 
-                    placeholder="مثال: 1 (در صورت خالی بودن از اینباند اصلی استفاده می‌شود)"
-                  />
-                  <p className="text-[11px] text-slate-400 mt-0.5">💡 آیدی اینباند اختصاصی سنایی جهت ساخت اکانت‌های تست رایگان</p>
-                </div>
+                  <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center justify-between">
+                    <span>🔵 انتخاب اینباندهای اختصاصی تست رایگان سنایی:</span>
+                    {inbounds.length > 0 && (
+                      <span className="text-[11px] text-blue-600 font-normal">
+                        ({(state.freeTestInboundIds || []).length} اینباند انتخاب شده)
+                      </span>
+                    )}
+                  </label>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">اینباند/تگ‌های اختصاصی تست رایگان ربکا (کامای انگلیسی)</label>
+                  {inbounds.length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 p-3 bg-white rounded-xl border border-slate-200 max-h-48 overflow-y-auto mb-2">
+                      {inbounds.map((ib: any) => {
+                        const currentIds: number[] = Array.isArray(state.freeTestInboundIds) ? state.freeTestInboundIds : (state.freeTestInboundId ? [Number(state.freeTestInboundId)] : []);
+                        const isChecked = currentIds.includes(ib.id);
+                        return (
+                          <label key={ib.id} className={`flex items-center gap-2 p-2 rounded-lg border text-xs cursor-pointer transition ${isChecked ? 'bg-blue-50/80 border-blue-300' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'}`}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                let updated = [...currentIds];
+                                if (e.target.checked) {
+                                  if (!updated.includes(ib.id)) updated.push(ib.id);
+                                } else {
+                                  updated = updated.filter(id => id !== ib.id);
+                                }
+                                setState({
+                                  ...state,
+                                  freeTestInboundId: updated.length > 0 ? updated[0] : undefined,
+                                  freeTestInboundIds: updated
+                                });
+                              }}
+                              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                            />
+                            <div className="flex flex-col overflow-hidden">
+                              <span className="font-bold text-slate-800 truncate">{ib.remark}</span>
+                              <span className="text-[10px] text-slate-500 font-mono">Port: {ib.port} | ID: {ib.id} ({ib.protocol})</span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 mb-1">💡 جهت انتخاب تیک‌زدنی اینباندهای سنایی، ابتدا در زبانه «تنظیمات پنل سنایی» روی «واکشی لیست اینباندها» کلیک فرمایید.</p>
+                  )}
+
                   <input 
                     type="text" 
-                    value={Array.isArray(state.freeTestRebeccaTags) ? state.freeTestRebeccaTags.join(', ') : (state.freeTestRebeccaTags || '')} 
+                    value={
+                      Array.isArray(state.freeTestInboundIds) && state.freeTestInboundIds.length > 0
+                        ? state.freeTestInboundIds.join(', ')
+                        : (state.freeTestInboundId || '')
+                    } 
+                    onChange={e => {
+                      const val = e.target.value;
+                      const nums = val.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+                      setState({
+                        ...state, 
+                        freeTestInboundId: nums.length > 0 ? nums[0] : undefined,
+                        freeTestInboundIds: nums
+                      });
+                    }} 
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl text-xs font-mono bg-white" 
+                    dir="ltr"
+                    placeholder="ورودی دستی (مثلاً: 34 یا 1, 2, 34)"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-0.5">آیدی‌های تعیین‌شده برای تست رایگان سنایی (در صورت خالی بودن از اینباند اصلی استفاده می‌شود).</p>
+                </div>
+
+                {/* Rebecca Inbounds Selector */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center justify-between">
+                    <span>🟣 انتخاب اینباند/تگ‌های اختصاصی تست رایگان ربکا:</span>
+                    {rebeccaInbounds.length > 0 && (
+                      <span className="text-[11px] text-purple-600 font-normal">
+                        ({(state.freeTestRebeccaTags || []).length} تگ انتخاب شده)
+                      </span>
+                    )}
+                  </label>
+
+                  {rebeccaInbounds.length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 p-3 bg-white rounded-xl border border-slate-200 max-h-48 overflow-y-auto mb-2">
+                      {rebeccaInbounds.map((ib: any) => {
+                        const tag = ib.tag || ib.remark || String(ib.id);
+                        const currentTags: string[] = Array.isArray(state.freeTestRebeccaTags) ? state.freeTestRebeccaTags : [];
+                        const isChecked = currentTags.includes(tag);
+                        return (
+                          <label key={tag} className={`flex items-center gap-2 p-2 rounded-lg border text-xs cursor-pointer transition ${isChecked ? 'bg-purple-50/80 border-purple-300' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'}`}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                let updated = [...currentTags];
+                                if (e.target.checked) {
+                                  if (!updated.includes(tag)) updated.push(tag);
+                                } else {
+                                  updated = updated.filter(t => t !== tag);
+                                }
+                                setState({
+                                  ...state,
+                                  freeTestRebeccaTags: updated,
+                                  freeTestRebeccaInbounds: updated
+                                });
+                              }}
+                              className="rounded border-slate-300 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                            />
+                            <div className="flex flex-col overflow-hidden">
+                              <span className="font-bold text-slate-800 truncate">{tag}</span>
+                              <span className="text-[10px] text-slate-500 font-mono">{ib.protocol} / {ib.network || 'default'}</span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 mb-1">💡 جهت انتخاب تیک‌زدنی اینباندهای ربکا، ابتدا در زبانه «تنظیمات پنل ربکا» روی «واکشی اینباندهای ربکا» کلیک فرمایید.</p>
+                  )}
+
+                  <input 
+                    type="text" 
+                    value={
+                      Array.isArray(state.freeTestRebeccaTags) && state.freeTestRebeccaTags.length > 0
+                        ? state.freeTestRebeccaTags.join(', ')
+                        : (Array.isArray(state.freeTestRebeccaInbounds) ? state.freeTestRebeccaInbounds.join(', ') : (state.freeTestRebeccaTags || ''))
+                    } 
                     onChange={e => {
                       const tags = e.target.value.split(',').map(t => t.trim()).filter(Boolean);
-                      setState({...state, freeTestRebeccaTags: tags});
+                      setState({
+                        ...state, 
+                        freeTestRebeccaTags: tags,
+                        freeTestRebeccaInbounds: tags
+                      });
                     }} 
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono bg-white" 
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl text-xs font-mono bg-white" 
                     dir="ltr"
-                    placeholder="vless-tcp, shadowsocks-tcp"
+                    placeholder="ورودی دستی (مثلاً: vless-tcp, shadowsocks-tcp)"
                   />
-                  <p className="text-[11px] text-slate-400 mt-0.5">💡 تگ‌های پروتکل ربکا جهت ساخت اکانت تست رایگان</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">تگ‌های تعیین‌شده برای تست رایگان ربکا (در صورت خالی بودن همه اینباندها استفاده می‌شوند).</p>
                 </div>
               </div>
             </div>

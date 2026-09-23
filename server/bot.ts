@@ -2474,7 +2474,7 @@ export async function initBot() {
             durationDays: durDays,
             panelType,
             inboundIds: testInboundIds,
-            rebeccaInboundTags: state.freeTestRebeccaInbounds,
+            rebeccaInboundTags: (state.freeTestRebeccaTags && state.freeTestRebeccaTags.length > 0) ? state.freeTestRebeccaTags : state.freeTestRebeccaInbounds,
             limitIp: 1
           },
           customName: clientEmail
@@ -2821,15 +2821,24 @@ export async function initBot() {
        let unjoinedChannels: any[] = [];
        for (const channel of state.forceJoinChannels) {
            if (!channel.id) continue;
+           let chId = String(channel.id).trim();
+           if (!chId.startsWith('-100') && !/^-?\d+$/.test(chId)) {
+              chId = chId.replace(/@/g, '');
+              if (chId) chId = `@${chId}`;
+           }
+           if (!chId) continue;
+
            try {
-              const member = await bot!.getChatMember(channel.id, chatId);
+              const member = await bot!.getChatMember(chId, chatId);
               if (member.status === 'left' || member.status === 'kicked') {
-                 unjoinedChannels.push(channel);
+                 unjoinedChannels.push({ ...channel, id: chId });
               }
-           } catch (e) { }
+           } catch (e) {
+              console.error(`[ForceJoin Check Ignored] ${chId}:`, (e as any)?.message);
+           }
        }
-       if (unjoinedChannels.length > 0) {
-           bot!.answerCallbackQuery(query.id, { text: '⚠️ ابتدا در کانال‌های تعیین شده عضو شوید.', show_alert: true });
+       if (unjoinedChannels.length > 0 && data !== 'check_join') {
+           bot!.answerCallbackQuery(query.id, { text: '⚠️ ابتدا در کانال‌های تعیین شده عضو شوید.', show_alert: true }).catch(() => {});
            return;
        }
     }
