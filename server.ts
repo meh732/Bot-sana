@@ -66,7 +66,16 @@ async function startServer() {
       ...state,
       panel: {
         ...state.panel,
-        password: state.panel.password ? '********' : ''
+        password: state.panel?.password ? '********' : ''
+      },
+      rebeccaPanel: state.rebeccaPanel ? {
+        ...state.rebeccaPanel,
+        password: state.rebeccaPanel.password ? '********' : ''
+      } : {
+        url: '',
+        username: '',
+        password: '',
+        panelType: 'rebecca'
       }
     };
     res.json(safeState);
@@ -132,10 +141,14 @@ async function startServer() {
   });
 
   api.post("/update-panel", async (req, res) => {
-    const { url, username, password, inboundId, inboundIds, apiKey, subUrlBase } = req.body;
+    const { 
+      panelType, url, username, password, inboundId, inboundIds, apiKey, subUrlBase,
+      activePanelMode, rebeccaPanel 
+    } = req.body;
     const currentState = db.getState();
     
     const newPanel = { ...currentState.panel };
+    if (panelType !== undefined) newPanel.panelType = panelType;
     if (url !== undefined) newPanel.url = url;
     if (username !== undefined) newPanel.username = username;
     if (password && password !== '********') newPanel.password = password;
@@ -146,7 +159,24 @@ async function startServer() {
     if (apiKey !== undefined) newPanel.apiKey = apiKey;
     if (subUrlBase !== undefined) newPanel.subUrlBase = subUrlBase;
 
-    db.updateState({ panel: newPanel });
+    const updates: any = { panel: newPanel };
+    if (activePanelMode !== undefined) {
+      updates.activePanelMode = activePanelMode;
+    }
+
+    if (rebeccaPanel) {
+      const currentReb = currentState.rebeccaPanel || { url: '', username: '', password: '', panelType: 'rebecca' };
+      const newReb = { ...currentReb };
+      if (rebeccaPanel.url !== undefined) newReb.url = rebeccaPanel.url;
+      if (rebeccaPanel.username !== undefined) newReb.username = rebeccaPanel.username;
+      if (rebeccaPanel.password && rebeccaPanel.password !== '********') newReb.password = rebeccaPanel.password;
+      if (rebeccaPanel.subUrlBase !== undefined) newReb.subUrlBase = rebeccaPanel.subUrlBase;
+      if (rebeccaPanel.inboundIds !== undefined) newReb.inboundIds = parseInboundIds(rebeccaPanel.inboundIds);
+      newReb.panelType = 'rebecca';
+      updates.rebeccaPanel = newReb;
+    }
+
+    db.updateState(updates);
     res.json({ success: true });
   });
 
@@ -178,21 +208,8 @@ async function startServer() {
 
   api.post("/test-panel-connection", async (req, res) => {
     try {
-      const { url, username, password, apiKey } = req.body;
-      let result;
-      
-      if (url) {
-        // Create a temporary state for testing
-        const tempXui = new (xui.constructor as any)();
-        // Manually patch state for this test if possible, or just update the DB temporarily
-        // But cleaner is to pass the credentials to testConnection
-        console.log(`[X-UI Test] Running test with provided credentials for url: ${url}`);
-        
-        // Let's modify xui.testConnection to take optional params
-        result = await (xui as any).testConnection({ url, username, password, apiKey });
-      } else {
-        result = await xui.testConnection();
-      }
+      const { panelType, url, username, password, apiKey, xui: xuiConf, rebecca: rebConf } = req.body;
+      const result = await xui.testConnection({ panelType, url, username, password, apiKey, xui: xuiConf, rebecca: rebConf });
       res.json(result);
     } catch (e: any) {
        res.json({ success: false, message: e.message });

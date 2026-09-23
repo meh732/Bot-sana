@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 export interface PanelConfig {
+  panelType?: 'xui' | 'rebecca';
   url?: string;
   username?: string;
   password?: string;
@@ -29,6 +30,7 @@ export interface Product {
   limitIp?: number;
   disabled?: boolean;
   isPayAsYouGo?: boolean;
+  panelType?: 'xui' | 'rebecca' | 'default';
 }
 
 export interface SellerDiscountRule {
@@ -45,6 +47,7 @@ export interface Purchase {
   volumeGb: number;
   durationDays: number;
   createdAt: string;
+  panelType?: 'xui' | 'rebecca';
   isPayAsYouGo?: boolean;
   pricePerGb?: number;
   lastUsedBytes?: number;
@@ -109,6 +112,8 @@ export interface PendingPayment {
 export interface AppState {
   botToken?: string;
   panel: PanelConfig;
+  rebeccaPanel?: PanelConfig;
+  activePanelMode?: 'xui' | 'rebecca' | 'both';
   categories?: Category[];
   products: Product[];
   users: User[];
@@ -137,6 +142,8 @@ const DB_PATH = path.join(process.cwd(), 'db.json');
 const defaultState: AppState = {
   botToken: '',
   panel: {},
+  rebeccaPanel: {},
+  activePanelMode: 'xui',
   products: [],
   users: [],
   freeTestVolumeGb: 1,

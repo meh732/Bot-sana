@@ -1,6 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { db } from './db.js';
 import { xui } from './xui.js';
+import { rebecca } from './rebecca.js';
 import { encryptData, decryptData } from './crypto.js';
 import fs from 'fs';
 import path from 'path';
@@ -208,56 +209,89 @@ async function sendServiceInfo(chatId: number, purchase: any) {
   if (!bot) return;
   bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات دقیق، حجم، زمان و لینک ساب از سرور...').catch(() => {});
   try {
+    const cleanPId = purchase.id ? String(purchase.id).trim() : '';
+    const cleanPSubId = purchase.subId ? String(purchase.subId).trim() : '';
+    const pPanel = purchase.panelType;
+
     let clientObj: any = null;
-    let allClients: any[] = [];
-    try {
-      allClients = await xui.getAllClientsWithTraffic();
-    } catch (e: any) {
-      console.error('[Bot] sendServiceInfo error fetching xui clients:', e.message);
+
+    // 1. Try Rebecca directly if panelType is rebecca or starts with reb_
+    if (pPanel === 'rebecca' || (!pPanel && cleanPId.startsWith('reb_'))) {
+      try {
+        if (cleanPId) clientObj = await rebecca.getClient(cleanPId);
+        if (!clientObj && cleanPSubId) clientObj = await rebecca.getClient(cleanPSubId);
+      } catch {}
     }
 
-    const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
-    const cleanPName = purchase.name ? String(purchase.name).trim().toLowerCase() : '';
-    const urlSubId = purchase.subUrl ? purchase.subUrl.split('/sub/')[1]?.split('?')[0]?.split('/')[0] : null;
+    // 2. Fetch from unified clients list (both panels queried with forceBoth = true)
+    if (!clientObj) {
+      try {
+        const allClients = await xui.getAllClientsWithTraffic(true);
+        const pIdLower = cleanPId.toLowerCase();
+        const pSubLower = cleanPSubId.toLowerCase();
+        const pNameLower = (purchase.name || '').trim().toLowerCase();
+        const urlSubId = purchase.subUrl ? purchase.subUrl.split('/sub/')[1]?.split('?')[0]?.split('/')[0]?.toLowerCase() : null;
 
-    if (allClients && allClients.length > 0) {
-      clientObj = allClients.find((cl: any) => {
-        const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
-        const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
-        const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+        clientObj = allClients.find((cl: any) => {
+          const clEmail = (cl.email || '').trim().toLowerCase();
+          const clId = (cl.id || '').trim().toLowerCase();
+          const clSubId = (cl.subId || '').trim().toLowerCase();
 
-        if (cleanPId && (clEmail === cleanPId || clId === cleanPId)) return true;
-        if (cleanPName && clEmail === cleanPName) return true;
-        if (clSubId && purchase.subUrl && purchase.subUrl.includes(cl.subId)) return true;
-        if (clEmail && purchase.subUrl && purchase.subUrl.includes(cl.email)) return true;
-        if (urlSubId && (clSubId === urlSubId.toLowerCase() || clId === urlSubId.toLowerCase() || clEmail === urlSubId.toLowerCase())) return true;
-        return false;
-      });
-    }
-
-    // Heal / update subUrl if missing or outdated
-    const state = db.getState();
-    let subUrl = (purchase.subUrl || '').trim();
-    const effectiveSubId = clientObj?.subId || urlSubId;
-
-    if ((!subUrl || !subUrl.includes('/sub/')) && effectiveSubId && state.panel?.url) {
-      const domain = new URL(state.panel.url).hostname;
-      if (state.panel.subUrlBase && state.panel.subUrlBase.trim() !== '') {
-        let base = state.panel.subUrlBase.trim();
-        if (!base.endsWith('/')) base += '/';
-        subUrl = `${base}${effectiveSubId}`;
-      } else {
-        const panelPortMatch = state.panel.url.match(/:(\d+)$/);
-        const panelPort = panelPortMatch ? panelPortMatch[1] : (state.panel.url.startsWith('https') ? '443' : '80');
-        const protocol = state.panel.url.startsWith('https') ? 'https' : 'http';
-        subUrl = `${protocol}://${domain}:${panelPort}/sub/${effectiveSubId}`;
+          if (pIdLower && (clEmail === pIdLower || clId === pIdLower)) return true;
+          if (pSubLower && (clSubId === pSubLower || clEmail === pSubLower || clId === pSubLower)) return true;
+          if (pNameLower && (clEmail === pNameLower || clId === pNameLower)) return true;
+          if (urlSubId && (clSubId === urlSubId || clId === urlSubId || clEmail === urlSubId)) return true;
+          if (clSubId && purchase.subUrl && purchase.subUrl.toLowerCase().includes(clSubId)) return true;
+          if (clEmail && purchase.subUrl && purchase.subUrl.toLowerCase().includes(clEmail)) return true;
+          return false;
+        });
+      } catch (e: any) {
+        console.error('[Bot] sendServiceInfo error fetching clients:', e.message);
       }
+    }
+
+    // 3. Fallback: try Rebecca directly if still not found and wasn't tried
+    if (!clientObj && pPanel !== 'rebecca') {
+      try {
+        if (cleanPId) clientObj = await rebecca.getClient(cleanPId);
+        if (!clientObj && cleanPSubId) clientObj = await rebecca.getClient(cleanPSubId);
+      } catch {}
+    }
+
+    // Determine effective panel
+    const effectivePanel: 'xui' | 'rebecca' = clientObj?.panelType || purchase.panelType || (cleanPId.startsWith('reb_') ? 'rebecca' : 'xui');
+
+    // Subscription URL healing and construction
+    let subUrl = (purchase.subUrl || '').trim();
+    const effectiveSubId = clientObj?.subId || purchase.subId || purchase.id;
+
+    if (!subUrl || !subUrl.startsWith('http')) {
+      if (effectivePanel === 'rebecca') {
+        subUrl = rebecca.buildFullSubUrl(effectiveSubId ? `/sub/${effectiveSubId}` : '');
+      } else {
+        subUrl = xui.buildXuiSubUrl(effectiveSubId);
+      }
+    } else {
+      if (effectivePanel === 'rebecca') {
+        subUrl = rebecca.buildFullSubUrl(subUrl);
+      } else {
+        const subIdMatch = subUrl.match(/\/sub\/([^/?#]+)/);
+        if (subIdMatch && subIdMatch[1]) {
+          subUrl = xui.buildXuiSubUrl(subIdMatch[1]);
+        }
+      }
+    }
+
+    // Persist updated subUrl and panelType if changed
+    if (subUrl && (subUrl !== purchase.subUrl || purchase.panelType !== effectivePanel)) {
       purchase.subUrl = subUrl;
+      purchase.panelType = effectivePanel;
       const currentUser = db.getUser(chatId);
       if (currentUser && currentUser.purchases) {
         const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
         if (pItem) {
           pItem.subUrl = subUrl;
+          pItem.panelType = effectivePanel;
           db.saveUser(currentUser);
         }
       }
@@ -313,7 +347,7 @@ async function sendServiceInfo(chatId: number, purchase: any) {
         }
 
         let upDownStr = '';
-        if (clientObj) {
+        if (clientObj && (clientObj.up > 0 || clientObj.down > 0)) {
           const upMb = (clientObj.up / (1024 * 1024)).toFixed(1);
           const downMb = (clientObj.down / (1024 * 1024)).toFixed(1);
           upDownStr = `(⬇️ ${downMb} MB | ⬆️ ${upMb} MB)`;
@@ -337,8 +371,8 @@ async function sendServiceInfo(chatId: number, purchase: any) {
         progressBar = `▫️ <b>وضعیت مصرف:</b> [${'🔴'.repeat(filledBlocks)}${'🟢'.repeat(emptyBlocks)}] (${pctUsed}٪ مصرف شده)`;
       } else {
         totalVolStr = purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود';
-        usedVolStr = 'نامشخص';
-        remainingVolStr = 'نامحدود';
+        usedVolStr = purchase.lastUsedBytes ? `${(purchase.lastUsedBytes / (1024 * 1024)).toFixed(1)} مگابایت` : '۰ مگابایت';
+        remainingVolStr = purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود';
       }
     }
 
@@ -372,8 +406,23 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       expiryDateStr = 'پس از اولین اتصال فعال می‌شود';
     } else {
       if (purchase.durationDays && purchase.durationDays > 0) {
-        remainingTimeStr = `${purchase.durationDays} روز (شروع پس از اولین اتصال یا بدون انقضا)`;
-        expiryDateStr = 'نامحدود تا اتصال';
+        if (purchase.createdAt) {
+          const calcExp = new Date(purchase.createdAt).getTime() + (purchase.durationDays * 86400000);
+          const remMs = calcExp - Date.now();
+          if (remMs > 0) {
+            const days = Math.floor(remMs / 86400000);
+            const hours = Math.floor((remMs % 86400000) / 3600000);
+            remainingTimeStr = `${days} روز و ${hours} ساعت باقیمانده`;
+            const expDate = new Date(calcExp);
+            expiryDateStr = `${expDate.toLocaleDateString('fa-IR')}`;
+          } else {
+            remainingTimeStr = `${purchase.durationDays} روز (شروع از زمان فعال‌سازی)`;
+            expiryDateStr = 'محاسبه از اولین اتصال';
+          }
+        } else {
+          remainingTimeStr = `${purchase.durationDays} روز`;
+          expiryDateStr = 'شروع از اولین اتصال';
+        }
       } else {
         remainingTimeStr = 'نامحدود (بدون انقضا)';
         expiryDateStr = 'همیشگی';
@@ -388,8 +437,11 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       statusText = '⚠️ نیاز به تمدید (حجم پایان یافته یا منقضی)';
     }
 
+    const panelNameBadge = effectivePanel === 'rebecca' ? '⚡ ربکا (Rebecca)' : '🌐 سنایی (3X-UI)';
+
     const caption = `🔑 <b>اطلاعات کامل سرویس (${escapeHtml(purchase.name || 'سرویس اشتراکی')})</b>\n\n` +
       `📋 <b>شناسه سفارش:</b> <code>${escapeHtml(String(purchase.id || ''))}</code>\n` +
+      `🖥 <b>پنل میزبان:</b> <b>${panelNameBadge}</b>\n` +
       `🔰 <b>وضعیت اکانت:</b> ${statusText}\n\n` +
       `📊 <b>اطلاعات حجم سرویس:</b>\n` +
       `▫️ <b>کل حجم:</b> ${totalVolStr}\n` +
@@ -410,7 +462,7 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       ) : '⚠️ <i>لینک سابسکریپشن در حال حاضر در دسترس نیست.</i>\n\n') +
       `📱 <b>راهنمای اتصال:</b>\n` +
       `۱. بارکد QR بالا را اسکن کرده یا لینک سابسکریپشن را کپی و اضافه نمایید.\n` +
-      `۲. در نرم‌افزار (V2rayNG / Streisand / V2rayN / Sing-box / Shadowrocket) گزینه <b>Update Subscription</b> را بزنید.`;
+      `۲. در نرم‌افزار گزینه <b>Update Subscription</b> را بزنید.`;
 
     const inlineButtons: any[] = [
       [
@@ -433,12 +485,28 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     if (subUrl) {
       try {
         const buffer = await QRCode.toBuffer(subUrl, { width: 450, margin: 2 });
-        await bot.sendPhoto(chatId, buffer, {
-          caption: caption.length <= 1024 ? caption : caption.slice(0, 1020) + '...',
-          parse_mode: 'HTML',
-          reply_markup: { inline_keyboard: inlineButtons }
-        });
-        photoSent = true;
+        if (caption.length <= 1024) {
+          await bot.sendPhoto(chatId, buffer, {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: inlineButtons }
+          });
+          photoSent = true;
+        } else {
+          const shortCaption = `📱 <b>بارکد اختصاصی اتصال (QR Code)</b>\n` +
+            `🔹 <b>سرویس:</b> ${escapeHtml(purchase.name || 'سرویس اشتراکی')}\n` +
+            `🔰 <b>وضعیت:</b> ${statusText}\n` +
+            `📊 <b>باقیمانده:</b> ${remainingVolStr} | ⏳ <b>زمان:</b> ${remainingTimeStr}`;
+          await bot.sendPhoto(chatId, buffer, {
+            caption: shortCaption,
+            parse_mode: 'HTML'
+          });
+          await bot.sendMessage(chatId, caption, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: inlineButtons }
+          });
+          photoSent = true;
+        }
       } catch (err: any) {
         console.error('[Bot] sendPhoto failed:', err.message);
       }
@@ -674,7 +742,7 @@ export async function initBot() {
         clientEmail = `${emailPrefix}_${uniqueSuffix}`;
       }
 
-      const client = await xui.addClient(clientEmail, volGb, durDays, selectedInboundIds, product.limitIp || 0, String(chatId), sellerGroupName);
+      const client = await xui.addClient(clientEmail, volGb, durDays, selectedInboundIds, product.limitIp || 0, String(chatId), sellerGroupName, product.panelType);
       
       if (user.isSeller) {
         if (!isPAYG) {
@@ -696,6 +764,7 @@ export async function initBot() {
         subUrl: client.subUrl,
         volumeGb: volGb,
         durationDays: durDays,
+        panelType: client.panelType || product.panelType || 'xui',
         createdAt: new Date().toISOString(),
         originalPrice: isPAYG ? 0 : product.price,
         discountPercent: effectiveDiscount,
@@ -2463,6 +2532,7 @@ export async function initBot() {
           subUrl: client.subUrl,
           volumeGb: volGb,
           durationDays: durDays,
+          panelType: client.panelType || 'xui',
           createdAt: new Date().toISOString()
         };
         user.purchases = user.purchases || [];
@@ -2614,9 +2684,13 @@ export async function initBot() {
           msgReply += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
             `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
-            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
-            `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n`;
+          if (p.subUrl) {
+            msgReply += `🔗 لینک ساب: <code>${escapeHtml(p.subUrl)}</code>\n`;
+          }
+          msgReply += `----------------------------------\n`;
+          const btnData = String(p.id).length > 28 ? idx : p.id;
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و QR Code (${idx + 1})`, callback_data: `resend_link_${btnData}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
@@ -2706,9 +2780,13 @@ export async function initBot() {
           msgReply += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
             `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
-            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
-            `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n`;
+          if (p.subUrl) {
+            msgReply += `🔗 لینک ساب: <code>${escapeHtml(p.subUrl)}</code>\n`;
+          }
+          msgReply += `----------------------------------\n`;
+          const btnData = String(p.id).length > 28 ? idx : p.id;
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و QR Code (${idx + 1})`, callback_data: `resend_link_${btnData}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
@@ -3484,9 +3562,13 @@ export async function initBot() {
           msg += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
             `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
-            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
-            `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n`;
+          if (p.subUrl) {
+            msg += `🔗 لینک ساب: <code>${escapeHtml(p.subUrl)}</code>\n`;
+          }
+          msg += `----------------------------------\n`;
+          const btnData = String(p.id).length > 28 ? idx : p.id;
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و QR Code (${idx + 1})`, callback_data: `resend_link_${btnData}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msg, {
@@ -3570,34 +3652,54 @@ export async function initBot() {
           purchase = userPurchases[idx];
         }
       }
-      if (!purchase || !purchase.subUrl) {
-        bot!.sendMessage(chatId, '❌ لینک ساب برای این سرویس یافت نشد.');
+      if (!purchase) {
+        bot!.sendMessage(chatId, '❌ سرویس یافت نشد.');
         return;
       }
 
       try {
-        const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
-        let text = resp.data;
-        if (typeof text === 'string') {
+        let configs = '';
+        if (purchase.subUrl) {
           try {
-            const decoded = Buffer.from(text, 'base64').toString('utf-8');
-            if (decoded.includes('://')) {
-              text = decoded;
+            const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
+            let text = resp.data;
+            if (typeof text === 'string') {
+              try {
+                const decoded = Buffer.from(text, 'base64').toString('utf-8');
+                if (decoded.includes('://')) {
+                  text = decoded;
+                }
+              } catch {}
+            }
+            if (typeof text === 'string' && text.includes('://')) {
+              configs = text.trim();
             }
           } catch {}
         }
-        if (typeof text === 'string' && text.includes('://')) {
-          const configs = text.trim();
+
+        // Rebecca direct fallback
+        if (!configs) {
+          try {
+            const rebClient = await rebecca.getClient(purchase.id || (purchase as any).subId);
+            if (rebClient && rebClient.links && rebClient.links.length > 0) {
+              configs = rebClient.links.join('\n');
+            }
+          } catch {}
+        }
+
+        if (configs) {
           if (configs.length > 3500) {
             await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs.slice(0, 3500))}</code>`, { parse_mode: 'HTML' });
           } else {
             await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs)}</code>`, { parse_mode: 'HTML' });
           }
+        } else if (purchase.subUrl) {
+          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در نرم‌افزار V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
         } else {
-          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در برنامه V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
+          bot!.sendMessage(chatId, `⚠️ لینک سابسکریپشن موجود نیست.`);
         }
       } catch (e: any) {
-        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
+        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl || '')}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
       }
       return;
     }
@@ -3650,36 +3752,29 @@ export async function initBot() {
       bot!.sendMessage(chatId, '⏳ در حال تمدید سرویس در سرور... لطفا شکیبا باشید.');
 
       try {
-        // Find email by subUrl logic OR store email in purchase (we didn't store email originally? let's extract it from xui matching or we can just try emailPrefix rule)
-        // Wait, if we don't have the exact email saved, how do we find the client? We need the exact email!
-        // We know email is usually constructed as:
-        // const cleanUsername = user.username ? user.username.trim().replace(/[^a-zA-Z0-9_]/g, '') : '';
-        // const emailPrefix = cleanUsername || String(chatId);
-        // But what if it's multiple? We didn't save email in purchase!
-        // Let's resolve email from the panel by matching subId!
-        
-        const inboundsList = await xui.getInbounds();
         let targetEmail = "";
+        if (purchase.id && !purchase.id.startsWith('test_')) {
+          targetEmail = purchase.id;
+        }
+
         const expectedSubIdMatch = purchase.subUrl ? purchase.subUrl.substring(purchase.subUrl.lastIndexOf('/') + 1) : null;
-        
-        for (const inbound of inboundsList) {
-          if (inbound.settings) {
-            const parsed = typeof inbound.settings === 'string' ? JSON.parse(inbound.settings) : inbound.settings;
-            if (parsed && parsed.clients) {
-               const foundClient = parsed.clients.find((c: any) => c.subId === expectedSubIdMatch || (c.subId && purchase.subUrl && purchase.subUrl.includes(c.subId)));
-               if (foundClient) {
-                 targetEmail = foundClient.email;
-                 break;
-               }
-            }
-          }
+        const allClients = await xui.getAllClientsWithTraffic();
+        const foundClient = allClients.find((c: any) => 
+          (c.email && targetEmail && c.email.toLowerCase() === targetEmail.toLowerCase()) ||
+          (c.id && targetEmail && c.id.toLowerCase() === targetEmail.toLowerCase()) ||
+          (expectedSubIdMatch && c.subId && c.subId === expectedSubIdMatch) ||
+          (purchase.subUrl && c.subId && purchase.subUrl.includes(c.subId))
+        );
+
+        if (foundClient) {
+          targetEmail = foundClient.email || foundClient.id || targetEmail;
         }
 
         if (!targetEmail) {
           throw new Error('مشخصات کاربر در پنل اصلی یافت نشد. ممکن است اشتراک حذف شده باشد.');
         }
 
-        await xui.renewClient(targetEmail, purchase.volumeGb, purchase.durationDays);
+        await xui.renewClient(targetEmail, purchase.volumeGb, purchase.durationDays, purchase.panelType);
 
         if (!user.isSeller) {
           user.balance = (user.balance || 0) - finalPrice;

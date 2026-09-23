@@ -1,53 +1,224 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package } from 'lucide-react';
+import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package, Menu, ChevronRight, ChevronLeft } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'settings' | 'products' | 'users' | 'sellers'>('settings');
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sanaei_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleCollapsed = () => {
+    setIsCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('sanaei_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const selectTab = (tab: 'settings' | 'products' | 'users' | 'sellers') => {
+    setActiveTab(tab);
+    setIsMobileOpen(false);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMobileOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const tabTitles: Record<string, string> = {
+    settings: 'تنظیمات ربات و اتصال پنل‌ها',
+    products: 'مدیریت و تعریف محصولات',
+    users: 'مدیریت مشتریان و ترافیک',
+    sellers: 'همکاران فروشنده (نمایندگان)'
+  };
 
   return (
-    <div className="w-full h-full min-h-screen bg-slate-50 flex flex-row" dir="rtl" style={{ fontFamily: "'Tahoma', 'Arial', sans-serif" }}>
-      {/* Sidebar */}
-      <div className="w-64 bg-slate-900 h-full min-h-screen flex flex-col shadow-xl sticky top-0">
-        <div className="p-6 border-b border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center text-white font-bold">S</div>
-            <span className="text-white font-semibold text-lg tracking-tight">مدیریت پنل سنایی</span>
-          </div>
-        </div>
-        <nav className="flex-1 p-4 space-y-2">
-          <TabBtn active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings2 className="w-5 h-5"/>}>تنظیمات ربات</TabBtn>
-          <TabBtn active={activeTab === 'products'} onClick={() => setActiveTab('products')} icon={<Box className="w-5 h-5"/>}>لیست محصولات</TabBtn>
-          <TabBtn active={activeTab === 'users'} onClick={() => setActiveTab('users')} icon={<UsersIcon className="w-5 h-5"/>}>مشتریان عادی</TabBtn>
-          <TabBtn active={activeTab === 'sellers'} onClick={() => setActiveTab('sellers')} icon={<UsersIcon className="w-5 h-5 text-indigo-400"/>}>همکاران فروشنده (نمایندگان)</TabBtn>
-        </nav>
-        <div className="p-4 mt-auto border-t border-slate-800">
-          <div className="bg-slate-800 rounded-lg p-3">
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-xs text-slate-400">وضعیت سرور</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            </div>
-            <p className="text-white text-sm" dir="ltr">Sanaei Bot v2.1</p>
-          </div>
-        </div>
-      </div>
+    <div className="w-full min-h-screen bg-slate-100 flex flex-col md:flex-row relative overflow-x-hidden" dir="rtl" style={{ fontFamily: "'Tahoma', 'Arial', sans-serif" }}>
+      {/* Mobile Backdrop Overlay */}
+      {isMobileOpen && (
+        <div
+          onClick={() => setIsMobileOpen(false)}
+          className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-40 md:hidden transition-opacity"
+          aria-hidden="true"
+        />
+      )}
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col h-full min-h-screen overflow-hidden">
-        {/* Header */}
-        <header className="bg-white h-16 border-b border-slate-200 px-8 flex flex-shrink-0 items-center justify-between sticky top-0 z-10 w-full">
-          <h2 className="text-slate-800 font-bold text-xl">داشبورد عملیات خودکار</h2>
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2">
-              <div className="text-left" dir="ltr">
-                <p className="text-sm font-medium">Main Admin</p>
-                <p className="text-xs text-slate-400">Management</p>
+      {/* Sidebar */}
+      <aside
+        className={`
+          fixed md:sticky top-0 right-0 h-screen z-50
+          bg-slate-900 text-slate-100 flex flex-col shadow-2xl md:shadow-none
+          transition-all duration-300 ease-in-out border-l border-slate-800 flex-shrink-0
+          ${isMobileOpen ? 'translate-x-0 w-72 max-w-[85vw]' : 'translate-x-full md:translate-x-0'}
+          ${isCollapsed ? 'md:w-20' : 'md:w-64'}
+        `}
+      >
+        {/* Sidebar Header */}
+        <div className={`p-4 border-b border-slate-800 flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} min-h-[64px]`}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold flex-shrink-0 shadow-md shadow-indigo-600/30">
+              S
+            </div>
+            {!isCollapsed && (
+              <div className="min-w-0">
+                <span className="text-white font-bold text-base tracking-tight truncate block">پنل مدیریت ربات</span>
+                <span className="text-[11px] text-slate-400 block truncate">سنایی و ربکا</span>
               </div>
-              <div className="w-10 h-10 bg-slate-200 rounded-full border-2 border-indigo-500 flex items-center justify-center font-bold text-indigo-500">A</div>
+            )}
+          </div>
+
+          {/* Close button on mobile */}
+          <button
+            onClick={() => setIsMobileOpen(false)}
+            className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+            aria-label="بستن منو"
+          >
+            <X className="w-5 h-5" />
+          </button>
+
+          {/* Desktop collapse toggle button */}
+          {!isCollapsed && (
+            <button
+              onClick={toggleCollapsed}
+              className="hidden md:flex p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition items-center justify-center"
+              title="کوچک کردن سایدبار"
+              aria-label="کوچک کردن سایدبار"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          )}
+        </div>
+
+        {/* When collapsed on desktop, show expand button */}
+        {isCollapsed && (
+          <div className="hidden md:flex justify-center p-2 border-b border-slate-800/60">
+            <button
+              onClick={toggleCollapsed}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              title="بزرگ کردن سایدبار"
+              aria-label="بزرگ کردن سایدبار"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          </div>
+        )}
+
+        {/* Navigation items */}
+        <nav className="flex-1 p-3 space-y-1.5 overflow-y-auto">
+          <TabBtn 
+            active={activeTab === 'settings'} 
+            onClick={() => selectTab('settings')} 
+            isCollapsed={isCollapsed} 
+            icon={<Settings2 className="w-5 h-5"/>}
+          >
+            تنظیمات ربات
+          </TabBtn>
+          <TabBtn 
+            active={activeTab === 'products'} 
+            onClick={() => selectTab('products')} 
+            isCollapsed={isCollapsed} 
+            icon={<Box className="w-5 h-5"/>}
+          >
+            لیست محصولات
+          </TabBtn>
+          <TabBtn 
+            active={activeTab === 'users'} 
+            onClick={() => selectTab('users')} 
+            isCollapsed={isCollapsed} 
+            icon={<UsersIcon className="w-5 h-5"/>}
+          >
+            مشتریان عادی
+          </TabBtn>
+          <TabBtn 
+            active={activeTab === 'sellers'} 
+            onClick={() => selectTab('sellers')} 
+            isCollapsed={isCollapsed} 
+            icon={<UsersIcon className="w-5 h-5 text-indigo-400"/>}
+          >
+            همکاران فروشنده
+          </TabBtn>
+        </nav>
+
+        {/* Sidebar Footer */}
+        <div className="p-3 border-t border-slate-800 mt-auto">
+          {!isCollapsed ? (
+            <div className="bg-slate-800/80 rounded-xl p-3 border border-slate-750">
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-xs text-slate-300 font-medium">وضعیت سرور</span>
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  متصل
+                </span>
+              </div>
+              <p className="text-slate-400 text-xs font-mono" dir="ltr">Sanaei & Rebecca v2.2</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-2" title="وضعیت سرور: متصل">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse mb-1"></span>
+              <span className="text-[10px] text-slate-500 font-mono">v2.2</span>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen bg-slate-50 overflow-hidden">
+        {/* Header */}
+        <header className="bg-white h-16 border-b border-slate-200 px-4 sm:px-6 md:px-8 flex flex-shrink-0 items-center justify-between sticky top-0 z-20 w-full shadow-sm">
+          <div className="flex items-center gap-3">
+            {/* Mobile Hamburger Button */}
+            <button
+              onClick={() => setIsMobileOpen(true)}
+              className="md:hidden p-2 rounded-xl text-slate-700 hover:text-indigo-600 hover:bg-slate-100 transition focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              aria-label="باز کردن منو"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+
+            {/* Desktop toggle button in header for convenience */}
+            <button
+              onClick={toggleCollapsed}
+              className="hidden md:flex p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition focus:outline-none"
+              title={isCollapsed ? 'باز کردن سایدبار' : 'کوچک کردن سایدبار'}
+              aria-label={isCollapsed ? 'باز کردن سایدبار' : 'کوچک کردن سایدبار'}
+            >
+              {isCollapsed ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            </button>
+
+            <div>
+              <h2 className="text-slate-800 font-bold text-base sm:text-lg md:text-xl truncate">
+                {tabTitles[activeTab]}
+              </h2>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="text-left hidden sm:block" dir="ltr">
+                <p className="text-xs sm:text-sm font-semibold text-slate-800 leading-tight">Main Admin</p>
+                <p className="text-[10px] sm:text-xs text-slate-400">Management Panel</p>
+              </div>
+              <div className="w-9 h-9 sm:w-10 sm:h-10 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-200 flex items-center justify-center font-bold text-sm sm:text-base shadow-sm">
+                A
+              </div>
             </div>
           </div>
         </header>
 
-        <main className="p-8 flex flex-col gap-6 flex-1 overflow-y-auto w-full" dir="ltr">
+        {/* Content View */}
+        <main className="p-3.5 sm:p-5 md:p-8 flex flex-col gap-6 flex-1 overflow-y-auto w-full min-w-0 max-w-full" dir="rtl">
           {activeTab === 'settings' && <SettingsView />}
           {activeTab === 'products' && <ProductsView />}
           {activeTab === 'users' && <UsersView />}
@@ -58,14 +229,19 @@ export default function App() {
   );
 }
 
-function TabBtn({ active, onClick, children, icon }: any) {
+function TabBtn({ active, onClick, children, icon, isCollapsed }: any) {
   return (
     <button 
       onClick={onClick}
-      className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors text-sm font-medium ${active ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+      title={typeof children === 'string' ? children : undefined}
+      className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-3.5 py-3'} rounded-xl transition-all duration-200 text-sm font-medium ${
+        active 
+          ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25' 
+          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/80'
+      }`}
     >
-      {icon}
-      <span>{children}</span>
+      <div className="flex-shrink-0 flex items-center justify-center">{icon}</div>
+      {!isCollapsed && <span className="truncate text-right">{children}</span>}
     </button>
   );
 }
@@ -685,27 +861,75 @@ function SettingsView() {
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><RefreshCw className="w-5 h-5 text-emerald-600"/> مشخصات و اتصال پنل سنایی X-UI</h2>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-5 border-b pb-4">
+          <div>
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <RefreshCw className="w-5 h-5 text-emerald-600"/> 
+              {state.panel?.panelType === 'rebecca' ? 'مشخصات و اتصال پنل ربکا (Rebecca Panel)' : 'مشخصات و اتصال پنل سنایی و علیرضا (3X-UI)'}
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {state.panel?.panelType === 'rebecca' 
+                ? 'اتصال خودکار به REST API پنل ربکا بر پایه Xray و معماری مدرن Go' 
+                : 'اتصال خودکار به API پنل سنایی (3X-UI / MHSanaei / Alireza)'}
+            </p>
+          </div>
+          
+          {/* Panel Type Selector */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+            <button
+              type="button"
+              onClick={() => setState({ ...state, panel: { ...state.panel, panelType: 'xui' } })}
+              className={`px-3 py-1.5 rounded-md font-medium transition flex items-center gap-1.5 ${state.panel?.panelType !== 'rebecca' ? 'bg-white shadow-sm text-indigo-700 font-bold' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              <span>3X-UI / سنایی</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setState({ ...state, panel: { ...state.panel, panelType: 'rebecca' } })}
+              className={`px-3 py-1.5 rounded-md font-medium transition flex items-center gap-1.5 ${state.panel?.panelType === 'rebecca' ? 'bg-purple-600 shadow-sm text-white font-bold' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              <span>ربکا (Rebecca)</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${state.panel?.panelType === 'rebecca' ? 'bg-purple-800 text-white' : 'bg-purple-100 text-purple-700'}`}>REST API</span>
+            </button>
+          </div>
+        </div>
         
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">آدرس کامل اتصال به پنل سنایی (X-UI URL)</label>
-            <input type="text" value={state.panel.url || ''} onChange={e => setState({...state, panel: {...state.panel, url: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-left font-mono" dir="ltr" placeholder="http://1.2.3.4:2053" />
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              {state.panel?.panelType === 'rebecca' ? 'آدرس کامل اتصال به پنل ربکا (HTTPS یا دامنه با پورت)' : 'آدرس کامل اتصال به پنل سنایی (X-UI URL)'}
+            </label>
+            <input 
+              type="text" 
+              value={state.panel.url || ''} 
+              onChange={e => setState({...state, panel: {...state.panel, url: e.target.value}})} 
+              className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-left font-mono" 
+              dir="ltr" 
+              placeholder={state.panel?.panelType === 'rebecca' ? 'https://rebecca.example.com:8000' : 'http://1.2.3.4:2053'} 
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
              <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">نام کاربری ورود به پنل</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                {state.panel?.panelType === 'rebecca' ? 'نام کاربری ادمین ربکا' : 'نام کاربری ورود به پنل'}
+              </label>
               <input type="text" value={state.panel.username || ''} onChange={e => setState({...state, panel: {...state.panel, username: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">رمز عبور ورود به پنل</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                {state.panel?.panelType === 'rebecca' ? 'رمز عبور ادمین ربکا' : 'رمز عبور ورود به پنل'}
+              </label>
               <input type="password" value={state.panel.password || ''} onChange={e => setState({...state, panel: {...state.panel, password: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">کلید API Key اختصاصی پنل جدید (جهت عدم نیاز به نام کاربری و رمز عبور)</label>
-            <input type="text" value={state.panel.apiKey || ''} onChange={e => setState({...state, panel: {...state.panel, apiKey: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-left" dir="ltr" placeholder="vXg7hY..." />
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              {state.panel?.panelType === 'rebecca' 
+                ? 'توکن دستی Bearer Token (اختیاری - در صورت تمایل به استفاده از توکن اختصاصی بدون نیاز به لاگین)' 
+                : 'کلید API Key اختصاصی پنل جدید (جهت عدم نیاز به نام کاربری و رمز عبور)'}
+            </label>
+            <input type="text" value={state.panel.apiKey || ''} onChange={e => setState({...state, panel: {...state.panel, apiKey: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-left" dir="ltr" placeholder={state.panel?.panelType === 'rebecca' ? 'eyJhbGciOiJIUzI1NiIsIn...' : 'vXg7hY...'} />
           </div>
 
           <div>
@@ -715,28 +939,40 @@ function SettingsView() {
           </div>
 
           <div className="space-y-4">
-            <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-start gap-3">
-              <Settings2 className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
-              <div className="text-sm text-amber-800">
-                <p className="font-bold">راهنمای اتصال به پنل سنایی (MHSanaei):</p>
-                <p className="mt-1">۱. آدرس پنل را با پورت وارد کنید (مثلا <code className="bg-amber-100 px-1 rounded">http://1.2.3.4:2053</code>).</p>
-                <p>۲. اگر «Web Base Path» در تنظیمات پنل دارید، آن را به انتهای آدرس اضافه نکنید (ربات خودکار شناسایی می‌کند).</p>
-                <p>۳. پیشنهاد می‌شود از کلید API برای امنیت و سرعت بیشتر استفاده کنید.</p>
+            {state.panel?.panelType === 'rebecca' ? (
+              <div className="bg-purple-50 border border-purple-200 p-3.5 rounded-lg flex items-start gap-3">
+                <Settings2 className="w-5 h-5 text-purple-600 mt-0.5 shrink-0" />
+                <div className="text-sm text-purple-900">
+                  <p className="font-bold">راهنمای اتصال به پنل ربکا (Rebecca Panel):</p>
+                  <p className="mt-1">۱. آدرس پنل را با پروتکل <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">https://</code> یا همراه با پورت وارد کنید (پنل ربکا برای امنیت از دسترسی مستقیم IP بدون دامنه/SSL جلوگیری می‌کند).</p>
+                  <p>۲. ربات با استفاده از متد استاندارد OAuth2 از مسیر <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">/api/admin/token</code> لاگین کرده و توکن امنیتی دریافت می‌کند.</p>
+                  <p>۳. ساخت کلاینت‌ها، کنترل انقضا، ترافیک، بازیابی لینک‌های ساب V2Ray/Sing-box و قطع و وصل سرویس‌ها از طریق اندپوینت‌های اختصاصی <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">/api/user</code> و <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">/api/users</code> انجام می‌شود.</p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-start gap-3">
+                <Settings2 className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+                <div className="text-sm text-amber-800">
+                  <p className="font-bold">راهنمای اتصال به پنل سنایی (MHSanaei):</p>
+                  <p className="mt-1">۱. آدرس پنل را با پورت وارد کنید (مثلا <code className="bg-amber-100 px-1 rounded font-mono" dir="ltr">http://1.2.3.4:2053</code>).</p>
+                  <p>۲. اگر «Web Base Path» در تنظیمات پنل دارید، آن را به انتهای آدرس اضافه نکنید (ربات خودکار شناسایی می‌کند).</p>
+                  <p>۳. پیشنهاد می‌شود از کلید API برای امنیت و سرعت بیشتر استفاده کنید.</p>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-2">
               <button 
                 onClick={testConnection} 
                 className="flex-1 bg-slate-800 text-white px-4 py-2.5 rounded-md hover:bg-slate-900 transition flex items-center justify-center font-medium shadow-sm"
               >
-                <Zap className="w-4 h-4 ml-2" /> تست سریع و شناسایی مسیر پنل
+                <Zap className="w-4 h-4 ml-2" /> تست سریع و شناسایی پنل
               </button>
               <button 
                 onClick={loadInbounds} 
                 className="flex-1 bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 transition flex items-center justify-center font-medium shadow-sm"
               >
-                <RefreshCw className="w-4 h-4 ml-2" /> واکشی لیست اینباندها
+                <RefreshCw className="w-4 h-4 ml-2" /> واکشی اینباندها / نودها
               </button>
             </div>
 
@@ -1315,7 +1551,7 @@ function ProductsView() {
              {inbounds.length > 0 ? (
                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-slate-50 rounded-lg border max-h-40 overflow-y-auto">
                  {inbounds.map((ib: any) => {
-                   const isChecked = form.inboundIds.includes(ib.id) || form.inboundId === String(ib.id);
+                   const isChecked = form.inboundIds.some((id: any) => String(id) === String(ib.id)) || String(form.inboundId) === String(ib.id);
                    return (
                      <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-indigo-600 cursor-pointer select-none">
                        <input 
@@ -1323,13 +1559,13 @@ function ProductsView() {
                          checked={isChecked}
                          onChange={e => {
                            let updatedIds = [...form.inboundIds];
-                           if (form.inboundId && !updatedIds.includes(Number(form.inboundId))) {
-                             updatedIds.push(Number(form.inboundId));
+                           if (form.inboundId && !updatedIds.some((id: any) => String(id) === String(form.inboundId))) {
+                             updatedIds.push(form.inboundId);
                            }
                            if (e.target.checked) {
-                             if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                             if (!updatedIds.some((id: any) => String(id) === String(ib.id))) updatedIds.push(ib.id);
                            } else {
-                             updatedIds = updatedIds.filter(id => id !== ib.id);
+                             updatedIds = updatedIds.filter((id: any) => String(id) !== String(ib.id));
                            }
                            setForm({
                              ...form,
@@ -1627,79 +1863,81 @@ function UsersView() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto" dir="rtl">
+    <div className="max-w-5xl mx-auto w-full min-w-0" dir="rtl">
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <table className="w-full text-right">
-          <thead className="bg-slate-50 border-b">
-            <tr>
-              <th className="px-6 py-4 font-semibold text-slate-600">کاربر / آیدی</th>
-              <th className="px-6 py-4 font-semibold text-slate-600">نقش</th>
-              <th className="px-6 py-4 font-semibold text-slate-600">موجودی / بدهی</th>
-              <th className="px-6 py-4 font-semibold text-slate-600">تاریخ ثبت نام</th>
-              <th className="px-6 py-4 font-semibold text-slate-600 text-left">عملیات</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(u => (
-              <tr key={u.chatId} className="border-b last:border-0 hover:bg-slate-50 transition">
-                <td className="px-6 py-4">
-                  <div className="font-medium text-slate-900" dir="ltr">{u.username ? `@${u.username}` : 'No Username'}</div>
-                  <div className="text-sm text-slate-500 font-mono" dir="ltr">{u.chatId}</div>
-                  <div className="mt-1">
-                    {u.testUsed ? (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-semibold">🚫 تست استفاده شده</span>
-                    ) : (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-teal-50 text-teal-700 border border-teal-200 font-semibold">✅ تست مجاز</span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  {u.isSeller ? (
-                    <div>
-                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700 mb-1">فروشنده</span>
-                    </div>
-                  ) : (
-                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">کاربر عادی</span>
-                  )}
-                </td>
-                <td className="px-6 py-4">
-                  {u.isSeller ? (
-                     <div>
-                       <div className="text-sm font-bold text-red-600">بدهی: {(u.debt || 0).toLocaleString()} ت</div>
-                       <div className="text-xs text-slate-500 mt-1">فروش: {(u.totalSales || 0).toLocaleString()} ت</div>
-                     </div>
-                  ) : (
-                     <div className="font-mono text-emerald-600 font-semibold text-sm">{(u.balance || 0).toLocaleString()} ت</div>
-                  )}
-                </td>
-                <td className="px-6 py-4 text-sm text-slate-500">{new Date(u.registeredAt).toLocaleDateString('fa-IR')}</td>
-                <td className="px-6 py-4 text-left flex items-center justify-end gap-2">
-                  <button onClick={() => toggleTest(u.chatId, !!u.testUsed)} className={`px-2.5 py-1.5 rounded-md font-medium text-xs transition ${u.testUsed ? 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-150 border border-slate-200'}`}>
-                    {u.testUsed ? '🔄 فعال‌سازی تست مجدد' : 'علامت تست‌شده'}
-                  </button>
-                  <button onClick={() => toggleSeller(u.chatId, !!u.isSeller)} className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition">
-                    تغییر نقش
-                  </button>
-                  {u.isSeller ? (
-                     <button onClick={() => settleDebt(u.chatId)} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
-                       تسویه حساب
-                     </button>
-                  ) : (
-                     <button onClick={() => charge(u.chatId)} className="inline-flex items-center px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
-                       <BatteryCharging className="w-4 h-4 ml-1" /> شارژ موجودی
-                     </button>
-                  )}
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-right min-w-[650px]">
+            <thead className="bg-slate-50 border-b">
+              <tr>
+                <th className="px-6 py-4 font-semibold text-slate-600">کاربر / آیدی</th>
+                <th className="px-6 py-4 font-semibold text-slate-600">نقش</th>
+                <th className="px-6 py-4 font-semibold text-slate-600">موجودی / بدهی</th>
+                <th className="px-6 py-4 font-semibold text-slate-600">تاریخ ثبت نام</th>
+                <th className="px-6 py-4 font-semibold text-slate-600 text-left">عملیات</th>
               </tr>
-            ))}
-            {users.length === 0 && (
-              <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-500">هنوز کاربری ثبت نشده است.</td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.chatId} className="border-b last:border-0 hover:bg-slate-50 transition">
+                  <td className="px-6 py-4">
+                    <div className="font-medium text-slate-900" dir="ltr">{u.username ? `@${u.username}` : 'No Username'}</div>
+                    <div className="text-sm text-slate-500 font-mono" dir="ltr">{u.chatId}</div>
+                    <div className="mt-1">
+                      {u.testUsed ? (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-semibold">🚫 تست استفاده شده</span>
+                      ) : (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-teal-50 text-teal-700 border border-teal-200 font-semibold">✅ تست مجاز</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    {u.isSeller ? (
+                      <div>
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700 mb-1">فروشنده</span>
+                      </div>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">کاربر عادی</span>
+                    )}
+                  </td>
+                  <td className="px-6 py-4">
+                    {u.isSeller ? (
+                       <div>
+                         <div className="text-sm font-bold text-red-600">بدهی: {(u.debt || 0).toLocaleString()} ت</div>
+                         <div className="text-xs text-slate-500 mt-1">فروش: {(u.totalSales || 0).toLocaleString()} ت</div>
+                       </div>
+                    ) : (
+                       <div className="font-mono text-emerald-600 font-semibold text-sm">{(u.balance || 0).toLocaleString()} ت</div>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-slate-500">{new Date(u.registeredAt).toLocaleDateString('fa-IR')}</td>
+                  <td className="px-6 py-4 text-left flex items-center justify-end gap-2">
+                    <button onClick={() => toggleTest(u.chatId, !!u.testUsed)} className={`px-2.5 py-1.5 rounded-md font-medium text-xs transition ${u.testUsed ? 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-150 border border-slate-200'}`}>
+                      {u.testUsed ? '🔄 فعال‌سازی تست مجدد' : 'علامت تست‌شده'}
+                    </button>
+                    <button onClick={() => toggleSeller(u.chatId, !!u.isSeller)} className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition">
+                      تغییر نقش
+                    </button>
+                    {u.isSeller ? (
+                       <button onClick={() => settleDebt(u.chatId)} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
+                         تسویه حساب
+                       </button>
+                    ) : (
+                       <button onClick={() => charge(u.chatId)} className="inline-flex items-center px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
+                         <BatteryCharging className="w-4 h-4 ml-1" /> شارژ موجودی
+                       </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {users.length === 0 && (
+                <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-500">هنوز کاربری ثبت نشده است.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
-  )
+  );
 }
 
 function parseAmountInput(input: any): number | null {
@@ -2338,8 +2576,9 @@ function SellersView() {
 
       {/* Sellers List Table */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <table className="w-full text-right">
-          <thead className="bg-slate-50 border-b">
+        <div className="overflow-x-auto">
+          <table className="w-full text-right min-w-[750px]">
+            <thead className="bg-slate-50 border-b">
             <tr>
               <th className="px-6 py-4 font-semibold text-slate-600">همکار / شناسه‌تلگرام</th>
               <th className="px-6 py-4 font-semibold text-slate-600">بدهی مالی / سقف خرید</th>
@@ -2472,6 +2711,7 @@ function SellersView() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import https from 'https';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db.js';
+import { rebecca } from './rebecca.js';
 
 class XuiClient {
   private client: AxiosInstance;
@@ -157,7 +158,63 @@ class XuiClient {
     };
   }
 
+  public getActiveMode(): 'xui' | 'rebecca' | 'both' {
+    const state = db.getState();
+    if (state.activePanelMode) return state.activePanelMode;
+    if (state.panel?.panelType === 'rebecca') return 'rebecca';
+    return 'xui';
+  }
+
   public async testConnection(panelOverride?: any) {
+    try {
+      const state = db.getState();
+      const mode = panelOverride?.panelType || state.activePanelMode || (state.panel?.panelType === 'rebecca' ? 'rebecca' : 'xui');
+
+      if (mode === 'both') {
+        const xuiConf = panelOverride?.xui || (state.panel?.panelType !== 'rebecca' ? state.panel : {});
+        const rebConf = panelOverride?.rebecca || state.rebeccaPanel || (state.panel?.panelType === 'rebecca' ? state.panel : {});
+
+        const [xuiRes, rebRes] = await Promise.allSettled([
+          this.testXuiDirect(xuiConf),
+          rebecca.testConnection(rebConf)
+        ]);
+
+        const xuiResult = xuiRes.status === 'fulfilled' ? xuiRes.value : { success: false, message: (xuiRes as any).reason?.message || 'خطای اتصال به سنایی' };
+        const rebResult = rebRes.status === 'fulfilled' ? rebRes.value : { success: false, message: (rebRes as any).reason?.message || 'خطای اتصال به ربکا' };
+
+        const bothSuccess = !!(xuiResult.success && rebResult.success);
+        const anySuccess = !!(xuiResult.success || rebResult.success);
+
+        let msg = '';
+        if (bothSuccess) {
+          msg = `✅ هر دو پنل با موفقیت متصل شدند!\n• سنایی/3X-UI: متصل\n• ربکا: متصل`;
+        } else if (anySuccess) {
+          msg = `⚠️ وضعیت اتصال پنل‌ها:\n• سنایی/3X-UI: ${xuiResult.success ? 'متصل ✅' : 'خطا ❌ (' + xuiResult.message + ')'}\n• ربکا: ${rebResult.success ? 'متصل ✅' : 'خطا ❌ (' + rebResult.message + ')'}`;
+        } else {
+          msg = `❌ عدم برقراری ارتباط با پنل‌ها:\n• سنایی: ${xuiResult.message}\n• ربکا: ${rebResult.message}`;
+        }
+
+        return {
+          success: anySuccess,
+          bothSuccess,
+          message: msg,
+          xui: xuiResult,
+          rebecca: rebResult
+        };
+      }
+
+      if (mode === 'rebecca') {
+        return await rebecca.testConnection(panelOverride || state.rebeccaPanel || state.panel);
+      }
+
+      return await this.testXuiDirect(panelOverride || state.panel);
+    } catch (e: any) {
+      console.error('[Panel Test Error]:', e.message);
+      return { success: false, message: e.message };
+    }
+  }
+
+  public async testXuiDirect(panelOverride?: any) {
     try {
       const opts = await this.getAuthOptions(panelOverride);
       const paths = [
@@ -185,7 +242,7 @@ class XuiClient {
             }
             return { 
               success: true, 
-              message: `اتصال برقرار شد. مسیر معتبر: ${path}`,
+              message: `اتصال پنل سنایی برقرار شد. مسیر معتبر: ${path}`,
               path: path
             };
           }
@@ -202,10 +259,10 @@ class XuiClient {
     }
   }
 
-  public async getInbounds() {
+  public async getXuiInboundsDirect(): Promise<any[]> {
     try {
       const state = db.getState();
-      const panel = state.panel;
+      const panel = (state.panel?.panelType !== 'rebecca' ? state.panel : {}) || {};
       const hasApiKey = panel.apiKey && panel.apiKey.trim() !== '';
       const hasUserPass = (panel.username && panel.username.trim() !== '') && (panel.password && panel.password.trim() !== '');
       if (!panel.url || (!hasApiKey && !hasUserPass)) {
@@ -245,8 +302,70 @@ class XuiClient {
     }
   }
 
+  public async getInbounds(): Promise<any[]> {
+    try {
+      const mode = this.getActiveMode();
+
+      if (mode === 'rebecca') {
+        const rebInbounds = await rebecca.getInbounds();
+        return (rebInbounds || []).map((ib: any) => ({
+          ...ib,
+          panelType: 'rebecca',
+          rawId: ib.id,
+          remark: ib.remark || ib.tag || ib.id
+        }));
+      }
+
+      if (mode === 'both') {
+        const [xuiRes, rebRes] = await Promise.allSettled([
+          this.getXuiInboundsDirect(),
+          rebecca.getInbounds()
+        ]);
+
+        const list: any[] = [];
+        if (xuiRes.status === 'fulfilled' && Array.isArray(xuiRes.value)) {
+          for (const ib of xuiRes.value) {
+            list.push({
+              ...ib,
+              panelType: 'xui',
+              rawId: ib.id,
+              remark: `[سنایی] ${ib.remark || `اینباند ${ib.id}`}`
+            });
+          }
+        }
+        if (rebRes.status === 'fulfilled' && Array.isArray(rebRes.value)) {
+          for (const ib of rebRes.value) {
+            list.push({
+              ...ib,
+              panelType: 'rebecca',
+              rawId: ib.id,
+              remark: `[ربکا] ${ib.remark || ib.tag || ib.id}`
+            });
+          }
+        }
+        return list;
+      }
+
+      // Default: X-UI only
+      const xuiInbounds = await this.getXuiInboundsDirect();
+      return (xuiInbounds || []).map((ib: any) => ({
+        ...ib,
+        panelType: 'xui',
+        rawId: ib.id
+      }));
+    } catch (e: any) {
+      console.error('[getInbounds Error]:', e.message);
+      return [];
+    }
+  }
+
   public async delClient(inboundId: number, clientUuid: string) {
     try {
+      const state = db.getState();
+      if (state.panel?.panelType === 'rebecca') {
+        return await rebecca.delClient(inboundId, clientUuid);
+      }
+
       const opts = await this.getAuthOptions();
       console.log(`[X-UI] Deleting client ${clientUuid} from inbound ${inboundId}`);
       
@@ -290,7 +409,34 @@ class XuiClient {
     }
   }
 
-  public async delClientByEmail(email: string) {
+  public async delClientByEmail(email: string, panelType?: 'xui' | 'rebecca') {
+    try {
+      const mode = this.getActiveMode();
+      if (panelType === 'rebecca' || (mode === 'rebecca' && panelType !== 'xui')) {
+        return await rebecca.delClientByEmail(email);
+      }
+      if (panelType === 'xui' || (mode === 'xui' && panelType !== 'rebecca')) {
+        return await this.delXuiClientByEmailDirect(email);
+      }
+
+      // 'both' mode
+      let deleted = false;
+      try {
+        const r1 = await this.delXuiClientByEmailDirect(email);
+        if (r1) deleted = true;
+      } catch {}
+      try {
+        const r2 = await rebecca.delClientByEmail(email);
+        if (r2) deleted = true;
+      } catch {}
+      return deleted;
+    } catch (e: any) {
+      console.error('[delClientByEmail Error]:', e.message);
+      return false;
+    }
+  }
+
+  public async delXuiClientByEmailDirect(email: string) {
     try {
       const opts = await this.getAuthOptions();
       console.log(`[X-UI] Deleting client by email: ${email}`);
@@ -309,7 +455,67 @@ class XuiClient {
     }
   }
 
-  public async getAllClientsWithTraffic(): Promise<Array<{
+  public buildXuiSubUrl(subId: string, panelOverride?: any): string {
+    if (!subId) return '';
+    const state = db.getState();
+    const panelConfig = panelOverride || (state.panel?.panelType !== 'rebecca' ? state.panel : {}) || {};
+    const subBase = (panelConfig.subUrlBase || '').trim();
+
+    if (subBase && subBase.startsWith('http')) {
+      const baseClean = subBase.replace(/\/+$/, '');
+      if (baseClean.endsWith('/sub')) {
+        return `${baseClean}/${subId}`;
+      } else if (baseClean.includes('/sub/')) {
+        return `${baseClean}/${subId}`;
+      } else {
+        return `${baseClean}/sub/${subId}`;
+      }
+    }
+
+    if (!panelConfig.url) return '';
+    try {
+      const parsed = new URL(panelConfig.url);
+      return `${parsed.origin}/sub/${subId}`;
+    } catch {
+      const cleanUrl = panelConfig.url.replace(/\/+$/, '').replace(/\/panel.*$/, '');
+      return `${cleanUrl}/sub/${subId}`;
+    }
+  }
+
+  public async getClient(idOrEmail: string, preferredPanel?: 'xui' | 'rebecca'): Promise<any | null> {
+    if (!idOrEmail) return null;
+    const cleanId = String(idOrEmail).trim();
+
+    // 1. If preferredPanel is rebecca, query Rebecca first
+    if (preferredPanel === 'rebecca') {
+      try {
+        const reb = await rebecca.getClient(cleanId);
+        if (reb) return reb;
+      } catch {}
+    }
+
+    // 2. Query unified client list with forceBoth
+    const all = await this.getAllClientsWithTraffic(true);
+    const cleanLower = cleanId.toLowerCase();
+    const found = all.find(c => 
+      (c.id && c.id.toLowerCase() === cleanLower) ||
+      (c.email && c.email.toLowerCase() === cleanLower) ||
+      (c.subId && c.subId.toLowerCase() === cleanLower)
+    );
+    if (found) return found;
+
+    // 3. Fallback: try Rebecca directly if not tried yet
+    if (preferredPanel !== 'rebecca') {
+      try {
+        const reb = await rebecca.getClient(cleanId);
+        if (reb) return reb;
+      } catch {}
+    }
+
+    return null;
+  }
+
+  public async getAllClientsWithTraffic(forceBoth: boolean = false): Promise<Array<{
     id: string;
     email: string;
     subId?: string;
@@ -319,10 +525,66 @@ class XuiClient {
     total: number;
     expiryTime: number;
     enable: boolean;
-    inboundIds: number[];
+    inboundIds?: number[];
+    subUrl?: string;
+    links?: string[];
+    panelType?: 'xui' | 'rebecca';
   }>> {
     try {
-      const inboundsList = await this.getInbounds();
+      const mode = this.getActiveMode();
+      const state = db.getState();
+      const hasXui = !!(state.panel?.url && state.panel?.panelType !== 'rebecca');
+      const hasRebecca = !!(state.rebeccaPanel?.url || (state.panel?.panelType === 'rebecca' && state.panel?.url));
+
+      if (forceBoth || mode === 'both' || (hasXui && hasRebecca)) {
+        const [xuiRes, rebRes] = await Promise.allSettled([
+          hasXui ? this.getXuiAllClientsWithTrafficDirect() : Promise.resolve([]),
+          hasRebecca ? rebecca.getAllClientsWithTraffic() : Promise.resolve([])
+        ]);
+
+        const list: any[] = [];
+        if (xuiRes.status === 'fulfilled' && Array.isArray(xuiRes.value)) {
+          for (const c of xuiRes.value) {
+            list.push({ ...c, panelType: 'xui' as const });
+          }
+        }
+        if (rebRes.status === 'fulfilled' && Array.isArray(rebRes.value)) {
+          for (const c of rebRes.value) {
+            list.push({ ...c, panelType: 'rebecca' as const });
+          }
+        }
+        return list;
+      }
+
+      if (mode === 'rebecca') {
+        const rebClients = await rebecca.getAllClientsWithTraffic();
+        return rebClients.map(c => ({ ...c, panelType: 'rebecca' as const }));
+      }
+
+      const xuiClients = await this.getXuiAllClientsWithTrafficDirect();
+      return xuiClients.map(c => ({ ...c, panelType: 'xui' as const }));
+    } catch (err: any) {
+      console.error('[getAllClientsWithTraffic Error]:', err.message);
+      return [];
+    }
+  }
+
+  public async getXuiAllClientsWithTrafficDirect(): Promise<Array<{
+    id: string;
+    email: string;
+    subId?: string;
+    up: number;
+    down: number;
+    totalUsed: number;
+    total: number;
+    expiryTime: number;
+    enable: boolean;
+    inboundIds?: number[];
+    subUrl?: string;
+    links?: string[];
+  }>> {
+    try {
+      const inboundsList = await this.getXuiInboundsDirect();
       if (!inboundsList || !Array.isArray(inboundsList) || inboundsList.length === 0) {
         return [];
       }
@@ -447,10 +709,36 @@ class XuiClient {
     }
   }
 
-  public async updateClientEnable(email: string, enable: boolean) {
+  public async updateClientEnable(email: string, enable: boolean, panelType?: 'xui' | 'rebecca') {
+    try {
+      const mode = this.getActiveMode();
+      if (panelType === 'rebecca' || (mode === 'rebecca' && panelType !== 'xui')) {
+        return await rebecca.updateClientEnable(email, enable);
+      }
+      if (panelType === 'xui' || (mode === 'xui' && panelType !== 'rebecca')) {
+        return await this.updateXuiClientEnableDirect(email, enable);
+      }
+
+      let updated = false;
+      try {
+        const r1 = await this.updateXuiClientEnableDirect(email, enable);
+        if (r1) updated = true;
+      } catch {}
+      try {
+        const r2 = await rebecca.updateClientEnable(email, enable);
+        if (r2) updated = true;
+      } catch {}
+      return updated;
+    } catch (e: any) {
+      console.error('[updateClientEnable Error]', e.message);
+      return false;
+    }
+  }
+
+  public async updateXuiClientEnableDirect(email: string, enable: boolean) {
     try {
       const opts = await this.getAuthOptions();
-      const inboundsList = await this.getInbounds();
+      const inboundsList = await this.getXuiInboundsDirect();
       if (!inboundsList || !Array.isArray(inboundsList) || inboundsList.length === 0) return false;
 
       let successCount = 0;
@@ -521,11 +809,34 @@ class XuiClient {
     }
   }
 
-  public async renewClient(email: string, volumeGb: number, durationDays: number) {
+  public async renewClient(email: string, volumeGb: number, durationDays: number, panelType?: 'xui' | 'rebecca') {
     try {
-      const opts = await this.getAuthOptions();
+      const mode = this.getActiveMode();
+      if (panelType === 'rebecca' || (mode === 'rebecca' && panelType !== 'xui')) {
+        return await rebecca.renewClient(email, volumeGb, durationDays);
+      }
+      if (panelType === 'xui' || (mode === 'xui' && panelType !== 'rebecca')) {
+        return await this.renewXuiClientDirect(email, volumeGb, durationDays);
+      }
+
+      try {
+        const res = await this.renewXuiClientDirect(email, volumeGb, durationDays);
+        if (res) return res;
+      } catch {
+        // Fallback to rebecca
+      }
+      return await rebecca.renewClient(email, volumeGb, durationDays);
+    } catch (e: any) {
+      console.error('[renewClient Error]', e.message);
+      throw e;
+    }
+  }
+
+  public async renewXuiClientDirect(email: string, volumeGb: number, durationDays: number) {
+    try {
       const state = db.getState();
-      const inboundsList = await this.getInbounds();
+      const opts = await this.getAuthOptions();
+      const inboundsList = await this.getXuiInboundsDirect();
       
       let targetClient: any = null;
       let targetInboundIds: number[] = [];
@@ -550,12 +861,12 @@ class XuiClient {
       }
       
       if (!targetClient) {
-        throw new Error(`کاربری با ایمیل ${email} در پنل یافت نشد.`);
+        throw new Error(`کاربری با ایمیل ${email} در پنل سنایی یافت نشد.`);
       }
 
       console.log(`[X-UI] Renewing client ${email}. Deleting existing...`);
       // Delete old client first
-      await this.delClientByEmail(email);
+      await this.delXuiClientByEmailDirect(email);
       for (const ibId of targetInboundIds) {
         await this.delClient(ibId, targetClient.id || targetClient.password);
       }
@@ -663,27 +974,16 @@ class XuiClient {
         throw new Error(errorMsg);
       }
 
-      const domain = new URL(state.panel.url).hostname;
-      let subUrlStr;
-      if (state.panel.subUrlBase && state.panel.subUrlBase.trim() !== '') {
-        let base = state.panel.subUrlBase.trim();
-        if (!base.endsWith('/')) {
-          base += '/';
-        }
-        subUrlStr = `${base}${subId}`;
-      } else {
-        const panelPortMatch = state.panel.url.match(/:(\d+)$/);
-        const panelPort = panelPortMatch ? panelPortMatch[1] : (state.panel.url.startsWith('https') ? '443' : '80');
-        subUrlStr = `http://${domain}:${panelPort}/sub/${subId}`;
-      }
+      const subUrlStr = this.buildXuiSubUrl(subId);
 
       return {
         subUrl: subUrlStr,
         email: email,
-        id: clientId
+        id: clientId,
+        panelType: 'xui' as const
       };
     } catch (e: any) {
-      console.error('[X-UI] addClient Error:', e.message);
+      console.error('[X-UI] renewClient Error:', e.message);
       throw e;
     }
   }
@@ -696,6 +996,10 @@ class XuiClient {
       const isTargetValid = (target: any) => {
         if (target === undefined || target === null || target === '') return false;
         const targetStr = String(target).trim().toLowerCase();
+        // In dual-panel mode or for Rebecca inbounds, preserve string/tag IDs
+        if (targetStr.startsWith('reb_') || (isNaN(Number(target)) && isNaN(Number(targetStr)))) {
+          return true;
+        }
         const targetNum = Number(target);
         return inboundsList.some(ib => (
           (!isNaN(targetNum) && Number(ib.id) === targetNum) ||
@@ -827,7 +1131,52 @@ class XuiClient {
     }
   }
 
-  public async addClient(email: string, volumeGb: number, durationDays: number, targetInboundIds?: string | number | (string | number)[], limitIp: number = 0, telegramId?: string, group?: string) {
+  public async addClient(
+    email: string, 
+    volumeGb: number, 
+    durationDays: number, 
+    targetInboundIds?: string | number | (string | number)[], 
+    limitIp: number = 0, 
+    telegramId?: string, 
+    group?: string,
+    preferredPanelType?: 'xui' | 'rebecca'
+  ) {
+    const state = db.getState();
+    const mode = this.getActiveMode();
+
+    let targetPanel: 'xui' | 'rebecca' = 'xui';
+    if (preferredPanelType === 'rebecca') {
+      targetPanel = 'rebecca';
+    } else if (preferredPanelType === 'xui') {
+      targetPanel = 'xui';
+    } else if (mode === 'rebecca') {
+      targetPanel = 'rebecca';
+    } else if (mode === 'both') {
+      const rawTargets = Array.isArray(targetInboundIds) ? targetInboundIds : (targetInboundIds !== undefined ? [targetInboundIds] : []);
+      const hasRebTag = rawTargets.some(t => typeof t === 'string' && (t.startsWith('reb_') || isNaN(Number(t))));
+      if (hasRebTag) {
+        targetPanel = 'rebecca';
+      } else {
+        targetPanel = (state.panel?.url ? 'xui' : (state.rebeccaPanel?.url ? 'rebecca' : 'xui'));
+      }
+    }
+
+    if (targetPanel === 'rebecca') {
+      let cleanTargets = targetInboundIds;
+      if (Array.isArray(targetInboundIds)) {
+        cleanTargets = targetInboundIds.map(t => typeof t === 'string' && t.startsWith('reb_') ? t.replace('reb_', '') : t);
+      } else if (typeof targetInboundIds === 'string' && targetInboundIds.startsWith('reb_')) {
+        cleanTargets = targetInboundIds.replace('reb_', '');
+      }
+      const res = await rebecca.addClient(email, volumeGb, durationDays, cleanTargets, limitIp, telegramId, group);
+      return { ...res, panelType: 'rebecca' as const };
+    }
+
+    const res = await this.addXuiClientDirect(email, volumeGb, durationDays, targetInboundIds, limitIp, telegramId, group);
+    return { ...res, panelType: 'xui' as const };
+  }
+
+  public async addXuiClientDirect(email: string, volumeGb: number, durationDays: number, targetInboundIds?: string | number | (string | number)[], limitIp: number = 0, telegramId?: string, group?: string) {
     const state = db.getState();
     let rawTargets: (string | number)[] = [];
 
@@ -853,7 +1202,7 @@ class XuiClient {
       const opts = await this.getAuthOptions();
       
       // Fetch live inbounds from the panel to resolve tags, remarks, and ports dynamically
-      const inboundsList: any[] = await this.getInbounds() || [];
+      const inboundsList: any[] = await this.getXuiInboundsDirect() || [];
       
       // Perform self-healing on database state for deleted inbounds
       if (inboundsList.length > 0) {
@@ -1109,18 +1458,14 @@ class XuiClient {
         throw new Error(errorMsg);
       }
 
-      const domain = new URL(state.panel.url).hostname;
-      let subUrlStr;
-      if (state.panel.subUrlBase && state.panel.subUrlBase.trim() !== '') {
-        let base = state.panel.subUrlBase.trim();
-        if (!base.endsWith('/')) {
-          base += '/';
+      const subUrlStr = this.buildXuiSubUrl(subId);
+      let domain = 'vpn.domain.com';
+      try {
+        const pUrl = this.lastPanelUrl || db.getState().panel?.url;
+        if (pUrl) {
+          domain = new URL(pUrl).hostname;
         }
-        subUrlStr = `${base}${subId}`;
-      } else {
-        const subPath = state.panel.url.endsWith('/') ? state.panel.url : state.panel.url + '/';
-        subUrlStr = `${subPath}sub/${subId}`;
-      }
+      } catch {}
 
       return {
         uuid: clientId,
