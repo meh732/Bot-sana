@@ -1177,6 +1177,37 @@ function SettingsView() {
                   />
                 </div>
               </div>
+
+              {/* Free test specific inbounds */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">اینباند اختصاصی تست رایگان سنایی (Inbound ID)</label>
+                  <input 
+                    type="number" 
+                    value={state.freeTestInboundId || ''} 
+                    onChange={e => setState({...state, freeTestInboundId: e.target.value ? parseInt(e.target.value) : undefined})} 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono bg-white" 
+                    placeholder="مثال: 1 (در صورت خالی بودن از اینباند اصلی استفاده می‌شود)"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-0.5">💡 آیدی اینباند اختصاصی سنایی جهت ساخت اکانت‌های تست رایگان</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">اینباند/تگ‌های اختصاصی تست رایگان ربکا (کامای انگلیسی)</label>
+                  <input 
+                    type="text" 
+                    value={Array.isArray(state.freeTestRebeccaTags) ? state.freeTestRebeccaTags.join(', ') : (state.freeTestRebeccaTags || '')} 
+                    onChange={e => {
+                      const tags = e.target.value.split(',').map(t => t.trim()).filter(Boolean);
+                      setState({...state, freeTestRebeccaTags: tags});
+                    }} 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono bg-white" 
+                    dir="ltr"
+                    placeholder="vless-tcp, shadowsocks-tcp"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-0.5">💡 تگ‌های پروتکل ربکا جهت ساخت اکانت تست رایگان</p>
+                </div>
+              </div>
             </div>
 
             {/* Financial & Support */}

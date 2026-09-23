@@ -3531,7 +3531,7 @@ export async function initBot() {
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
             `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
             `----------------------------------\n`;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}` }]);
         });
 
         bot!.sendMessage(chatId, msg, {
@@ -3677,7 +3677,7 @@ export async function initBot() {
         if ((user.balance || 0) < finalPrice) {
           bot!.sendMessage(chatId, `❌ موجودی شما برای تمدید این سرویس کافی نیست.\n\nقیمت: ${finalPrice.toLocaleString()} تومان\nموجودی شما: ${(user.balance || 0).toLocaleString()} تومان`, {
             reply_markup: {
-              inline_keyboard: [[{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow', style: 'success' }]]
+              inline_keyboard: [[{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow' }]]
             }
           });
           return;
@@ -3838,10 +3838,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
         ]));
         if (activeProducts.some(p => !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
         }
         bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'Markdown',
@@ -3904,10 +3904,16 @@ export async function initBot() {
       const isSeller = data.startsWith('show_category_seller_');
       const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
       
+      const catObj = state.categories?.find(c => String(c.id) === String(categoryId) || String(c.name) === String(categoryId));
+      const targetCatId = catObj ? String(catObj.id) : String(categoryId);
+      const targetCatName = catObj ? String(catObj.name) : String(categoryId);
+
       const filteredProducts = state.products.filter(p => {
         if (p.disabled) return false;
         if (categoryId === 'uncategorized') return !p.categoryId;
-        return p.categoryId === categoryId;
+        if (!p.categoryId) return false;
+        const pCatStr = String(p.categoryId);
+        return pCatStr === targetCatId || pCatStr === targetCatName || pCatStr === String(categoryId);
       });
 
       if (filteredProducts.length === 0) {
@@ -3931,22 +3937,35 @@ export async function initBot() {
 
       const catName = categoryId === 'uncategorized' 
         ? 'سایر محصولات' 
-        : (state.categories?.find(c => c.id === categoryId)?.name || 'دسته‌بندی انتخابی');
+        : (catObj?.name || 'دسته‌بندی انتخابی');
 
-      bot!.sendMessage(chatId, isSeller 
+      const msgText = isSeller 
         ? `🛒 <b>محصولات دسته «${escapeHtml(catName)}» (همکاران):</b>\nلطفا یکی از پکیج‌های زیر را انتخاب کنید:` 
-        : `🛍 <b>محصولات دسته «${escapeHtml(catName)}»:</b>\nلطفا پکیج مورد نظر خود را انتخاب کنید:`, {
-         parse_mode: 'HTML',
-         reply_markup: {
-           inline_keyboard: inlineKeyboard
-         } as any
-      });
+        : `🛍 <b>محصولات دسته «${escapeHtml(catName)}»:</b>\nلطفا پکیج مورد نظر خود را انتخاب کنید:`;
+
+      try {
+        await bot!.sendMessage(chatId, msgText, {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: inlineKeyboard
+          } as any
+        });
+      } catch (err) {
+        const plainMsg = isSeller 
+          ? `🛒 محصولات دسته «${catName}» (همکاران):\nلطفا یکی از پکیج‌های زیر را انتخاب کنید:` 
+          : `🛍 محصولات دسته «${catName}»:\nلطفا پکیج مورد نظر خود را انتخاب کنید:`;
+        await bot!.sendMessage(chatId, plainMsg, {
+          reply_markup: {
+            inline_keyboard: inlineKeyboard
+          } as any
+        });
+      }
       return;
     }
 
     if (data && data.startsWith('buy_') && !data.startsWith('buy_now_')) {
       const productId = data.replace('buy_', '');
-      const product = state.products.find(p => p.id === productId);
+      const product = state.products.find(p => String(p.id) === String(productId));
 
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
@@ -4017,7 +4036,7 @@ export async function initBot() {
         productId = data.replace('buy_now_', '');
       }
 
-      const product = state.products.find(p => p.id === productId);
+      const product = state.products.find(p => String(p.id) === String(productId));
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
         bot!.answerCallbackQuery(query.id);
