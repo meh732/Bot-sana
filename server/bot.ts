@@ -543,18 +543,18 @@ function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
   const keyboard = [];
   const firstRow = [];
   if (state.freeTestEnabled !== false) {
-    firstRow.push({ text: '🎁 تست رایگان' });
+    firstRow.push({ text: '🎁 تست رایگان', style: 'primary' });
   }
-  firstRow.push({ text: '🛒 خرید سرویس' });
+  firstRow.push({ text: '🛒 خرید سرویس', style: 'success' });
   keyboard.push(firstRow);
 
-  keyboard.push([{ text: '👤 پروفایل و موجودی' }, { text: '📋 لیست خریدهای من' }]);
-  keyboard.push([{ text: '🔗 زیرمجموعه‌گیری' }, { text: '📞 پشتیبانی' }]);
+  keyboard.push([{ text: '👤 پروفایل و موجودی', style: 'primary' }, { text: '📋 لیست خریدهای من', style: 'primary' }]);
+  keyboard.push([{ text: '🔗 زیرمجموعه‌گیری', style: 'success' }, { text: '📞 پشتیبانی', style: 'success' }]);
   if (user && user.isSeller) {
-    keyboard.push([{ text: '📊 پنل همکار (فروشنده)' }]);
+    keyboard.push([{ text: '📊 پنل همکار (فروشنده)', style: 'danger' }]);
   }
   if (isAdmin) {
-    keyboard.push([{ text: '🎛 پنل مدیریت' }]);
+    keyboard.push([{ text: '🎛 پنل مدیریت', style: 'danger' }]);
   }
   return {
     keyboard,
@@ -565,9 +565,9 @@ function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
 function getSellerReplyKeyboard(): any {
   return {
     keyboard: [
-      [{ text: '🛒 خرید سرویس همکار' }, { text: '📉 وضعیت بدهی و اعتبار همکار' }],
-      [{ text: '📋 لیست فروش‌های من' }, { text: '📊 گزارش دقیق فروش و مصرف' }],
-      [{ text: '🔙 بازگشت به منوی اصلی' }]
+      [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
+      [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '📊 گزارش دقیق فروش و مصرف', style: 'primary' }],
+      [{ text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
     ],
     resize_keyboard: true
   };
@@ -2648,10 +2648,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'HTML',
@@ -2663,7 +2663,7 @@ export async function initBot() {
       }
 
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
       bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
@@ -2744,10 +2744,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛍 <b>انتخاب دسته‌بندی</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'HTML',
@@ -2760,7 +2760,7 @@ export async function initBot() {
 
       const userObj = db.getUser(chatId);
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
       bot!.sendMessage(chatId, '🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
@@ -3975,10 +3975,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛍 <b>انتخاب دسته‌بندی</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'HTML',
@@ -3988,7 +3988,7 @@ export async function initBot() {
         });
       } else {
         const inlineKeyboard = activeProducts.map(p => ([
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
         ]));
 
         bot!.sendMessage(chatId, '🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
@@ -4013,10 +4013,10 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
         }
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'HTML',
@@ -4026,7 +4026,7 @@ export async function initBot() {
         });
       } else {
         const inlineKeyboard = activeProducts.map(p => ([
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
         ]));
 
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یک محصول انتخاب کنید:', {
@@ -4061,12 +4061,12 @@ export async function initBot() {
       }
 
       const inlineKeyboard = filteredProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
       // Back to categories button
       inlineKeyboard.push([
-        { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now' }
+        { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }
       ]);
 
       const title = isSeller 
@@ -4111,10 +4111,10 @@ export async function initBot() {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '🎫 ورود کد تخفیف', callback_data: `enter_coupon_${productId}` },
-                { text: '🛒 خرید بدون تخفیف', callback_data: `buy_now_${productId}` }
+                { text: '🎫 ورود کد تخفیف', callback_data: `enter_coupon_${productId}`, style: 'primary' },
+                { text: '🛒 خرید بدون تخفیف', callback_data: `buy_now_${productId}`, style: 'success' }
               ],
-              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase', style: 'danger' }]
             ]
           }
         });
@@ -4124,8 +4124,8 @@ export async function initBot() {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '✅ بله، خرید انجام شود', callback_data: `buy_now_${productId}` },
-                { text: '❌ خیر، انصراف', callback_data: 'cancel_purchase' }
+                { text: '✅ بله، خرید انجام شود', callback_data: `buy_now_${productId}`, style: 'success' },
+                { text: '❌ خیر، انصراف', callback_data: 'cancel_purchase', style: 'danger' }
               ]
             ]
           }
@@ -4166,9 +4166,9 @@ export async function initBot() {
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🎲 تولید نام تصادفی', callback_data: 'config_name_random' }],
-            [{ text: '✏️ وارد کردن نام دلخواه', callback_data: 'config_name_custom' }],
-            [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            [{ text: '🎲 تولید نام تصادفی', callback_data: 'config_name_random', style: 'primary' }],
+            [{ text: '✏️ وارد کردن نام دلخواه', callback_data: 'config_name_custom', style: 'primary' }],
+            [{ text: '❌ انصراف', callback_data: 'cancel_purchase', style: 'danger' }]
           ]
         }
       });
@@ -4200,7 +4200,7 @@ export async function initBot() {
       bot!.sendMessage(chatId, '✏️ لطفا نام دلخواه خود را (فقط حروف انگلیسی، اعداد و خط تیره/زیرخط) بدون فاصله ارسال کنید:', {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            [{ text: '❌ انصراف', callback_data: 'cancel_purchase', style: 'danger' }]
           ]
         }
       });
