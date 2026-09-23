@@ -397,10 +397,13 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     // 4. Multi-panel links display
     let linksText = '';
     if (purchase.panelType === 'both' || (purchase.sanaeiSubUrl && purchase.rebeccaSubUrl)) {
+      const sanaeiLink = purchase.sanaeiSubUrl || purchase.subUrl;
+      const rebeccaLink = purchase.rebeccaSubUrl;
       linksText = `🔵 <b>لینک سابسکریپشن سرور سنایی:</b>\n` +
-        `<code>${escapeHtml(purchase.sanaeiSubUrl || purchase.subUrl)}</code>\n\n` +
-        `🟣 <b>لینک سابسکریپشن سرور ربکا:</b>\n` +
-        `<code>${escapeHtml(purchase.rebeccaSubUrl)}</code>\n\n`;
+        `<code>${escapeHtml(sanaeiLink)}</code>\n\n` +
+        (rebeccaLink 
+          ? `🟣 <b>لینک سابسکریپشن سرور ربکا:</b>\n<code>${escapeHtml(rebeccaLink)}</code>\n\n`
+          : `⚠️ <b>لینک سرور ربکا:</b> (مشخصات پنل ربکا در مدیریت تنظیم نشده است)\n\n`);
     } else if (purchase.panelType === 'rebecca') {
       linksText = `🟣 <b>لینک اختصاصی سرور ربکا:</b>\n` +
         `<code>${escapeHtml(purchase.rebeccaSubUrl || purchase.subUrl)}</code>\n\n`;
@@ -2796,7 +2799,10 @@ export async function initBot() {
   bot.on('callback_query', async (query) => {
     try {
       const chatId = query.message?.chat.id;
-    if (!chatId) return;
+      if (!chatId) return;
+
+      // Always acknowledge query immediately so Telegram buttons never get stuck/spin
+      bot!.answerCallbackQuery(query.id).catch(() => {});
     
     let user = db.getUser(chatId);
     if (!user) {

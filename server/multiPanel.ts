@@ -84,6 +84,9 @@ export class MultiPanelService {
     let sanaeiDetails: any = null;
     let rebeccaDetails: any = null;
 
+    let sanaeiErr: string | null = null;
+    let rebeccaErr: string | null = null;
+
     // 1. Sanaei Panel Creation
     if (panelType === 'sanaei' || panelType === 'both') {
       try {
@@ -100,9 +103,10 @@ export class MultiPanelService {
         sanaeiDetails = sanaeiClient;
         console.log(`[MultiPanel] Created Sanaei client: ${clientEmail}`);
       } catch (err: any) {
-        console.error(`[MultiPanel Error] Sanaei creation failed for ${clientEmail}:`, err.message);
+        sanaeiErr = err.message || 'خطا در اتصال به پنل سنایی';
+        console.error(`[MultiPanel Error] Sanaei creation failed for ${clientEmail}:`, sanaeiErr);
         if (panelType === 'sanaei') {
-          throw new Error(`خطا در ایجاد سرویس در پنل سنایی: ${err.message}`);
+          throw new Error(`خطا در ایجاد سرویس در پنل سنایی: ${sanaeiErr}`);
         }
       }
     }
@@ -122,10 +126,23 @@ export class MultiPanelService {
         rebeccaDetails = rebeccaClient;
         console.log(`[MultiPanel] Created Rebecca client: ${clientEmail}`);
       } catch (err: any) {
-        console.error(`[MultiPanel Error] Rebecca creation failed for ${clientEmail}:`, err.message);
+        rebeccaErr = err.message || 'خطا در اتصال به پنل ربکا';
+        console.error(`[MultiPanel Error] Rebecca creation failed for ${clientEmail}:`, rebeccaErr);
         if (panelType === 'rebecca') {
-          throw new Error(`خطا در ایجاد سرویس در پنل ربکا: ${err.message}`);
+          throw new Error(`خطا در ایجاد سرویس در پنل ربکا: ${rebeccaErr}`);
         }
+      }
+    }
+
+    if (panelType === 'both') {
+      if (!sanaeiSubUrl && !rebeccaSubUrl) {
+        throw new Error(`خطا در ساخت اکانت روی هر دو پنل:\n• سنایی: ${sanaeiErr}\n• ربکا: ${rebeccaErr}`);
+      }
+      if (!rebeccaSubUrl && rebeccaErr) {
+        throw new Error(`خطا در ایجاد اکانت تست/سرویس روی پنل ربکا: ${rebeccaErr}\nلطفاً از تنظیم کامل آدرس و مشخصات پنل ربکا اطمینان حاصل فرمایید.`);
+      }
+      if (!sanaeiSubUrl && sanaeiErr) {
+        throw new Error(`خطا در ایجاد اکانت تست/سرویس روی پنل سنایی: ${sanaeiErr}\nلطفاً از تنظیم کامل آدرس و مشخصات پنل سنایی اطمینان حاصل فرمایید.`);
       }
     }
 
