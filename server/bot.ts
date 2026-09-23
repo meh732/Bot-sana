@@ -1436,7 +1436,7 @@ export async function initBot() {
 
         let purchaseInfoText = '';
         if (pendingPurchase) {
-          const product = db.getState().products.find(p => p.id === pendingPurchase.productId);
+          const product = db.getState().products.find(p => p && p.id === pendingPurchase.productId);
           if (product) {
             purchaseInfoText = `🛒 <b>خرید خودکار پس از تایید:</b> ${product.name}\n`;
             if (pendingPurchase.couponCode) {
@@ -1604,7 +1604,7 @@ export async function initBot() {
       }
 
       userSession.delete(chatId);
-      const product = state.products.find(p => p.id === productId);
+      const product = state.products.find(p => p && p.id === productId);
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول پیدا نشد.');
         return;
@@ -1620,7 +1620,7 @@ export async function initBot() {
       const productId = userSg.action.replace('awaiting_coupon_for_', '');
       userSession.delete(chatId);
       
-      const product = state.products.find(p => p.id === productId);
+      const product = state.products.find(p => p && p.id === productId);
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول پیدا نشد.');
         return;
@@ -2607,7 +2607,7 @@ export async function initBot() {
       if (!user || !user.isSeller) return;
       
       const stateObj = db.getState();
-      const activeProducts = stateObj.products.filter(p => !p.disabled);
+      const activeProducts = (stateObj.products || []).filter(p => p && !p.disabled);
       if (activeProducts.length === 0) {
         bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
         return;
@@ -2623,13 +2623,13 @@ export async function initBot() {
         }
       }
 
-      const activeCategories = (stateObj.categories || []).filter(c => !c.disabled);
+      const activeCategories = (stateObj.categories || []).filter(c => c && !c.disabled);
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}` }
         ]));
-        if (activeProducts.some(p => !p.categoryId)) {
+        if (activeProducts.some(p => p && !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
         }
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول مورد نظر را انتخاب کنید:', {
@@ -2709,19 +2709,19 @@ export async function initBot() {
 
     if (cleanText === 'خرید سرویس' || cleanText === 'خرید اکانت' || text.includes('خرید سرویس')) {
       const stateObj = db.getState();
-      const activeProducts = stateObj.products.filter(p => !p.disabled);
+      const activeProducts = (stateObj.products || []).filter(p => p && !p.disabled);
       if (activeProducts.length === 0) {
         bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
         return;
       }
 
-      const activeCategories = (stateObj.categories || []).filter(c => !c.disabled);
+      const activeCategories = (stateObj.categories || []).filter(c => c && !c.disabled);
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
         ]));
-        if (activeProducts.some(p => !p.categoryId)) {
+        if (activeProducts.some(p => p && !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
         }
         bot!.sendMessage(chatId, '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
@@ -2729,7 +2729,7 @@ export async function initBot() {
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
-        });
+         });
         return;
       }
 
@@ -2918,7 +2918,7 @@ export async function initBot() {
               
               if (payment.pendingPurchase) {
                 const pending = payment.pendingPurchase;
-                const product = db.getState().products.find(p => p.id === pending.productId);
+                const product = db.getState().products.find(p => p && p.id === pending.productId);
                 if (product) {
                   // Inform admin
                   bot!.sendMessage(chatId, `⏳ در حال اجرای خودکار خرید ${product.name} برای کاربر...`);
@@ -3804,7 +3804,7 @@ export async function initBot() {
     if (data && data.startsWith('del_prod_')) {
       if (isAdmin) {
         const prodId = data.replace('del_prod_', '');
-        state.products = state.products.filter(p => p.id !== prodId);
+        state.products = (state.products || []).filter(p => p && p.id !== prodId);
         db.updateState({ products: state.products });
         bot!.sendMessage(chatId, '🗑 محصول با موفقیت حذف شد.');
         sendProductsMenu(chatId);
@@ -3873,20 +3873,20 @@ export async function initBot() {
     }
 
     if (data === 'buy_service_now') {
-      const activeProducts = state.products.filter(p => !p.disabled);
+      const activeProducts = (state.products || []).filter(p => p && !p.disabled);
       if (activeProducts.length === 0) {
         bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
         bot!.answerCallbackQuery(query.id);
         return;
       }
 
-      const activeCategories = (state.categories || []).filter(c => !c.disabled);
+      const activeCategories = (state.categories || []).filter(c => c && !c.disabled);
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
         ]));
-        if (activeProducts.some(p => !p.categoryId)) {
+        if (activeProducts.some(p => p && !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
         }
         bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
@@ -3913,14 +3913,14 @@ export async function initBot() {
     if (data && (data === 'back_to_categories' || data === 'back_to_categories_seller')) {
       try { await bot!.answerCallbackQuery(query.id); } catch (e) {}
       const isSeller = data === 'back_to_categories_seller';
-      const activeProducts = state.products.filter(p => !p.disabled);
-      const activeCategories = (state.categories || []).filter(c => !c.disabled);
+      const activeProducts = (state.products || []).filter(p => p && !p.disabled);
+      const activeCategories = (state.categories || []).filter(c => c && !c.disabled);
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}` }
         ]));
-        if (activeProducts.some(p => !p.categoryId)) {
+        if (activeProducts.some(p => p && !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: isSeller ? `show_category_seller_uncategorized` : `show_category_uncategorized` }]);
         }
         bot!.sendMessage(chatId, isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول را انتخاب کنید:' : '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
@@ -3950,11 +3950,12 @@ export async function initBot() {
       const isSeller = data.startsWith('show_category_seller_');
       const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
       
-      const catObj = state.categories?.find(c => String(c.id) === String(categoryId) || String(c.name) === String(categoryId));
+      const catObj = (state.categories || []).find(c => c && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
       const targetCatId = catObj ? String(catObj.id) : String(categoryId);
       const targetCatName = catObj ? String(catObj.name) : String(categoryId);
 
-      const filteredProducts = state.products.filter(p => {
+      const filteredProducts = (state.products || []).filter(p => {
+        if (!p) return false;
         if (p.disabled) return false;
         if (categoryId === 'uncategorized') return !p.categoryId;
         if (!p.categoryId) return false;
@@ -4013,7 +4014,7 @@ export async function initBot() {
 
     if (data && data.startsWith('buy_') && !data.startsWith('buy_now_')) {
       const productId = data.replace('buy_', '');
-      const product = state.products.find(p => String(p.id) === String(productId));
+      const product = (state.products || []).find(p => p && String(p.id) === String(productId));
 
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
@@ -4084,7 +4085,7 @@ export async function initBot() {
         productId = data.replace('buy_now_', '');
       }
 
-      const product = state.products.find(p => String(p.id) === String(productId));
+      const product = (state.products || []).find(p => p && String(p.id) === String(productId));
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
         bot!.answerCallbackQuery(query.id);
@@ -4113,7 +4114,7 @@ export async function initBot() {
         bot!.answerCallbackQuery(query.id);
         return;
       }
-      const product = state.products.find(p => p.id === session.productId);
+      const product = (state.products || []).find(p => p && p.id === session.productId);
       if (!product) return;
       userSession.delete(chatId);
       await executePurchase(chatId, product, session.couponCode);
