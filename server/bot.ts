@@ -4216,12 +4216,7 @@ export async function initBot() {
           return false;
         });
 
-        // Fallback: If no products strictly matched this category but active products exist, fallback to all active products
-        const allActiveProducts = (state.products || []).filter(p => !p.disabled);
-        if (filteredProducts.length === 0 && allActiveProducts.length > 0) {
-          filteredProducts = allActiveProducts;
-        }
-
+        // If no products strictly matched this category
         logDebug(`[show_category_] filteredProducts count: ${filteredProducts.length}`);
 
         if (filteredProducts.length === 0) {
