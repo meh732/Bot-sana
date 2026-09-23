@@ -175,6 +175,14 @@ export function escapeHTML(str: string): string {
     .replace(/>/g, '&gt;');
 }
 
+export function logDebug(msg: string) {
+  try {
+    const logPath = path.join(process.cwd(), 'bot_debug.log');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`, 'utf8');
+    console.log(`[BOT_DEBUG] ${msg}`);
+  } catch {}
+}
+
 export function isUncategorizedProduct(product: any, activeCategories: any[] = []): boolean {
   if (!product) return false;
   const cat = (product.categoryId || '').toString().trim();
@@ -2937,8 +2945,19 @@ export async function initBot() {
   bot.on('callback_query', async (query) => {
     try {
       const chatId = query.message?.chat?.id || query.from?.id;
+      const data = query.data;
+      
+      logDebug(`[CallbackQuery] Received data: "${data}" from chatId: ${chatId}`);
+
+      if (query.id) {
+        // Answer IMMEDIATELY to stop Telegram UI spinner and make button highly responsive
+        await bot!.answerCallbackQuery(query.id).catch((e: any) => {
+          logDebug(`[CallbackQuery] Error answering query: ${e.message}`);
+        });
+      }
+
       if (!chatId) {
-        bot?.answerCallbackQuery(query.id).catch(() => {});
+        logDebug('[CallbackQuery] No chatId found in query');
         return;
       }
       
@@ -2954,9 +2973,9 @@ export async function initBot() {
           purchases: []
         };
         db.saveUser(user);
+        logDebug(`[CallbackQuery] Created new user: ${chatId}`);
       }
 
-      const data = query.data;
       const state = db.getState();
       const isAdmin = (state.adminIds || []).some((id: any) => String(id) === String(chatId));
 
@@ -4145,115 +4164,127 @@ export async function initBot() {
     }
 
     if (data && data.startsWith('show_category_')) {
-      await bot!.answerCallbackQuery(query.id).catch(() => {});
-      const isSeller = data.startsWith('show_category_seller_');
-      const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
-      
-      const activeCategories = (state.categories || []).filter((c: any) => !c.disabled);
-      const isUncat = categoryId === 'uncategorized';
-      const targetCat = activeCategories.find((c: any) => String(c.id) === String(categoryId) || String(c.name) === String(categoryId));
-
-      const filteredProducts = (state.products || []).filter(p => {
-        if (p.disabled) return false;
-        if (isUncat) {
-          return isUncategorizedProduct(p, activeCategories);
-        }
+      try {
+        const isSeller = data.startsWith('show_category_seller_');
+        const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
         
-        // 1. Direct match by categoryId or Name
-        if (p.categoryId && String(p.categoryId) === String(categoryId)) return true;
-        if (targetCat && p.categoryId && (String(p.categoryId) === String(targetCat.id) || String(p.categoryId).trim() === String(targetCat.name).trim())) return true;
+        logDebug(`[show_category_] isSeller: ${isSeller}, categoryId: "${categoryId}"`);
 
-        // 2. Loose Name & Substring Matching
-        if (targetCat) {
-          const catNameLower = (targetCat.name || '').toLowerCase().trim();
-          const prodNameLower = (p.name || '').toLowerCase().trim();
-          
-          if (catNameLower.length > 1) {
-            if (prodNameLower.includes(catNameLower) || catNameLower.includes(prodNameLower)) return true;
-          }
+        const activeCategories = (state.categories || []).filter((c: any) => !c.disabled);
+        const isUncat = categoryId === 'uncategorized';
+        const targetCat = activeCategories.find((c: any) => String(c.id) === String(categoryId) || String(c.name) === String(categoryId));
 
-          // Match by name parts (e.g. "vip", "لوکیشن", "ربکا")
-          const catParts = catNameLower.split(/\s+/).filter(part => part.length >= 2);
-          for (const part of catParts) {
-            if (prodNameLower.includes(part)) return true;
-          }
+        logDebug(`[show_category_] targetCat found: ${targetCat ? targetCat.name : 'null'} (total active cats: ${activeCategories.length})`);
 
-          // Smart panel-type fallback matching
-          if (catNameLower.includes('ربکا') || catNameLower.includes('rebecca') || targetCat.panelType === 'rebecca') {
-            if (p.panelType === 'rebecca' || prodNameLower.includes('ربکا') || prodNameLower.includes('rebecca')) return true;
+        const filteredProducts = (state.products || []).filter(p => {
+          if (p.disabled) return false;
+          if (isUncat) {
+            return isUncategorizedProduct(p, activeCategories);
           }
           
-          if (catNameLower.includes('vip') || catNameLower.includes('سنایی') || catNameLower.includes('sanaei') || catNameLower.includes('لوکیشن')) {
-            if (p.panelType === 'xui' || prodNameLower.includes('vip') || prodNameLower.includes('لوکیشن') || prodNameLower.includes('سنایی')) return true;
-          }
-        }
-        
-        return false;
-      });
+          // 1. Direct match by categoryId or Name
+          if (p.categoryId && String(p.categoryId) === String(categoryId)) return true;
+          if (targetCat && p.categoryId && (String(p.categoryId) === String(targetCat.id) || String(p.categoryId).trim() === String(targetCat.name).trim())) return true;
 
-      if (filteredProducts.length === 0) {
-        await bot!.answerCallbackQuery(query.id, { text: '⚠️ این دسته‌بندی در حال حاضر فاقد محصول فعال است.', show_alert: true }).catch(() => {});
-        
-        const emptyTitle = `⚠️ <b>دسته‌بندی خالی است</b>\n\nدر حال حاضر هیچ محصول فعالی در دسته‌بندی <b>${escapeHTML(targetCat?.name || 'نامشخص')}</b> تعریف نشده است.`;
-        const emptyKeyboard = [
-          [{ text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }]
-        ];
+          // 2. Loose Name & Substring Matching
+          if (targetCat) {
+            const catNameLower = (targetCat.name || '').toLowerCase().trim();
+            const prodNameLower = (p.name || '').toLowerCase().trim();
+            
+            if (catNameLower.length > 1) {
+              if (prodNameLower.includes(catNameLower) || catNameLower.includes(prodNameLower)) return true;
+            }
+
+            // Match by name parts (e.g. "vip", "لوکیشن", "ربکا")
+            const catParts = catNameLower.split(/\s+/).filter(part => part.length >= 2);
+            for (const part of catParts) {
+              if (prodNameLower.includes(part)) return true;
+            }
+
+            // Smart panel-type fallback matching
+            if (catNameLower.includes('ربکا') || catNameLower.includes('rebecca') || targetCat.panelType === 'rebecca') {
+              if (p.panelType === 'rebecca' || prodNameLower.includes('ربکا') || prodNameLower.includes('rebecca')) return true;
+            }
+            
+            if (catNameLower.includes('vip') || catNameLower.includes('سنایی') || catNameLower.includes('sanaei') || catNameLower.includes('لوکیشن')) {
+              if (p.panelType === 'xui' || prodNameLower.includes('vip') || prodNameLower.includes('لوکیشن') || prodNameLower.includes('سنایی')) return true;
+            }
+          }
+          
+          return false;
+        });
+
+        logDebug(`[show_category_] filteredProducts count: ${filteredProducts.length}`);
+
+        if (filteredProducts.length === 0) {
+          const emptyTitle = `⚠️ <b>دسته‌بندی خالی است</b>\n\nدر حال حاضر هیچ محصول فعالی در دسته‌بندی <b>${escapeHTML(targetCat?.name || 'نامشخص')}</b> تعریف نشده است.`;
+          const emptyKeyboard = [
+            [{ text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }]
+          ];
+
+          if (query.message?.message_id) {
+            try {
+              await bot!.editMessageText(emptyTitle, {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: emptyKeyboard } as any
+              });
+              return;
+            } catch (err: any) {
+              logDebug(`[show_category_empty editMessageText error] ${err.message}`);
+            }
+          }
+
+          await bot!.sendMessage(chatId, emptyTitle, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: emptyKeyboard } as any
+          });
+          return;
+        }
+
+        const inlineKeyboard = filteredProducts.map(p => ([
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
+        ]));
+
+        // Back to categories button
+        inlineKeyboard.push([
+          { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }
+        ]);
+
+        const catDisplayName = targetCat?.name ? ` (${escapeHTML(targetCat.name)})` : '';
+        const title = isSeller 
+          ? `🛒 <b>خرید سرویس ویژه همکاران${catDisplayName}</b>:\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:` 
+          : `🛍 <b>انتخاب پکیج و سرویس${catDisplayName}</b>:\nلطفاً یکی از محصولات زیر را انتخاب فرمایید:`;
 
         if (query.message?.message_id) {
           try {
-            await bot!.editMessageText(emptyTitle, {
+            await bot!.editMessageText(title, {
               chat_id: chatId,
               message_id: query.message.message_id,
               parse_mode: 'HTML',
-              reply_markup: { inline_keyboard: emptyKeyboard } as any
+              reply_markup: {
+                inline_keyboard: inlineKeyboard
+              } as any
             });
             return;
-          } catch {}
+          } catch (err: any) {
+            logDebug(`[show_category_ editMessageText error] ${err.message}`);
+            console.error('[show_category_ editMessageText error]', err.message);
+          }
         }
 
-        await bot!.sendMessage(chatId, emptyTitle, {
-          parse_mode: 'HTML',
-          reply_markup: { inline_keyboard: emptyKeyboard } as any
+        await bot!.sendMessage(chatId, title, {
+           parse_mode: 'HTML',
+           reply_markup: {
+             inline_keyboard: inlineKeyboard
+           } as any
         });
-        return;
+      } catch (err: any) {
+        logDebug(`[show_category_ CRITICAL ERROR] ${err.stack || err.message}`);
+        console.error('[show_category_ CRITICAL ERROR]', err);
+        await bot!.sendMessage(chatId, `❌ خطایی در نمایش محصولات رخ داد:\n${err.message || err}`).catch(() => {});
       }
-
-      const inlineKeyboard = filteredProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
-      ]));
-
-      // Back to categories button
-      inlineKeyboard.push([
-        { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }
-      ]);
-
-      const catDisplayName = targetCat?.name ? ` (${escapeHTML(targetCat.name)})` : '';
-      const title = isSeller 
-        ? `🛒 <b>خرید سرویس ویژه همکاران${catDisplayName}</b>:\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:` 
-        : `🛍 <b>انتخاب پکیج و سرویس${catDisplayName}</b>:\nلطفاً یکی از محصولات زیر را انتخاب فرمایید:`;
-
-      if (query.message?.message_id) {
-        try {
-          await bot!.editMessageText(title, {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            parse_mode: 'HTML',
-            reply_markup: {
-              inline_keyboard: inlineKeyboard
-            } as any
-          });
-          return;
-        } catch (err: any) {
-          console.error('[show_category_ editMessageText error]', err.message);
-        }
-      }
-
-      await bot!.sendMessage(chatId, title, {
-         parse_mode: 'HTML',
-         reply_markup: {
-           inline_keyboard: inlineKeyboard
-         } as any
-      });
       return;
     }
 

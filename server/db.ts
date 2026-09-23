@@ -16,6 +16,7 @@ export interface Category {
   id: string;
   name: string;
   disabled?: boolean;
+  panelType?: 'xui' | 'rebecca';
 }
 
 export interface Product {
