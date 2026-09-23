@@ -348,16 +348,42 @@ export class RebeccaClient {
 
     let inboundsPayload: any = undefined;
     if (inboundTags && inboundTags.length > 0) {
-      inboundsPayload = {};
-      for (const tag of inboundTags) {
-        const lower = tag.toLowerCase();
-        let proto = 'vless';
-        if (lower.includes('vmess')) proto = 'vmess';
-        else if (lower.includes('trojan')) proto = 'trojan';
-        else if (lower.includes('shadowsocks') || lower.includes('ss')) proto = 'shadowsocks';
-        
-        if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
-        inboundsPayload[proto].push(tag);
+      try {
+        const activeInbounds = await this.getInbounds();
+        inboundsPayload = {};
+        for (const tag of inboundTags) {
+          const matched = activeInbounds.find(i => 
+            i.tag.toLowerCase() === tag.toLowerCase() || 
+            String(i.port) === tag
+          );
+          let proto = 'vless';
+          if (matched && matched.protocol) {
+            const p = matched.protocol.toLowerCase();
+            if (p.includes('vmess')) proto = 'vmess';
+            else if (p.includes('trojan')) proto = 'trojan';
+            else if (p.includes('shadowsocks') || p.includes('ss')) proto = 'shadowsocks';
+            else proto = 'vless';
+          } else {
+            const lower = tag.toLowerCase();
+            if (lower.includes('vmess')) proto = 'vmess';
+            else if (lower.includes('trojan')) proto = 'trojan';
+            else if (lower.includes('shadowsocks') || lower.includes('ss')) proto = 'shadowsocks';
+          }
+          if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
+          inboundsPayload[proto].push(matched ? matched.tag : tag);
+        }
+      } catch (e) {
+        inboundsPayload = {};
+        for (const tag of inboundTags) {
+          const lower = tag.toLowerCase();
+          let proto = 'vless';
+          if (lower.includes('vmess')) proto = 'vmess';
+          else if (lower.includes('trojan')) proto = 'trojan';
+          else if (lower.includes('shadowsocks') || lower.includes('ss')) proto = 'shadowsocks';
+          
+          if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
+          inboundsPayload[proto].push(tag);
+        }
       }
     }
 
@@ -423,8 +449,9 @@ export class RebeccaClient {
           });
         }
 
-        // Fallback without inbounds if inbound tags failed
-        if ((attemptRes.status === 400 || attemptRes.status === 422) && payload.inbounds) {
+        // Fallback without inbounds if inbound tags failed or caused 404/400/422/500
+        if (attemptRes.status >= 400 && payload.inbounds) {
+          console.log(`[Rebecca Retry without inbounds] Endpoint ${ep} returned status ${attemptRes.status}`);
           const payloadNoInbounds = { ...payload };
           delete payloadNoInbounds.inbounds;
           attemptRes = await this.client.post(ep, payloadNoInbounds, {

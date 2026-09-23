@@ -182,22 +182,30 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
 }
 
 function getProductButtonText(user: any, p: any): string {
-  const isPayG = !!p.isPayAsYouGo;
-  const unit = isPayG ? 'تومان/گیگ' : 'تومان';
-  let badge = '';
-  if (p.panelType === 'both') badge = '🌐 ';
-  else if (p.panelType === 'rebecca') badge = '🟣 ';
-  else if (p.panelType === 'sanaei') badge = '🔵 ';
-  
-  if (user && user.isSeller) {
-    const sellerDiscount = getSellerDiscountForProduct(user, p);
-    if (sellerDiscount > 0) {
-      const finalPrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
-      return `🎁 ${badge}${p.name} - ${finalPrice.toLocaleString()} (${sellerDiscount}٪ تخفیف) ${unit}`;
-    }
-  }
+  try {
+    if (!p) return 'محصول نامعتبر';
+    const isPayG = !!p.isPayAsYouGo;
+    const unit = isPayG ? 'تومان/گیگ' : 'تومان';
+    let badge = '';
+    if (p.panelType === 'both') badge = '🌐 ';
+    else if (p.panelType === 'rebecca') badge = '🟣 ';
+    else if (p.panelType === 'sanaei') badge = '🔵 ';
+    
+    const priceNum = Number(p.price) || 0;
+    const pName = p.name || 'محصول';
 
-  return `${badge}${p.name} - ${p.price.toLocaleString()} ${unit}`;
+    if (user && user.isSeller) {
+      const sellerDiscount = getSellerDiscountForProduct(user, p);
+      if (sellerDiscount > 0) {
+        const finalPrice = Math.max(0, Math.round(priceNum * (1 - sellerDiscount / 100)));
+        return `🎁 ${badge}${pName} - ${finalPrice.toLocaleString()} (${sellerDiscount}٪ تخفیف) ${unit}`;
+      }
+    }
+
+    return `${badge}${pName} - ${priceNum.toLocaleString()} ${unit}`;
+  } catch (e) {
+    return (p && p.name) ? String(p.name) : 'محصول';
+  }
 }
 
 let bot: TelegramBot | null = null;
