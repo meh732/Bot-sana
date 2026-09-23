@@ -189,8 +189,15 @@ export function isUncategorizedProduct(product: any, activeCategories: any[] = [
   if (!cat || cat === 'uncategorized' || cat === 'none' || cat === 'null' || cat === 'undefined') {
     return true;
   }
-  const catExists = (activeCategories || []).some(c => String(c.id) === cat && !c.disabled);
+  const catExists = (activeCategories || []).some(c => (String(c.id).trim() === cat || String(c.name).trim() === cat) && !c.disabled);
   return !catExists;
+}
+
+export function formatCategoryButtonText(c: any): string {
+  if (!c || !c.name) return '📁 دسته‌بندی';
+  const name = String(c.name).trim();
+  const hasEmojiPrefix = /^[\u2700-\u27BF]|^[\uE000-\uF8FF]|^[\uD83C-\uD83E][\uDC00-\uDFFF]|^[\u2011-\u26FF]/u.test(name);
+  return hasEmojiPrefix ? name : `📁 ${name}`;
 }
 
 function getProductButtonText(user: any, p: any): string {
@@ -2709,7 +2716,7 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
+          { text: formatCategoryButtonText(c), callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
@@ -2805,7 +2812,7 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
+          { text: formatCategoryButtonText(c), callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
@@ -4048,7 +4055,7 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
+          { text: formatCategoryButtonText(c), callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
@@ -4112,7 +4119,7 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
+          { text: formatCategoryButtonText(c), callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
@@ -4172,7 +4179,7 @@ export async function initBot() {
 
         const activeCategories = (state.categories || []).filter((c: any) => !c.disabled);
         const isUncat = categoryId === 'uncategorized';
-        const targetCat = activeCategories.find((c: any) => String(c.id) === String(categoryId) || String(c.name) === String(categoryId));
+        const targetCat = activeCategories.find((c: any) => String(c.id).trim() === String(categoryId).trim() || String(c.name).trim() === String(categoryId).trim());
 
         logDebug(`[show_category_] targetCat found: ${targetCat ? targetCat.name : 'null'} (total active cats: ${activeCategories.length})`);
 
@@ -4182,32 +4189,31 @@ export async function initBot() {
             return isUncategorizedProduct(p, activeCategories);
           }
           
-          // 1. Direct match by categoryId or Name
-          if (p.categoryId && String(p.categoryId) === String(categoryId)) return true;
-          if (targetCat && p.categoryId && (String(p.categoryId) === String(targetCat.id) || String(p.categoryId).trim() === String(targetCat.name).trim())) return true;
+          // 1. Direct match by categoryId or Category Name
+          const pCatId = p.categoryId !== undefined && p.categoryId !== null ? String(p.categoryId).trim() : '';
+          
+          if (pCatId) {
+            if (pCatId === String(categoryId).trim()) return true;
+            if (targetCat && (pCatId === String(targetCat.id).trim() || pCatId === String(targetCat.name).trim())) return true;
+            // If product has explicit categoryId assigned to a DIFFERENT category, do NOT spill
+            return false;
+          }
 
-          // 2. Loose Name & Substring Matching
+          // 2. Loose Name Matching (ONLY for products without an explicit categoryId)
           if (targetCat) {
             const catNameLower = (targetCat.name || '').toLowerCase().trim();
             const prodNameLower = (p.name || '').toLowerCase().trim();
             
-            if (catNameLower.length > 1) {
-              if (prodNameLower.includes(catNameLower) || catNameLower.includes(prodNameLower)) return true;
-            }
+            // Strip emojis from catName for accurate name matching
+            const cleanCatName = catNameLower.replace(/[\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]/g, '').trim();
 
-            // Match by name parts (e.g. "vip", "لوکیشن", "ربکا")
-            const catParts = catNameLower.split(/\s+/).filter(part => part.length >= 2);
-            for (const part of catParts) {
-              if (prodNameLower.includes(part)) return true;
-            }
+            if (cleanCatName.length >= 2) {
+              if (prodNameLower.includes(cleanCatName) || cleanCatName.includes(prodNameLower)) return true;
 
-            // Smart panel-type fallback matching
-            if (catNameLower.includes('ربکا') || catNameLower.includes('rebecca') || targetCat.panelType === 'rebecca') {
-              if (p.panelType === 'rebecca' || prodNameLower.includes('ربکا') || prodNameLower.includes('rebecca')) return true;
-            }
-            
-            if (catNameLower.includes('vip') || catNameLower.includes('سنایی') || catNameLower.includes('sanaei') || catNameLower.includes('لوکیشن')) {
-              if (p.panelType === 'xui' || prodNameLower.includes('vip') || prodNameLower.includes('لوکیشن') || prodNameLower.includes('سنایی')) return true;
+              const catParts = cleanCatName.split(/\s+/).filter(part => part.length >= 2);
+              for (const part of catParts) {
+                if (prodNameLower.includes(part)) return true;
+              }
             }
           }
           
