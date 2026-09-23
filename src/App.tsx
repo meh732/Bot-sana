@@ -1,224 +1,148 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package, Menu, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package, Menu, PanelLeftClose, PanelLeftOpen, ChevronRight, ChevronLeft } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'settings' | 'products' | 'users' | 'sellers'>('settings');
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('sanaei_sidebar_collapsed') === 'true';
+      return localStorage.getItem('sidebar_collapsed') === 'true';
     } catch {
       return false;
     }
   });
 
-  const toggleCollapsed = () => {
-    setIsCollapsed(prev => {
+  const toggleSidebar = () => {
+    setSidebarCollapsed(prev => {
       const next = !prev;
       try {
-        localStorage.setItem('sanaei_sidebar_collapsed', String(next));
+        localStorage.setItem('sidebar_collapsed', String(next));
       } catch {}
       return next;
     });
   };
 
-  const selectTab = (tab: 'settings' | 'products' | 'users' | 'sellers') => {
-    setActiveTab(tab);
-    setIsMobileOpen(false);
-  };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsMobileOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  const tabTitles: Record<string, string> = {
-    settings: 'تنظیمات ربات و اتصال پنل‌ها',
-    products: 'مدیریت و تعریف محصولات',
-    users: 'مدیریت مشتریان و ترافیک',
-    sellers: 'همکاران فروشنده (نمایندگان)'
-  };
-
   return (
-    <div className="w-full min-h-screen bg-slate-100 flex flex-col md:flex-row relative overflow-x-hidden" dir="rtl" style={{ fontFamily: "'Tahoma', 'Arial', sans-serif" }}>
-      {/* Mobile Backdrop Overlay */}
-      {isMobileOpen && (
-        <div
-          onClick={() => setIsMobileOpen(false)}
-          className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-40 md:hidden transition-opacity"
-          aria-hidden="true"
-        />
-      )}
-
+    <div className="w-full h-full min-h-screen bg-slate-50 flex flex-row" dir="rtl" style={{ fontFamily: "'Tahoma', 'Arial', sans-serif" }}>
       {/* Sidebar */}
-      <aside
-        className={`
-          fixed md:sticky top-0 right-0 h-screen z-50
-          bg-slate-900 text-slate-100 flex flex-col shadow-2xl md:shadow-none
-          transition-all duration-300 ease-in-out border-l border-slate-800 flex-shrink-0
-          ${isMobileOpen ? 'translate-x-0 w-72 max-w-[85vw]' : 'translate-x-full md:translate-x-0'}
-          ${isCollapsed ? 'md:w-20' : 'md:w-64'}
-        `}
+      <div 
+        className={`bg-slate-900 h-full min-h-screen flex flex-col shadow-xl sticky top-0 transition-all duration-300 ease-in-out z-20 ${
+          sidebarCollapsed ? 'w-20' : 'w-64'
+        }`}
       >
         {/* Sidebar Header */}
-        <div className={`p-4 border-b border-slate-800 flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} min-h-[64px]`}>
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold flex-shrink-0 shadow-md shadow-indigo-600/30">
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+          <div className={`flex items-center gap-3 overflow-hidden ${sidebarCollapsed ? 'justify-center w-full' : ''}`}>
+            <div className="w-9 h-9 bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-xl flex items-center justify-center text-white font-bold shadow-md shadow-indigo-900/50 flex-shrink-0">
               S
             </div>
-            {!isCollapsed && (
-              <div className="min-w-0">
-                <span className="text-white font-bold text-base tracking-tight truncate block">پنل مدیریت ربات</span>
-                <span className="text-[11px] text-slate-400 block truncate">سنایی و ربکا</span>
+            {!sidebarCollapsed && (
+              <div className="flex flex-col whitespace-nowrap overflow-hidden">
+                <span className="text-white font-bold text-base tracking-tight truncate">مدیریت پنل هوشمند</span>
+                <span className="text-xs text-indigo-400 font-medium truncate">سنایی و ربکا</span>
               </div>
             )}
           </div>
-
-          {/* Close button on mobile */}
-          <button
-            onClick={() => setIsMobileOpen(false)}
-            className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-            aria-label="بستن منو"
-          >
-            <X className="w-5 h-5" />
-          </button>
-
-          {/* Desktop collapse toggle button */}
-          {!isCollapsed && (
+          {!sidebarCollapsed && (
             <button
-              onClick={toggleCollapsed}
-              className="hidden md:flex p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition items-center justify-center"
-              title="کوچک کردن سایدبار"
-              aria-label="کوچک کردن سایدبار"
+              onClick={toggleSidebar}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="بستن سایدبار"
             >
-              <ChevronRight className="w-5 h-5" />
+              <PanelLeftClose className="w-5 h-5" />
             </button>
           )}
         </div>
 
-        {/* When collapsed on desktop, show expand button */}
-        {isCollapsed && (
-          <div className="hidden md:flex justify-center p-2 border-b border-slate-800/60">
-            <button
-              onClick={toggleCollapsed}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-              title="بزرگ کردن سایدبار"
-              aria-label="بزرگ کردن سایدبار"
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-          </div>
-        )}
-
-        {/* Navigation items */}
-        <nav className="flex-1 p-3 space-y-1.5 overflow-y-auto">
+        {/* Navigation Tabs */}
+        <nav className="flex-1 p-3 space-y-2 overflow-y-auto">
           <TabBtn 
             active={activeTab === 'settings'} 
-            onClick={() => selectTab('settings')} 
-            isCollapsed={isCollapsed} 
-            icon={<Settings2 className="w-5 h-5"/>}
+            onClick={() => setActiveTab('settings')} 
+            icon={<Settings2 className="w-5 h-5 flex-shrink-0"/>}
+            collapsed={sidebarCollapsed}
           >
-            تنظیمات ربات
+            تنظیمات ربات و سرور
           </TabBtn>
           <TabBtn 
             active={activeTab === 'products'} 
-            onClick={() => selectTab('products')} 
-            isCollapsed={isCollapsed} 
-            icon={<Box className="w-5 h-5"/>}
+            onClick={() => setActiveTab('products')} 
+            icon={<Box className="w-5 h-5 flex-shrink-0"/>}
+            collapsed={sidebarCollapsed}
           >
             لیست محصولات
           </TabBtn>
           <TabBtn 
             active={activeTab === 'users'} 
-            onClick={() => selectTab('users')} 
-            isCollapsed={isCollapsed} 
-            icon={<UsersIcon className="w-5 h-5"/>}
+            onClick={() => setActiveTab('users')} 
+            icon={<UsersIcon className="w-5 h-5 flex-shrink-0"/>}
+            collapsed={sidebarCollapsed}
           >
             مشتریان عادی
           </TabBtn>
           <TabBtn 
             active={activeTab === 'sellers'} 
-            onClick={() => selectTab('sellers')} 
-            isCollapsed={isCollapsed} 
-            icon={<UsersIcon className="w-5 h-5 text-indigo-400"/>}
+            onClick={() => setActiveTab('sellers')} 
+            icon={<UsersIcon className="w-5 h-5 text-indigo-400 flex-shrink-0"/>}
+            collapsed={sidebarCollapsed}
           >
-            همکاران فروشنده
+            همکاران و نمایندگان
           </TabBtn>
         </nav>
 
-        {/* Sidebar Footer */}
-        <div className="p-3 border-t border-slate-800 mt-auto">
-          {!isCollapsed ? (
-            <div className="bg-slate-800/80 rounded-xl p-3 border border-slate-750">
+        {/* Sidebar Footer & Toggle Button */}
+        <div className="p-3 mt-auto border-t border-slate-800 space-y-2">
+          {sidebarCollapsed ? (
+            <button
+              onClick={toggleSidebar}
+              className="w-full flex items-center justify-center p-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="باز کردن سایدبار"
+            >
+              <PanelLeftOpen className="w-5 h-5" />
+            </button>
+          ) : (
+            <div className="bg-slate-800/80 rounded-xl p-3 border border-slate-700/50">
               <div className="flex justify-between items-center mb-1">
-                <span className="text-xs text-slate-300 font-medium">وضعیت سرور</span>
-                <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
+                <span className="text-xs font-medium text-slate-400">وضعیت سامانه</span>
+                <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  متصل
+                  آنلاین
                 </span>
               </div>
-              <p className="text-slate-400 text-xs font-mono" dir="ltr">Sanaei & Rebecca v2.2</p>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center py-2" title="وضعیت سرور: متصل">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse mb-1"></span>
-              <span className="text-[10px] text-slate-500 font-mono">v2.2</span>
+              <p className="text-white text-xs font-mono" dir="ltr">Sanaei + Rebecca v3.0</p>
             </div>
           )}
         </div>
-      </aside>
+      </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-screen bg-slate-50 overflow-hidden">
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col h-full min-h-screen overflow-hidden">
         {/* Header */}
-        <header className="bg-white h-16 border-b border-slate-200 px-4 sm:px-6 md:px-8 flex flex-shrink-0 items-center justify-between sticky top-0 z-20 w-full shadow-sm">
-          <div className="flex items-center gap-3">
-            {/* Mobile Hamburger Button */}
+        <header className="bg-white h-16 border-b border-slate-200 px-6 flex flex-shrink-0 items-center justify-between sticky top-0 z-10 w-full shadow-sm">
+          <div className="flex items-center gap-4">
             <button
-              onClick={() => setIsMobileOpen(true)}
-              className="md:hidden p-2 rounded-xl text-slate-700 hover:text-indigo-600 hover:bg-slate-100 transition focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              aria-label="باز کردن منو"
+              onClick={toggleSidebar}
+              className="p-2 rounded-lg text-slate-600 hover:text-indigo-600 hover:bg-slate-100 transition-colors"
+              title={sidebarCollapsed ? "باز کردن سایدبار" : "بستن سایدبار"}
             >
-              <Menu className="w-6 h-6" />
+              {sidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
-
-            {/* Desktop toggle button in header for convenience */}
-            <button
-              onClick={toggleCollapsed}
-              className="hidden md:flex p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition focus:outline-none"
-              title={isCollapsed ? 'باز کردن سایدبار' : 'کوچک کردن سایدبار'}
-              aria-label={isCollapsed ? 'باز کردن سایدبار' : 'کوچک کردن سایدبار'}
-            >
-              {isCollapsed ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-            </button>
-
-            <div>
-              <h2 className="text-slate-800 font-bold text-base sm:text-lg md:text-xl truncate">
-                {tabTitles[activeTab]}
-              </h2>
-            </div>
+            <h2 className="text-slate-800 font-bold text-lg md:text-xl">داشبورد عملیات خودکار و فروش</h2>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               <div className="text-left hidden sm:block" dir="ltr">
-                <p className="text-xs sm:text-sm font-semibold text-slate-800 leading-tight">Main Admin</p>
-                <p className="text-[10px] sm:text-xs text-slate-400">Management Panel</p>
+                <p className="text-sm font-semibold text-slate-800">مدیریت کل</p>
+                <p className="text-xs text-slate-500">Super Admin</p>
               </div>
-              <div className="w-9 h-9 sm:w-10 sm:h-10 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-200 flex items-center justify-center font-bold text-sm sm:text-base shadow-sm">
+              <div className="w-10 h-10 bg-indigo-50 rounded-xl border border-indigo-200 flex items-center justify-center font-bold text-indigo-600 shadow-sm">
                 A
               </div>
             </div>
           </div>
         </header>
 
-        {/* Content View */}
-        <main className="p-3.5 sm:p-5 md:p-8 flex flex-col gap-6 flex-1 overflow-y-auto w-full min-w-0 max-w-full" dir="rtl">
+        <main className="p-6 md:p-8 flex flex-col gap-6 flex-1 overflow-y-auto w-full" dir="ltr">
           {activeTab === 'settings' && <SettingsView />}
           {activeTab === 'products' && <ProductsView />}
           {activeTab === 'users' && <UsersView />}
@@ -229,19 +153,21 @@ export default function App() {
   );
 }
 
-function TabBtn({ active, onClick, children, icon, isCollapsed }: any) {
+function TabBtn({ active, onClick, children, icon, collapsed }: any) {
   return (
     <button 
       onClick={onClick}
-      title={typeof children === 'string' ? children : undefined}
-      className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-3.5 py-3'} rounded-xl transition-all duration-200 text-sm font-medium ${
+      title={collapsed ? children : undefined}
+      className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all text-sm font-medium ${
+        collapsed ? 'justify-center px-2' : 'justify-start'
+      } ${
         active 
-          ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25' 
-          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/80'
+          ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-900/30 font-semibold' 
+          : 'text-slate-400 hover:text-white hover:bg-slate-800/70'
       }`}
     >
-      <div className="flex-shrink-0 flex items-center justify-center">{icon}</div>
-      {!isCollapsed && <span className="truncate text-right">{children}</span>}
+      {icon}
+      {!collapsed && <span className="truncate">{children}</span>}
     </button>
   );
 }
@@ -249,13 +175,11 @@ function TabBtn({ active, onClick, children, icon, isCollapsed }: any) {
 function SettingsView() {
   const [state, setState] = useState<any>(null);
   const [saving, setSaving] = useState(false);
-  const [savingSanaei, setSavingSanaei] = useState(false);
-  const [savingRebecca, setSavingRebecca] = useState(false);
-  const [testingSanaei, setTestingSanaei] = useState(false);
-  const [testingRebecca, setTestingRebecca] = useState(false);
-  const [sanaeiInbounds, setSanaeiInbounds] = useState<any[]>([]);
-  const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
+  const [activeSection, setActiveSection] = useState<'sanaei' | 'rebecca' | 'general' | 'coupons' | 'backups'>('sanaei');
   const [inbounds, setInbounds] = useState<any[]>([]);
+  const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
+  const [rebeccaTesting, setRebeccaTesting] = useState(false);
+  const [rebeccaSaving, setRebeccaSaving] = useState(false);
   const [adminIdsStr, setAdminIdsStr] = useState('');
 
   const [backupPassword, setBackupPassword] = useState('');
@@ -516,26 +440,23 @@ function SettingsView() {
     fetchLocalBackups();
 
     // Prefetch inbounds automatically on mount if connected
-    fetch('/api/sanaei-inbounds')
+    fetch('/api/xui-inbounds')
       .then(r => r.json())
       .then(data => {
-        if (data.success && data.inbounds) setSanaeiInbounds(data.inbounds);
+        if (data.success) {
+          setInbounds(data.inbounds || []);
+        }
       })
-      .catch(() => {});
+      .catch(e => console.log('Could not prefetch panel inbounds:', e));
 
     fetch('/api/rebecca-inbounds')
       .then(r => r.json())
       .then(data => {
-        if (data.success && data.inbounds) setRebeccaInbounds(data.inbounds);
+        if (data && data.success) {
+          setRebeccaInbounds(data.inbounds || []);
+        }
       })
       .catch(() => {});
-
-    fetch('/api/xui-inbounds')
-      .then(r => r.json())
-      .then(data => {
-        if (data.success && data.inbounds) setInbounds(data.inbounds);
-      })
-      .catch(e => console.log('Could not prefetch panel inbounds:', e));
   }, []);
 
   if (!state) return <div className="text-center p-8">Loading...</div>;
@@ -558,8 +479,10 @@ function SettingsView() {
         freeTestVolumeGb: Number(state.freeTestVolumeGb),
         freeTestDurationDays: Number(state.freeTestDurationDays),
         freeTestEnabled: state.freeTestEnabled !== false,
+        freeTestPanel: state.freeTestPanel || 'sanaei',
         freeTestInboundId: state.freeTestInboundId ? Number(state.freeTestInboundId) : undefined,
         freeTestInboundIds: state.freeTestInboundIds || [],
+        freeTestRebeccaInbounds: state.freeTestRebeccaInbounds || [],
         supportUsername: state.supportUsername,
         referralRewardToman: Number(state.referralRewardToman) || 0,
         cardNumber: state.cardNumber,
@@ -583,91 +506,50 @@ function SettingsView() {
     alert('تنظیمات عمومی با موفقیت ذخیره شد. اگر توکن ربات تغییر کرده، ربات مجدداً راه‌اندازی شد.');
   };
 
-  const saveSanaeiPanel = async () => {
-    setSavingSanaei(true);
-    try {
-      const res = await fetch('/api/update-panel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          panel: state.panel,
-          activePanelMode: state.activePanelMode
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        alert('✅ تنظیمات پنل سنایی (3X-UI) با موفقیت ذخیره شد.');
-      } else {
-        alert('خطا در ذخیره پنل سنایی: ' + (data.message || 'نامشخص'));
-      }
-    } catch (e: any) {
-      alert('خطا در ذخیره پنل سنایی: ' + e.message);
-    } finally {
-      setSavingSanaei(false);
-    }
+  const savePanel = async () => {
+    setSaving(true);
+    await fetch('/api/update-panel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state.panel)
+    });
+    setSaving(false);
+    alert('اطلاعات پنل سنایی ذخیره شد.');
   };
 
   const saveRebeccaPanel = async () => {
-    setSavingRebecca(true);
+    setRebeccaSaving(true);
     try {
-      const res = await fetch('/api/update-panel', {
+      const res = await fetch('/api/update-rebecca-panel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rebeccaPanel: state.rebeccaPanel,
-          activePanelMode: state.activePanelMode
-        })
+        body: JSON.stringify(state.rebeccaPanel || {})
       });
       const data = await res.json();
       if (data.success) {
-        alert('✅ تنظیمات پنل ربکا (Rebecca Panel) با موفقیت ذخیره شد.');
+        alert('✅ تنظیمات و اطلاعات اتصال پنل ربکا ذخیره شد.');
       } else {
-        alert('خطا در ذخیره پنل ربکا: ' + (data.message || 'نامشخص'));
+        alert('❌ خطا در ذخیره پنل ربکا: ' + data.message);
       }
     } catch (e: any) {
-      alert('خطا در ذخیره پنل ربکا: ' + e.message);
+      alert('خطای شبکه: ' + e.message);
     } finally {
-      setSavingRebecca(false);
+      setRebeccaSaving(false);
     }
   };
 
-  const saveAllPanels = async () => {
-    setSaving(true);
+  const loadInbounds = async () => {
     try {
-      const res = await fetch('/api/update-panel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          panel: state.panel,
-          rebeccaPanel: state.rebeccaPanel,
-          activePanelMode: state.activePanelMode
-        })
-      });
+      const res = await fetch('/api/xui-inbounds');
       const data = await res.json();
       if (data.success) {
-        alert('✅ کلیه تنظیمات پنل‌های سنایی و ربکا و وضعیت عملکرد سیستم با موفقیت ذخیره گردید.');
+        setInbounds(data.inbounds);
+        alert(`✅ تعداد ${data.inbounds.length} اینباند از پنل سنایی با موفقیت دریافت شد.`);
       } else {
-        alert('خطا در ذخیره: ' + (data.message || 'نامشخص'));
-      }
-    } catch (e: any) {
-      alert('خطا در ارتباط با سرور: ' + e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const loadSanaeiInbounds = async () => {
-    try {
-      const res = await fetch('/api/sanaei-inbounds');
-      const data = await res.json();
-      if (data.success) {
-        setSanaeiInbounds(data.inbounds || []);
-        alert(`✅ اینباندهای پنل سنایی با موفقیت دریافت شد (${(data.inbounds || []).length} اینباند)`);
-      } else {
-        alert('خطا در دریافت لیست اینباندهای سنایی: ' + (data.message || 'نامشخص'));
+        alert('خطا در دریافت لیست اینباندها: ' + data.message);
       }
     } catch(e: any) {
-      alert('خطا در ارتباط با پنل سنایی: ' + e.message);
+      alert('خطا در ارتباط با پنل. مشخصات، آدرس و یا پورت و فایروال را بررسی کنید.');
     }
   };
 
@@ -677,70 +559,53 @@ function SettingsView() {
       const data = await res.json();
       if (data.success) {
         setRebeccaInbounds(data.inbounds || []);
-        alert(`✅ لیست پروتکل‌ها/اینباندهای پنل ربکا دریافت شد (${(data.inbounds || []).length} مورد)`);
+        alert(`✅ تعداد ${data.inbounds?.length || 0} پروتکل/اینباند از پنل ربکا دریافت شد.`);
       } else {
-        alert('خطا در دریافت لیست اینباندهای ربکا: ' + (data.message || 'نامشخص'));
+        alert('خطا در دریافت پروتکل‌های ربکا: ' + data.message);
       }
-    } catch(e: any) {
-      alert('خطا در ارتباط با پنل ربکا: ' + e.message);
+    } catch (e: any) {
+      alert('خطا در ارتباط با پنل ربکا. آدرس و مشخصات ورود را بررسی کنید.');
     }
   };
 
-  const loadInbounds = async () => {
-    try {
-      const res = await fetch('/api/xui-inbounds');
-      const data = await res.json();
-      if (data.success) {
-        setInbounds(data.inbounds || []);
-      } else {
-        alert('خطا در دریافت لیست اینباندها: ' + data.message);
-      }
-    } catch(e: any) {
-      alert('خطا در ارتباط با پنل. مشخصات، آدرس و یا پورت و فایروال را بررسی کنید.');
-    }
-  };
-
-  const testSanaeiConnection = async () => {
-    setTestingSanaei(true);
+  const testConnection = async () => {
     try {
       const res = await fetch('/api/test-panel-connection', { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ panelType: 'xui', config: state.panel })
+        body: JSON.stringify(state.panel)
       });
       const data = await res.json();
       if (data.success) {
-        alert('✅ اتصال به پنل سنایی (3X-UI) برقرار شد!\n' + (data.message || 'ارتباط موفقیت‌آمیز بود.'));
-        loadSanaeiInbounds();
+        alert('✅ ' + data.message);
+        loadInbounds();
       } else {
-        alert('❌ خطا در اتصال به پنل سنایی:\n' + (data.message || 'عدم پاسخگویی سرور'));
+        alert('❌ خطا: ' + data.message);
       }
     } catch (e: any) {
-      alert('خطای اتصال به سرور: ' + e.message);
-    } finally {
-      setTestingSanaei(false);
+      alert('خطای شبکه: ' + e.message);
     }
   };
 
   const testRebeccaConnection = async () => {
-    setTestingRebecca(true);
+    setRebeccaTesting(true);
     try {
-      const res = await fetch('/api/test-panel-connection', { 
+      const res = await fetch('/api/test-rebecca-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ panelType: 'rebecca', config: state.rebeccaPanel })
+        body: JSON.stringify(state.rebeccaPanel || {})
       });
       const data = await res.json();
       if (data.success) {
-        alert('✅ اتصال به پنل ربکا (Rebecca Panel) برقرار شد!\n' + (data.message || 'ارتباط موفقیت‌آمیز بود.'));
+        alert('✅ ' + data.message);
         loadRebeccaInbounds();
       } else {
-        alert('❌ خطا در اتصال به پنل ربکا:\n' + (data.message || 'عدم پاسخگویی سرور'));
+        alert('❌ خطا در اتصال به ربکا: ' + data.message);
       }
     } catch (e: any) {
-      alert('خطای اتصال به سرور: ' + e.message);
+      alert('خطای شبکه: ' + e.message);
     } finally {
-      setTestingRebecca(false);
+      setRebeccaTesting(false);
     }
   };
 
@@ -777,6 +642,10 @@ function SettingsView() {
   };
 
   const handleRestoreBackup = async () => {
+    if (!restorePassword) {
+      alert('لطفا ابتدا رمز عبور فایل بکاپ را وارد کنید.');
+      return;
+    }
     if (!selectedFile) {
       alert('لطفا ابتدا فایل بکاپ (.json) را انتخاب نمایید.');
       return;
@@ -793,23 +662,20 @@ function SettingsView() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               payload: fileContent,
-              password: restorePassword ? restorePassword.trim() : undefined
+              password: restorePassword
             })
           });
           const data = await res.json();
           if (data.success) {
-            alert('✅ ' + (data.message || 'بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد! تمامی بخش‌ها به‌روزرسانی شدند.'));
+            alert('بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد! تمامی بخش‌ها لود خواهند شد.');
             await refreshAppState();
-          } else if (data.isPasswordRequired) {
-            alert('🔒 این فایل پشتیبان با رمز عبور قفل شده است.\nلطفاً رمز عبور فایل را در کادر مربوطه وارد نمایید و مجدداً روی دکمه بازیابی کلیک کنید.');
           } else {
-            alert('❌ بازیابی انجام نشد: ' + (data.message || 'ساختار فایل نامعتبر است.'));
+            alert('پشتیبان بازیابی نشد: ' + data.message);
           }
         } catch (e: any) {
-          alert('خطا در ارتباط با سرور هنگام بازیابی بکاپ: ' + e.message);
-        } finally {
-          setActionLoading(false);
+          alert('خطا در رمزگشایی بکاپ. رمز وارد شده اشتباه است یا فایل مخدوش شده است.');
         }
+        setActionLoading(false);
       };
       reader.readAsText(selectedFile);
     } catch(e: any) {
@@ -818,359 +684,183 @@ function SettingsView() {
     }
   };
 
+  const rebeccaData = state.rebeccaPanel || {
+    url: '',
+    username: '',
+    password: '',
+    subUrlBase: '',
+    inboundTags: [],
+    enabled: true
+  };
+
   return (
-    <div className="space-y-8 max-w-2xl mx-auto" dir="rtl">
-      {/* Configuration Help Card */}
-      <div className="bg-gradient-to-tr from-slate-900 to-indigo-900 text-white p-6 rounded-xl shadow-md border border-slate-750">
-        <h3 className="text-lg font-bold mb-2 flex items-center">💡 راهنمای کانفیگ و اتصال ربات به X-UI :</h3>
-        <ul className="text-sm space-y-2 text-slate-200 leading-relaxed pr-4 list-disc">
-          <li><strong>آیدی ادمین اصلی (Admin Chat IDs):</strong> هر کاربر تلگرام یک شناسه عددی دارد (مثلاً <code>51239241</code>) که می‌توانید آن را از ربات‌هایی مثل <code className="bg-slate-850 px-1 py-0.5 rounded text-indigo-300">@userinfobot</code> دریافت نموده و در بخش زیر ذخیره کنید. فقط این آیدی‌ها به بخش <code>/admin</code> در ربات دسترسی خواهند داشت.</li>
-          <li><strong>اتصال سنایی (X-UI Connection):</strong> آدرس IP و پورت پنل خود را دقیقاً با پورت تعریف شده (مثلاً <code>http://1.2.3.4:2053</code>) وارد کنید. اگر پنل شما دارای پسوند مسیر (basePath) است حتماً آن را نیز بنویسید (مثل <code>http://1.2.3.4:2053/myprefix</code>).</li>
-          <li><strong>شناسه اینباند (Inbound ID):</strong> تمام اکانت‌های تستی و فروخته شده به عنوان کلاینت (User) داخل یک <strong>Inbound</strong> در پنل سنایی اضافه می‌شوند. پس از ذخیره آدرس و پسورد پنل، روی دکمه <strong>"دریافت لیست اینباندها"</strong> کلیک کنید تا لیست اینباندهای شما لود شود و سپس شناسه (مثلاً <code>1</code> یا <code>2</code>) را کلیک یا تایپ کنید.</li>
-        </ul>
+    <div className="space-y-6 max-w-4xl mx-auto" dir="rtl">
+      {/* Settings Subtabs Bar */}
+      <div className="bg-white p-2 rounded-2xl shadow-sm border border-slate-200 flex flex-wrap gap-2">
+        <button
+          onClick={() => setActiveSection('sanaei')}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'sanaei'
+              ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-indigo-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-300"></span>
+          🔵 پنل سنایی (X-UI)
+        </button>
+
+        <button
+          onClick={() => setActiveSection('rebecca')}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'rebecca'
+              ? 'bg-gradient-to-r from-purple-600 to-indigo-700 text-white shadow-md shadow-purple-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-purple-300"></span>
+          🟣 پنل ربکا (Rebecca)
+        </button>
+
+        <button
+          onClick={() => setActiveSection('general')}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'general'
+              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Send className="w-4 h-4" />
+          تنظیمات ربات و تست
+        </button>
+
+        <button
+          onClick={() => setActiveSection('coupons')}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'coupons'
+              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Percent className="w-4 h-4" />
+          کدهای تخفیف و هدیه
+        </button>
+
+        <button
+          onClick={() => setActiveSection('backups')}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'backups'
+              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Download className="w-4 h-4" />
+          بکاپ و بازیابی
+        </button>
       </div>
 
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Send className="w-5 h-5 text-indigo-600"/> تنظیمات عمومی و توکن ربات تلگرام</h2>
-        
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">توکن ربات تلگرام (Telegram Bot Token)</label>
-            <input type="password" value={state.botToken} onChange={e => setState({...state, botToken: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left" dir="ltr" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">شناسه عددی ادمین‌های اصلی (با ویرگول انگلیسی , جدا کنید)</label>
-            <input type="text" value={adminIdsStr} onChange={e => setAdminIdsStr(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left" dir="ltr" placeholder="e.g. 51239241, 14023924" />
-            <p className="text-xs text-slate-400 mt-1" dir="rtl">برای وارد کردن ادمین‌های ربات، شناسه‌های عددی آنها را با کاما جدا کنید.</p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">فعال بودن اکانت تست</label>
-              <select 
-                value={state.freeTestEnabled !== false ? 'true' : 'false'} 
-                onChange={e => setState({...state, freeTestEnabled: e.target.value === 'true'})} 
-                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="true">فعال (روشن)</option>
-                <option value="false">غیرفعال (خاموش)</option>
-              </select>
-            </div>
-            <div className="col-span-2">
-              <label className="block text-sm font-medium text-slate-700 mb-2">اینباندهای منتخب اکانت تست (می‌توانید یک یا چند اینباند را انتخاب کنید تا موازنه موازنه شوند):</label>
-              {inbounds.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 bg-slate-50 rounded-lg border max-h-48 overflow-y-auto">
-                  {inbounds.map((ib: any) => {
-                    const isChecked = (state.freeTestInboundIds || []).includes(ib.id) || (state.freeTestInboundId === ib.id);
-                    return (
-                      <label key={ib.id} className="flex items-center gap-2 text-sm text-slate-700 hover:text-indigo-600 cursor-pointer select-none">
-                        <input 
-                          type="checkbox" 
-                          checked={isChecked}
-                          onChange={e => {
-                            let updatedIds = [...(state.freeTestInboundIds || [])];
-                            if (state.freeTestInboundId && !updatedIds.includes(state.freeTestInboundId)) {
-                              updatedIds.push(state.freeTestInboundId);
-                            }
-                            if (e.target.checked) {
-                              if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
-                            } else {
-                              updatedIds = updatedIds.filter(id => id !== ib.id);
-                            }
-                            setState({
-                              ...state,
-                              freeTestInboundIds: updatedIds,
-                              freeTestInboundId: updatedIds[0] || undefined
-                            });
-                          }}
-                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                        />
-                        <span className="font-medium text-slate-800">{ib.remark}</span>
-                        <span className="text-xs text-slate-500 font-mono bg-slate-200 px-1.5 py-0.5 rounded">ID: {ib.id} ({ib.protocol})</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
-                  ⚠️ ابتدا دکمه "دریافت لیست اینباندها" را در پایین کلیک کنید تا اتصال برقرار شده و اینباندها جهت انتخاب لود گردند. در صورت نبود اتصال، می‌توانید از همان آیدی پیشفرض استفاده کنید.
-                </div>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">حجم تست رایگان (گیگابایت)</label>
-              <input type="number" value={state.freeTestVolumeGb} onChange={e => setState({...state, freeTestVolumeGb: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">مدت زمان تست رایگان (روز)</label>
-              <input type="number" value={state.freeTestDurationDays} onChange={e => setState({...state, freeTestDurationDays: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">شماره کارت بانکی (کارت به کارت)</label>
-              <input type="text" value={state.cardNumber || ''} onChange={e => setState({...state, cardNumber: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-left" dir="ltr" placeholder="۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">نام صاحب کارت حساب</label>
-              <input type="text" value={state.cardHolder || ''} onChange={e => setState({...state, cardHolder: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-right" placeholder="مدیریت حساب" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">آیدی پشتیبانی تلگرام (بدون @)</label>
-              <input type="text" value={state.supportUsername || ''} onChange={e => setState({...state, supportUsername: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-left font-mono" dir="ltr" placeholder="SanaeiSupportAdmin" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">پاداش معرفی زیرمجموعه (تومان)</label>
-              <input type="number" value={state.referralRewardToman || 0} onChange={e => setState({...state, referralRewardToman: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">بازه زمانی ارسال بکاپ خودکار (ساعت)</label>
-              <input type="number" value={state.autoBackupIntervalHours || 0} min="0" max="24" placeholder="مثلا 12 (صفر برای غیرفعال)" onChange={e => setState({...state, autoBackupIntervalHours: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-left font-mono" dir="ltr" />
-              <p className="text-[11px] text-slate-500 mt-1">تعداد ساعت بین هر ارسال بکاپ به تلگرام ادمین مشخص شده. ۰ = غیرفعال.</p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">رمز عبور فایل بکاپ خودکار</label>
-              <input type="text" value={state.autoBackupPassword || ''} placeholder="رمز بکاپ (خالی برای عدم رمزگذاری)" onChange={e => setState({...state, autoBackupPassword: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-left font-mono" dir="ltr" />
-              <p className="text-[11px] text-slate-500 mt-1">این پسورد برای رمزگذاری و محافظت از فایل‌های بکاپ ارسالی استفاده می‌شود.</p>
-            </div>
-          </div>
-
-          <div className="border border-slate-200 rounded-lg p-5">
-            <div className="flex items-center justify-between mb-4">
-               <div>
-                  <h3 className="text-md font-bold text-slate-800 flex items-center gap-2"><Plus className="w-4 h-4 text-slate-500"/> جوین اجباری کانال‌ها</h3>
-                  <p className="text-xs text-slate-500">کاربران برای استفاده از ربات ملزم به عضویت در کانال‌های زیر خواهند بود.</p>
-               </div>
-               <label className="flex items-center cursor-pointer">
-                  <div className="relative">
-                    <input type="checkbox" className="sr-only" checked={state.forceJoinEnabled || false} onChange={e => setState({...state, forceJoinEnabled: e.target.checked})} />
-                    <div className={`block w-10 h-6 rounded-full transition ${state.forceJoinEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}></div>
-                    <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition transform ${state.forceJoinEnabled ? 'translate-x-4' : ''}`}></div>
-                  </div>
-                  <span className="mr-3 font-semibold text-sm">فعال‌سازی جوین اجباری</span>
-               </label>
-            </div>
-
-            {state.forceJoinEnabled && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
-                    <div>
-                      <label className="text-xs font-semibold text-slate-700 mb-1 block">آیدی عددی یا یوزرنیم کانال (مانند @mychannel)</label>
-                      <input type="text" value={newFjId} onChange={e=>setNewFjId(e.target.value)} className="w-full border p-2 text-sm rounded bg-slate-50" dir="ltr" />
-                    </div>
-                    <div>
-                      <label className="text-xs font-semibold text-slate-700 mb-1 block">نام نمایشی کانال (روی دکمه)</label>
-                      <input type="text" value={newFjName} onChange={e=>setNewFjName(e.target.value)} className="w-full border p-2 text-sm rounded bg-slate-50" />
-                    </div>
-                    <div>
-                      <label className="text-xs font-semibold text-slate-700 mb-1 block">لینک عضویت کانال</label>
-                      <div className="flex gap-2">
-                        <input type="text" value={newFjUrl} onChange={e=>setNewFjUrl(e.target.value)} className="w-full border p-2 text-sm rounded bg-slate-50" dir="ltr" />
-                        <button onClick={handleAddForceJoin} className="bg-indigo-600 text-white px-3 py-2 rounded shrink-0">افزودن</button>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="space-y-2 mt-4">
-                    {(!state.forceJoinChannels || state.forceJoinChannels.length === 0) && <div className="text-center text-sm text-slate-500">هیچ کانالی ثبت نشده است. ربات باید در کانال‌های ثبت شده ادمین باشد.</div>}
-                    {(state.forceJoinChannels || []).map((ch:any, idx:number) => (
-                       <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded border text-sm">
-                          <div className="flex items-center gap-3">
-                             <span className="font-bold text-indigo-700">{ch.name}</span>
-                             <span className="text-slate-500 font-mono text-xs">{ch.id}</span>
-                          </div>
-                          <div className="flex items-center gap-3">
-                             <a href={ch.url} target="_blank" className="text-blue-500 hover:underline px-2 text-xs">تست لینک</a>
-                             <button onClick={() => handleDeleteForceJoin(idx)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4"/></button>
-                          </div>
-                       </div>
-                    ))}
-                  </div>
-                </div>
-            )}
-          </div>
-
-          <button onClick={saveGeneral} disabled={saving} className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition flex items-center mr-auto">
-            <Save className="w-4 h-4 ml-2" /> ذخیره تنظیمات عمومی ربات
-          </button>
-        </div>
-      </div>
-
-      {/* Panel Management Suite: Sanaei & Rebecca Independent Isolation */}
-      <div className="space-y-6">
-        {/* Panel Architecture & Mode Header */}
-        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-6 rounded-2xl shadow-md border border-slate-800">
-          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xl">🎛️</span>
-                <h2 className="text-lg font-bold text-white">مدیریت و پیکربندی مستقل پنل‌های سرور (سنایی / 3X-UI و ربکا / Rebecca)</h2>
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
-                پنل <strong>سنایی (3X-UI)</strong> و پنل <strong>ربکا (Rebecca)</strong> دارای ساختار، آدرس‌ها، پورت‌ها، پروتکل‌ها و روش‌های لاگین کاملاً مجزایی هستند. در این بخش هر دو پنل به صورت کاملاً مستقل و ایزوله پیکربندی و نگهداری می‌شوند.
-              </p>
-            </div>
-            
-            {/* Mode Selector */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-800/80 p-1.5 rounded-xl border border-slate-700 shrink-0 text-xs">
-              <button
-                type="button"
-                onClick={() => setState({ ...state, activePanelMode: 'both' })}
-                className={`px-3 py-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
-                  (state.activePanelMode || 'both') === 'both' 
-                    ? 'bg-emerald-600 text-white shadow' 
-                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-                }`}
-              >
-                <span>🌟 هر دو پنل فعال (همزمان)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setState({ ...state, activePanelMode: 'xui' })}
-                className={`px-3 py-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
-                  state.activePanelMode === 'xui' 
-                    ? 'bg-blue-600 text-white shadow' 
-                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-                }`}
-              >
-                <span>🔷 فقط سنایی (3X-UI)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setState({ ...state, activePanelMode: 'rebecca' })}
-                className={`px-3 py-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
-                  state.activePanelMode === 'rebecca' 
-                    ? 'bg-purple-600 text-white shadow' 
-                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-                }`}
-              >
-                <span>🟣 فقط ربکا (Rebecca)</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Panel 1: Sanaei / 3X-UI Dedicated Card */}
-        <div className={`bg-white rounded-2xl shadow-sm border transition-all ${state.activePanelMode === 'rebecca' ? 'opacity-70 border-slate-200' : 'border-blue-200 ring-1 ring-blue-100'}`}>
-          <div className="bg-gradient-to-r from-blue-50/80 to-slate-50 p-5 rounded-t-2xl border-b border-blue-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      {/* SECTION 1: Sanaei Panel */}
+      {activeSection === 'sanaei' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center justify-between border-b pb-4 border-slate-100">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 font-bold">
                 X
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base font-bold text-slate-800">مشخصات و اتصال پنل ۳X-UI / سنایی (MHSanaei / Alireza)</h3>
-                  <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-blue-200">
-                    کوکی / وب بیس‌پث
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">اتصال مستقیم به هسته Xray پنل‌های 3x-ui سنایی و علیرضا با پشتیبانی از پروتکل‌های Vless، Vmess و Trojan</p>
+                <h2 className="text-lg font-bold text-slate-800">مشخصات و اتصال پنل سنایی (MHSanaei X-UI)</h2>
+                <p className="text-xs text-slate-500">پیکربندی آدرس، پورت و کلید API پنل سنایی جهت ساخت و تمدید خودکار کانفیگ‌ها</p>
               </div>
             </div>
-
-            <div className="flex items-center gap-2 self-end sm:self-auto">
-              <button 
-                type="button"
-                onClick={testSanaeiConnection}
-                disabled={testingSanaei}
-                className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
-              >
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                <span>{testingSanaei ? 'در حال تست...' : 'تست اتصال سنایی'}</span>
-              </button>
-              <button 
-                type="button"
-                onClick={loadSanaeiInbounds}
-                className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>واکشی اینباندهای سنایی</span>
-              </button>
-            </div>
+            <span className="bg-blue-50 text-blue-700 font-bold px-3 py-1 rounded-full text-xs border border-blue-200">
+              X-UI Engine
+            </span>
           </div>
 
-          <div className="p-6 space-y-4">
+          <div className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                آدرس کامل اتصال به پنل سنایی (IP یا دامنه همراه با پورت و در صورت وجود پروتکل):
-              </label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">آدرس کامل اتصال به پنل سنایی (X-UI URL)</label>
               <input 
                 type="text" 
                 value={state.panel?.url || ''} 
-                onChange={e => setState({ ...state, panel: { ...state.panel, url: e.target.value, panelType: 'xui' } })} 
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-left font-mono text-sm bg-slate-50/50" 
+                onChange={e => setState({...state, panel: {...state.panel, url: e.target.value}})} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 text-left font-mono text-sm bg-slate-50/50" 
                 dir="ltr" 
-                placeholder="http://1.2.3.4:2053 یا https://panel.example.com:2053" 
+                placeholder="http://1.2.3.4:2053" 
               />
-              <p className="text-[11px] text-slate-400 mt-1">💡 نیازی به وارد کردن مسیر /panel یا /api در انتهای آدرس نیست؛ سیستم به صورت خودکار شناسایی می‌کند.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">نام کاربری ادمین پنل سنایی</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">نام کاربری ورود به پنل</label>
                 <input 
                   type="text" 
                   value={state.panel?.username || ''} 
-                  onChange={e => setState({ ...state, panel: { ...state.panel, username: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm" 
-                  placeholder="admin"
+                  onChange={e => setState({...state, panel: {...state.panel, username: e.target.value}})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 text-sm" 
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">رمز عبور ورود به پنل سنایی</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">رمز عبور ورود به پنل</label>
                 <input 
                   type="password" 
                   value={state.panel?.password || ''} 
-                  onChange={e => setState({ ...state, panel: { ...state.panel, password: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm font-mono" 
-                  placeholder="••••••••"
+                  onChange={e => setState({...state, panel: {...state.panel, password: e.target.value}})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 text-sm" 
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">کلید API Key اختصاصی پنل سنایی (اختیاری جهت امنیت بیشتر)</label>
-                <input 
-                  type="text" 
-                  value={state.panel?.apiKey || ''} 
-                  onChange={e => setState({ ...state, panel: { ...state.panel, apiKey: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono text-left text-sm" 
-                  dir="ltr" 
-                  placeholder="کلید API سنایی (در صورت فعال بودن در پنل)" 
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">دامنه یا بیس اختصاصی لینک‌های ساب سنایی (اختیاری)</label>
-                <input 
-                  type="text" 
-                  value={state.panel?.subUrlBase || ''} 
-                  onChange={e => setState({ ...state, panel: { ...state.panel, subUrlBase: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono text-left text-sm" 
-                  dir="ltr" 
-                  placeholder="https://sub.mydomain.com/" 
-                />
-              </div>
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">کلید API Key اختصاصی سنایی (اختیاری جهت اتصال مستقیم و بدون سشن)</label>
+              <input 
+                type="text" 
+                value={state.panel?.apiKey || ''} 
+                onChange={e => setState({...state, panel: {...state.panel, apiKey: e.target.value}})} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="vXg7hY..." 
+              />
             </div>
 
-            {/* Inbounds selector for Sanaei */}
-            <div className="border-t border-slate-100 pt-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700">اینباندهای پیش‌فرض پنل سنایی (Global Sanaei Inbounds)</label>
-                  <p className="text-[11px] text-slate-400">اینباندهایی که علامت می‌زنید مقصد اتصال کلاینت‌های سنایی خواهند بود.</p>
-                </div>
-                {sanaeiInbounds.length > 0 && (
-                  <span className="text-xs text-blue-600 font-semibold bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                    {sanaeiInbounds.length} اینباند شناسایی شده
-                  </span>
-                )}
-              </div>
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">دامنه اختصاصی لینک‌های سابسکریپشن سنایی (Subscription Base URL)</label>
+              <input 
+                type="text" 
+                value={state.panel?.subUrlBase || ''} 
+                onChange={e => setState({...state, panel: {...state.panel, subUrlBase: e.target.value}})} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="https://sub.mydomain.com/" 
+              />
+              <p className="text-xs text-slate-400 mt-1">💡 اختیاری: اگر خالی باشد، لینک‌های سابسکریپشن مستقیماً بر اساس آدرس اصلی پنل ساخته می‌شوند.</p>
+            </div>
 
-              {(sanaeiInbounds.length > 0 || inbounds.length > 0) ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 bg-blue-50/30 rounded-xl border border-blue-100 max-h-56 overflow-y-auto">
-                  {(sanaeiInbounds.length > 0 ? sanaeiInbounds : inbounds).map((ib: any) => {
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button 
+                onClick={testConnection} 
+                className="flex-1 min-w-[180px] bg-slate-900 text-white px-4 py-2.5 rounded-xl hover:bg-slate-800 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <Zap className="w-4 h-4 ml-2 text-yellow-400" /> تست اتصال سنایی
+              </button>
+              <button 
+                onClick={loadInbounds} 
+                className="flex-1 min-w-[180px] bg-blue-600 text-white px-4 py-2.5 rounded-xl hover:bg-blue-700 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <RefreshCw className="w-4 h-4 ml-2" /> واکشی لیست اینباندها
+              </button>
+            </div>
+
+            {/* Inbounds selection */}
+            <div className="space-y-2 border-t pt-4">
+              <label className="block text-sm font-bold text-slate-800">اینباندهای پیش‌فرض سنایی (Global Sanaei Inbounds):</label>
+              <p className="text-xs text-slate-500">اینباندهایی که تیک می‌زنید به صورت رندوم یا پیش‌فرض برای فروش محصولات سنایی استفاده می‌شوند.</p>
+              
+              {inbounds.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3.5 bg-slate-50 rounded-xl border border-slate-200 max-h-60 overflow-y-auto">
+                  {inbounds.map((ib: any) => {
                     const isChecked = (state.panel?.inboundIds || []).includes(ib.id) || (state.panel?.inboundId === ib.id);
                     return (
-                      <label key={ib.id} className="flex items-center gap-2 p-2 hover:bg-white rounded-lg border border-transparent hover:border-blue-200 transition text-xs text-slate-700 cursor-pointer select-none bg-white/70 shadow-2xs">
+                      <label key={ib.id} className="flex items-center gap-2.5 p-2.5 bg-white rounded-lg border border-slate-200 hover:border-blue-400 transition text-sm text-slate-700 cursor-pointer select-none shadow-xs">
                         <input 
                           type="checkbox" 
                           checked={isChecked}
@@ -1195,496 +885,665 @@ function SettingsView() {
                           }}
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
                         />
-                        <div className="flex flex-col min-w-0">
-                          <span className="font-bold text-slate-800 truncate">{ib.remark || `اینباند ${ib.id}`}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">پورت: {ib.port} | پروتکل: {ib.protocol} | ID: {ib.id}</span>
+                        <div className="flex flex-col overflow-hidden">
+                          <span className="font-bold text-slate-800 truncate">{ib.remark}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">Port: {ib.port} | ID: {ib.id} ({ib.protocol})</span>
                         </div>
                       </label>
                     );
                   })}
                 </div>
               ) : (
-                <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-between text-slate-400 bg-slate-50 text-xs">
-                  <span>لیست اینباندهای سنایی هنوز دریافت نشده است.</span>
-                  <button type="button" onClick={loadSanaeiInbounds} className="text-blue-600 font-bold hover:underline">
-                    واکشی اینباندهای سنایی
-                  </button>
+                <div className="p-6 border-2 border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center text-slate-400 bg-slate-50/50">
+                  <Box className="w-8 h-8 mb-2 opacity-30" />
+                  <p className="text-xs">هنوز لیستی از سنایی واکشی نشده است.</p>
+                  <button onClick={loadInbounds} className="mt-2 text-blue-600 text-xs font-bold hover:underline">دریافت همین حالا</button>
                 </div>
               )}
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="pt-2 border-t flex justify-end">
               <button 
-                type="button" 
-                onClick={saveSanaeiPanel} 
-                disabled={savingSanaei} 
-                className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition flex items-center text-xs font-bold shadow-sm"
+                onClick={savePanel} 
+                disabled={saving} 
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl font-bold text-sm transition flex items-center shadow-md shadow-emerald-700/20"
               >
-                <Save className="w-4 h-4 ml-1.5" /> 
-                {savingSanaei ? 'در حال ذخیره‌سازی...' : 'ذخیره اختصاصی اطلاعات پنل سنایی'}
+                <Save className="w-4 h-4 ml-2" /> ذخیره مشخصات پنل سنایی
               </button>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Panel 2: Rebecca Panel Dedicated Card */}
-        <div className={`bg-white rounded-2xl shadow-sm border transition-all ${state.activePanelMode === 'xui' ? 'opacity-70 border-slate-200' : 'border-purple-200 ring-1 ring-purple-100'}`}>
-          <div className="bg-gradient-to-r from-purple-50/80 to-slate-50 p-5 rounded-t-2xl border-b border-purple-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      {/* SECTION 2: Rebecca Panel */}
+      {activeSection === 'rebecca' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center justify-between border-b pb-4 border-slate-100">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+              <div className="w-10 h-10 rounded-xl bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-600 font-bold">
                 R
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base font-bold text-slate-800">مشخصات و اتصال پنل ربکا (Rebecca Panel)</h3>
-                  <span className="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-purple-200">
-                    REST API / Go Core
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">اتصال مدرن به REST API پنل ربکا با توکن امنیتی OAuth2 Bearer و سیستم انقضای دقیق</p>
+                <h2 className="text-lg font-bold text-slate-800">مشخصات و اتصال پنل ربکا (Rebecca API)</h2>
+                <p className="text-xs text-slate-500">پیکربندی آدرس API و توکن ادمین پنل ربکا جهت ساخت اکانت‌های پیشرفته و سابسکریپشن</p>
               </div>
             </div>
-
-            <div className="flex items-center gap-2 self-end sm:self-auto">
-              <button 
-                type="button"
-                onClick={testRebeccaConnection}
-                disabled={testingRebecca}
-                className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
-              >
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                <span>{testingRebecca ? 'در حال تست...' : 'تست اتصال ربکا'}</span>
-              </button>
-              <button 
-                type="button"
-                onClick={loadRebeccaInbounds}
-                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>واکشی پروتکل‌های ربکا</span>
-              </button>
-            </div>
+            <span className="bg-purple-50 text-purple-700 font-bold px-3 py-1 rounded-full text-xs border border-purple-200">
+              Rebecca API Engine
+            </span>
           </div>
 
-          <div className="p-6 space-y-4">
+          <div className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                آدرس کامل اتصال به پنل ربکا (دامنه HTTPS با پورت یا آدرس مستقیم وب‌سرویس ربکا):
-              </label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">آدرس کامل اتصال به پنل ربکا (Rebecca Panel URL)</label>
               <input 
                 type="text" 
-                value={state.rebeccaPanel?.url || ''} 
-                onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, url: e.target.value, panelType: 'rebecca' } })} 
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-left font-mono text-sm bg-slate-50/50" 
+                value={rebeccaData.url || ''} 
+                onChange={e => setState({
+                  ...state, 
+                  rebeccaPanel: { ...rebeccaData, url: e.target.value }
+                })} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500 text-left font-mono text-sm bg-slate-50/50" 
                 dir="ltr" 
-                placeholder="https://rebecca.example.com:8000 یا https://sub.domain.com" 
+                placeholder="https://rebecca.example.com:8000" 
               />
-              <p className="text-[11px] text-purple-600 mt-1">🔒 پنل ربکا برای ارتباط امن نیازمند دسترسی از طریق دامنه/پروتکل HTTPS یا پورت REST API ادمین است.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">نام کاربری ادمین پنل ربکا</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">نام کاربری ادمین ربکا (Admin Username)</label>
                 <input 
                   type="text" 
-                  value={state.rebeccaPanel?.username || ''} 
-                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, username: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-sm" 
+                  value={rebeccaData.username || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    rebeccaPanel: { ...rebeccaData, username: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500 text-sm" 
                   placeholder="admin"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">رمز عبور ادمین پنل ربکا</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">رمز عبور ادمین ربکا (Admin Password)</label>
                 <input 
                   type="password" 
-                  value={state.rebeccaPanel?.password || ''} 
-                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, password: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-sm font-mono" 
-                  placeholder="••••••••"
+                  value={rebeccaData.password || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    rebeccaPanel: { ...rebeccaData, password: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500 text-sm" 
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">توکن دسترسی Bearer Token ربکا (اختیاری جهت اتصال بدون لاگین)</label>
-                <input 
-                  type="text" 
-                  value={state.rebeccaPanel?.apiKey || ''} 
-                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, apiKey: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 font-mono text-left text-sm" 
-                  dir="ltr" 
-                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." 
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">دامنه یا بیس اختصاصی لینک‌های ساب ربکا (اختیاری)</label>
-                <input 
-                  type="text" 
-                  value={state.rebeccaPanel?.subUrlBase || ''} 
-                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, subUrlBase: e.target.value } })} 
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 font-mono text-left text-sm" 
-                  dir="ltr" 
-                  placeholder="https://sub-rebecca.mydomain.com/" 
-                />
-              </div>
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">دامنه یا بیس اختصاصی لینک‌های ساب ربکا (Base Subscription URL)</label>
+              <input 
+                type="text" 
+                value={rebeccaData.subUrlBase || ''} 
+                onChange={e => setState({
+                  ...state, 
+                  rebeccaPanel: { ...rebeccaData, subUrlBase: e.target.value }
+                })} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="https://sub.rebeccasite.com/sub/" 
+              />
+              <p className="text-xs text-slate-400 mt-1">💡 اختیاری: اگر پر شود، لینک‌های سابسکریپشن ربکا با این دامنه برای کاربران ارسال می‌شود.</p>
             </div>
 
-            {/* Inbounds selector for Rebecca */}
-            <div className="border-t border-slate-100 pt-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700">اینباندها و پروتکل‌های پیش‌فرض ربکا (Rebecca Inbounds/Tags)</label>
-                  <p className="text-[11px] text-slate-400">تگ‌ها یا اینباندهایی که علامت می‌زنید مقصد اتصال کلاینت‌های ربکا خواهند بود.</p>
-                </div>
-                {rebeccaInbounds.length > 0 && (
-                  <span className="text-xs text-purple-600 font-semibold bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200">
-                    {rebeccaInbounds.length} پروتکل شناسایی شده
-                  </span>
-                )}
-              </div>
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button 
+                onClick={testRebeccaConnection} 
+                disabled={rebeccaTesting}
+                className="flex-1 min-w-[180px] bg-slate-900 text-white px-4 py-2.5 rounded-xl hover:bg-slate-800 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <Zap className="w-4 h-4 ml-2 text-yellow-400" /> {rebeccaTesting ? 'در حال تست...' : 'تست آنلاین اتصال ربکا'}
+              </button>
+              <button 
+                onClick={loadRebeccaInbounds} 
+                className="flex-1 min-w-[180px] bg-purple-600 text-white px-4 py-2.5 rounded-xl hover:bg-purple-700 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <RefreshCw className="w-4 h-4 ml-2" /> واکشی اینباندهای ربکا
+              </button>
+            </div>
 
+            {/* Rebecca inbounds selection */}
+            <div className="space-y-2 border-t pt-4">
+              <label className="block text-sm font-bold text-slate-800">پروتکل‌ها و اینباندهای فعال در ربکا (Rebecca Inbounds):</label>
+              <p className="text-xs text-slate-500">پروتکل‌هایی که تیک می‌زنید، هنگام ساخت اکانت در ربکا به کاربر اختصاص داده می‌شوند.</p>
+              
               {rebeccaInbounds.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 bg-purple-50/30 rounded-xl border border-purple-100 max-h-56 overflow-y-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3.5 bg-slate-50 rounded-xl border border-slate-200 max-h-60 overflow-y-auto">
                   {rebeccaInbounds.map((ib: any) => {
-                    const isChecked = (state.rebeccaPanel?.inboundIds || []).includes(ib.id) || (state.rebeccaPanel?.inboundId === ib.id);
+                    const tag = ib.tag || ib.remark || ib.name;
+                    const isChecked = (rebeccaData.inboundTags || []).includes(tag);
                     return (
-                      <label key={ib.id} className="flex items-center gap-2 p-2 hover:bg-white rounded-lg border border-transparent hover:border-purple-200 transition text-xs text-slate-700 cursor-pointer select-none bg-white/70 shadow-2xs">
+                      <label key={tag} className="flex items-center gap-2.5 p-2.5 bg-white rounded-lg border border-slate-200 hover:border-purple-400 transition text-sm text-slate-700 cursor-pointer select-none shadow-xs">
                         <input 
                           type="checkbox" 
                           checked={isChecked}
                           onChange={e => {
-                            let updatedIds = [...(state.rebeccaPanel?.inboundIds || [])];
+                            let updatedTags = [...(rebeccaData.inboundTags || [])];
                             if (e.target.checked) {
-                              if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                              if (!updatedTags.includes(tag)) updatedTags.push(tag);
                             } else {
-                              updatedIds = updatedIds.filter(id => id !== ib.id);
+                              updatedTags = updatedTags.filter((t: string) => t !== tag);
                             }
                             setState({
                               ...state,
                               rebeccaPanel: {
-                                ...state.rebeccaPanel,
-                                inboundIds: updatedIds,
-                                inboundId: updatedIds[0] || undefined
+                                ...rebeccaData,
+                                inboundTags: updatedTags
                               }
                             });
                           }}
                           className="rounded border-slate-300 text-purple-600 focus:ring-purple-500 w-4 h-4"
                         />
-                        <div className="flex flex-col min-w-0">
-                          <span className="font-bold text-slate-800 truncate">{ib.tag || ib.remark || `پروتکل ${ib.protocol}`}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">پروتکل: {ib.protocol} | پورت: {ib.port || 'Auto'}</span>
+                        <div className="flex flex-col overflow-hidden">
+                          <span className="font-bold text-slate-800 truncate">{tag}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">{ib.protocol} / {ib.network || 'default'}</span>
                         </div>
                       </label>
                     );
                   })}
                 </div>
               ) : (
-                <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-between text-slate-400 bg-slate-50 text-xs">
-                  <span>لیست پروتکل‌های ربکا هنوز دریافت نشده است.</span>
-                  <button type="button" onClick={loadRebeccaInbounds} className="text-purple-600 font-bold hover:underline">
-                    واکشی پروتکل‌های ربکا
-                  </button>
+                <div className="p-6 border-2 border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center text-slate-400 bg-slate-50/50">
+                  <Box className="w-8 h-8 mb-2 opacity-30" />
+                  <p className="text-xs">پروتکلی از پنل ربکا دریافت نشده است. روی دکمه واکشی بالا کلیک نمایید.</p>
+                  <button onClick={loadRebeccaInbounds} className="mt-2 text-purple-600 text-xs font-bold hover:underline">واکشی اینباندهای ربکا</button>
                 </div>
               )}
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="pt-2 border-t flex justify-end">
               <button 
-                type="button" 
                 onClick={saveRebeccaPanel} 
-                disabled={savingRebecca} 
-                className="bg-purple-600 text-white px-5 py-2 rounded-lg hover:bg-purple-700 transition flex items-center text-xs font-bold shadow-sm"
+                disabled={rebeccaSaving} 
+                className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2.5 rounded-xl font-bold text-sm transition flex items-center shadow-md shadow-purple-700/20"
               >
-                <Save className="w-4 h-4 ml-1.5" /> 
-                {savingRebecca ? 'در حال ذخیره‌سازی...' : 'ذخیره اختصاصی اطلاعات پنل ربکا'}
+                <Save className="w-4 h-4 ml-2" /> ذخیره مشخصات پنل ربکا
               </button>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Global Save Button for Everything */}
-        <div className="bg-slate-100 p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="text-xs text-slate-600">
-            💡 برای ذخیره همزمان هر دو پنل و حالت فعال سیستم، می‌توانید از دکمه روبه‌رو استفاده نمایید.
+      {/* SECTION 3: General & Telegram Bot Settings */}
+      {activeSection === 'general' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center gap-3 border-b pb-4 border-slate-100">
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 font-bold">
+              <Send className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">تنظیمات عمومی، ربات تلگرام و تست رایگان</h2>
+              <p className="text-xs text-slate-500">پیکربندی توکن بات تلگرام، ادمین‌ها، شماره کارت و مدیریت تست رایگان</p>
+            </div>
           </div>
-          <button 
-            type="button" 
-            onClick={saveAllPanels} 
-            disabled={saving} 
-            className="w-full sm:w-auto bg-emerald-600 text-white px-6 py-2.5 rounded-lg hover:bg-emerald-700 transition flex items-center justify-center text-xs font-bold shadow-sm"
-          >
-            <Save className="w-4 h-4 ml-1.5" /> 
-            {saving ? 'در حال ذخیره‌سازی...' : 'ذخیره یکپارچه کلیه تنظیمات پنل‌ها و وضعیت سرورها'}
-          </button>
+
+          <div className="space-y-5">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">توکن ربات تلگرام (Telegram Bot Token)</label>
+              <input 
+                type="password" 
+                value={state.botToken || ''} 
+                onChange={e => setState({...state, botToken: e.target.value})} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" 
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">شناسه عددی ادمین‌های اصلی (با کاما انگلیسی , جدا کنید)</label>
+              <input 
+                type="text" 
+                value={adminIdsStr} 
+                onChange={e => setAdminIdsStr(e.target.value)} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="51239241, 14023924" 
+              />
+            </div>
+
+            {/* Free test card */}
+            <div className="bg-slate-50/80 p-5 rounded-xl border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 border-slate-200">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">⚙️ تنظیمات سرویس تست رایگان (Free Trial)</h3>
+                  <p className="text-xs text-slate-500">مشخص کنید کانفیگ‌های تست رایگان روی کدام پنل ساخته شوند.</p>
+                </div>
+                <select 
+                  value={state.freeTestEnabled !== false ? 'true' : 'false'} 
+                  onChange={e => setState({...state, freeTestEnabled: e.target.value === 'true'})} 
+                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-bold bg-white"
+                >
+                  <option value="true">✅ تست فعال</option>
+                  <option value="false">❌ تست غیرفعال</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">پنل ارائه دهنده تست رایگان</label>
+                  <select 
+                    value={state.freeTestPanel || 'sanaei'} 
+                    onChange={e => setState({...state, freeTestPanel: e.target.value})} 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-semibold bg-white" 
+                  >
+                    <option value="sanaei">🔵 فقط پنل سنایی (Sanaei)</option>
+                    <option value="rebecca">🟣 فقط پنل ربکا (Rebecca)</option>
+                    <option value="both">🚀 هر دو پنل به صورت همزمان (Both)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">حجم تست (گیگابایت)</label>
+                  <input 
+                    type="number" 
+                    value={state.freeTestVolumeGb || 1} 
+                    onChange={e => setState({...state, freeTestVolumeGb: e.target.value})} 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-semibold bg-white" 
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">مدت اعتبار تست (روز)</label>
+                  <input 
+                    type="number" 
+                    value={state.freeTestDurationDays || 1} 
+                    onChange={e => setState({...state, freeTestDurationDays: e.target.value})} 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-semibold bg-white" 
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Financial & Support */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">شماره کارت بانکی (کارت به کارت)</label>
+                <input 
+                  type="text" 
+                  value={state.cardNumber || ''} 
+                  onChange={e => setState({...state, cardNumber: e.target.value})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="6037997912345678" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">نام صاحب حساب کارت</label>
+                <input 
+                  type="text" 
+                  value={state.cardHolder || ''} 
+                  onChange={e => setState({...state, cardHolder: e.target.value})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 text-sm" 
+                  placeholder="نام مدیریت" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">آیدی پشتیبانی تلگرام (بدون @)</label>
+                <input 
+                  type="text" 
+                  value={state.supportUsername || ''} 
+                  onChange={e => setState({...state, supportUsername: e.target.value})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="SupportAdmin" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">پاداش معرفی زیرمجموعه (تومان)</label>
+                <input 
+                  type="number" 
+                  value={state.referralRewardToman || 0} 
+                  onChange={e => setState({...state, referralRewardToman: e.target.value})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 text-sm" 
+                />
+              </div>
+            </div>
+
+            {/* Forced Join */}
+            <div className="border border-slate-200 rounded-xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">📢 جوین اجباری در کانال‌های تلگرام</h3>
+                  <p className="text-xs text-slate-500">کاربران قبل از استفاده از ربات باید در کانال‌های زیر عضو شوند.</p>
+                </div>
+                <label className="flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={state.forceJoinEnabled || false} 
+                    onChange={e => setState({...state, forceJoinEnabled: e.target.checked})} 
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4" 
+                  />
+                  <span className="mr-2 text-xs font-bold text-slate-700">فعال بودن</span>
+                </label>
+              </div>
+
+              {state.forceJoinEnabled && (
+                <div className="space-y-3 pt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                    <input 
+                      type="text" 
+                      value={newFjId} 
+                      onChange={e => setNewFjId(e.target.value)} 
+                      placeholder="یوزرنیم یا آیدی کانال (@mychannel)" 
+                      className="border p-2.5 text-xs rounded-xl bg-slate-50 font-mono" 
+                      dir="ltr" 
+                    />
+                    <input 
+                      type="text" 
+                      value={newFjName} 
+                      onChange={e => setNewFjName(e.target.value)} 
+                      placeholder="نام نمایشی کانال" 
+                      className="border p-2.5 text-xs rounded-xl bg-slate-50" 
+                    />
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={newFjUrl} 
+                        onChange={e => setNewFjUrl(e.target.value)} 
+                        placeholder="لینک عضویت کانال" 
+                        className="border p-2.5 text-xs rounded-xl bg-slate-50 flex-1 font-mono" 
+                        dir="ltr" 
+                      />
+                      <button 
+                        onClick={handleAddForceJoin} 
+                        className="bg-indigo-600 text-white px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 hover:bg-indigo-700 transition"
+                      >
+                        افزودن
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 mt-2">
+                    {(state.forceJoinChannels || []).map((ch: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-indigo-700">{ch.name}</span>
+                          <span className="text-slate-500 font-mono">({ch.id})</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <a href={ch.url} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">تست لینک</a>
+                          <button onClick={() => handleDeleteForceJoin(idx)} className="text-red-500 hover:text-red-700">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t flex justify-end">
+              <button 
+                onClick={saveGeneral} 
+                disabled={saving} 
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-xl font-bold text-sm transition flex items-center shadow-md shadow-indigo-700/20"
+              >
+                <Save className="w-4 h-4 ml-2" /> ذخیره تنظیمات عمومی ربات
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Coupons/Discounts Management Secured Card */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-600"/> مدیریت کدهای تخفیف و هدیه (Coupons & Gift Codes)</h2>
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4 items-end bg-slate-50 p-4 rounded-lg border">
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">نوع کد</label>
-              <select value={newCouponType} onChange={e => setNewCouponType(e.target.value as any)} className="w-full px-3 py-1.5 border rounded-md text-sm">
-                <option value="discount">کد تخفیف درصددار</option>
-                <option value="gift">کد هدیه (شارژ مستقیم کیف پول)</option>
-              </select>
+      {/* SECTION 4: Coupons */}
+      {activeSection === 'coupons' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center gap-3 border-b pb-4 border-slate-100">
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 font-bold">
+              <Percent className="w-5 h-5" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">کد (مثال: YALDA)</label>
-              <input value={newCouponCode} onChange={e => setNewCouponCode(e.target.value)} type="text" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono text-left" placeholder="OFF50" />
-            </div>
-            {newCouponType === 'discount' ? (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">درصد تخفیف (٪)</label>
-                <input value={newCouponPercent} onChange={e => setNewCouponPercent(Number(e.target.value))} type="number" min="1" max="100" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="20" />
-              </div>
-            ) : (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">مبلغ هدیه (تومان)</label>
-                <input value={newCouponGiftAmount} onChange={e => setNewCouponGiftAmount(e.target.value)} type="number" min="1" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="50000" />
-              </div>
-            )}
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">تعداد مجاز کل (اختیاری)</label>
-              <input value={newCouponMaxUsage} onChange={e => setNewCouponMaxUsage(e.target.value)} type="number" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="بدون محدودیت" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">مجاز هر کاربر (اختیاری)</label>
-              <input value={newCouponMaxUsagePerUser} onChange={e => setNewCouponMaxUsagePerUser(e.target.value)} type="number" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="1" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">اعتبار (روز - اختیاری)</label>
-              <input value={newCouponExpirationDays} onChange={e => setNewCouponExpirationDays(e.target.value)} type="number" className="w-full px-3 py-1.5 border rounded-md text-sm font-mono" placeholder="مثلا 10" />
+              <h2 className="text-lg font-bold text-slate-800">مدیریت کدهای تخفیف و هدیه (Coupons & Gifts)</h2>
+              <p className="text-xs text-slate-500">تعریف کدهای تخفیف درصدی برای خریدها یا کدهای هدیه جهت شارژ کیف پول کاربران</p>
             </div>
           </div>
-          <div>
-            <button onClick={handleAddCoupon} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium text-xs transition">ایجاد کد جدید</button>
-          </div>
 
-          <div className="border rounded-md overflow-hidden">
-             <table className="w-full text-sm text-right">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 items-end">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">نوع کد</label>
+                <select 
+                  value={newCouponType} 
+                  onChange={e => setNewCouponType(e.target.value as any)} 
+                  className="w-full px-3 py-2 border rounded-xl text-xs bg-white"
+                >
+                  <option value="discount">کد تخفیف (درصدی)</option>
+                  <option value="gift">کد هدیه (شارژ نقدی)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">کد (مثال: OFF20)</label>
+                <input 
+                  value={newCouponCode} 
+                  onChange={e => setNewCouponCode(e.target.value)} 
+                  type="text" 
+                  className="w-full px-3 py-2 border rounded-xl text-xs font-mono text-left bg-white" 
+                  placeholder="OFF20" 
+                />
+              </div>
+
+              {newCouponType === 'discount' ? (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">درصد تخفیف (٪)</label>
+                  <input 
+                    value={newCouponPercent} 
+                    onChange={e => setNewCouponPercent(Number(e.target.value))} 
+                    type="number" 
+                    min="1" 
+                    max="100" 
+                    className="w-full px-3 py-2 border rounded-xl text-xs font-mono bg-white" 
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">مبلغ هدیه (تومان)</label>
+                  <input 
+                    value={newCouponGiftAmount} 
+                    onChange={e => setNewCouponGiftAmount(e.target.value)} 
+                    type="number" 
+                    min="1" 
+                    className="w-full px-3 py-2 border rounded-xl text-xs font-mono bg-white" 
+                    placeholder="50000" 
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">تعداد مجاز کل</label>
+                <input 
+                  value={newCouponMaxUsage} 
+                  onChange={e => setNewCouponMaxUsage(e.target.value)} 
+                  type="number" 
+                  className="w-full px-3 py-2 border rounded-xl text-xs font-mono bg-white" 
+                  placeholder="نامحدود" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">مجاز هر کاربر</label>
+                <input 
+                  value={newCouponMaxUsagePerUser} 
+                  onChange={e => setNewCouponMaxUsagePerUser(e.target.value)} 
+                  type="number" 
+                  className="w-full px-3 py-2 border rounded-xl text-xs font-mono bg-white" 
+                  placeholder="1" 
+                />
+              </div>
+
+              <div>
+                <button 
+                  onClick={handleAddCoupon} 
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm"
+                >
+                  ایجاد کد
+                </button>
+              </div>
+            </div>
+
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <table className="w-full text-xs text-right">
                 <thead className="bg-slate-100 text-slate-600 border-b">
                   <tr>
-                    <th className="px-4 py-2 font-medium">کد</th>
-                    <th className="px-4 py-2 font-medium">نوع و مقدار</th>
-                    <th className="px-4 py-2 font-medium text-center">جزئیات و محدودیت‌ها</th>
-                    <th className="px-4 py-2 font-medium text-left">عملیات</th>
+                    <th className="px-4 py-2.5 font-bold">کد</th>
+                    <th className="px-4 py-2.5 font-bold">نوع و مقدار</th>
+                    <th className="px-4 py-2.5 font-bold text-center">وضعیت استفاده</th>
+                    <th className="px-4 py-2.5 font-bold text-left">عملیات</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(state.coupons || []).map((c: any) => (
                     <tr key={c.code} className="border-b last:border-0 hover:bg-slate-50 transition">
-                      <td className="px-4 py-2 font-mono font-bold text-slate-800">{c.code}</td>
-                      <td className="px-4 py-2 font-mono text-indigo-600 font-bold">
-                        {c.giftAmount !== undefined ? `🎁 ${c.giftAmount.toLocaleString()} تومان هدیه` : `🎫 ${c.discountPercent}٪ تخفیف`}
+                      <td className="px-4 py-2.5 font-mono font-bold text-slate-800">{c.code}</td>
+                      <td className="px-4 py-2.5 font-bold">
+                        {c.giftAmount !== undefined ? (
+                          <span className="text-emerald-600 font-mono">🎁 {c.giftAmount.toLocaleString()} تومان</span>
+                        ) : (
+                          <span className="text-indigo-600 font-mono">🎫 {c.discountPercent}٪ تخفیف</span>
+                        )}
                       </td>
-                      <td className="px-4 py-2 text-xs text-slate-600 text-center space-y-1">
-                        {c.maxUsage && <div>کل: {c.usedCount || 0}/{c.maxUsage}</div>}
-                        {c.maxUsagePerUser && <div>هر کاربر: {c.maxUsagePerUser}</div>}
-                        {c.expirationDate && <div>اعتبار تا: {new Date(c.expirationDate).toLocaleDateString('fa-IR')}</div>}
-                        {!c.maxUsage && !c.maxUsagePerUser && !c.expirationDate && <span className="text-slate-400">بدون محدودیت خاص</span>}
+                      <td className="px-4 py-2.5 text-center text-slate-500 font-mono">
+                        {c.usedCount || 0} / {c.maxUsage || '∞'}
                       </td>
-                      <td className="px-4 py-2 text-left">
-                        <button onClick={() => handleDeleteCoupon(c.code)} className="text-red-600 hover:text-red-800 p-1 font-medium text-xs transition">حذف</button>
+                      <td className="px-4 py-2.5 text-left">
+                        <button 
+                          onClick={() => handleDeleteCoupon(c.code)} 
+                          className="text-red-500 hover:text-red-700 p-1"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </td>
                     </tr>
                   ))}
                   {(!state.coupons || state.coupons.length === 0) && (
-                    <tr><td colSpan={4} className="px-4 py-4 text-center text-slate-400 text-xs">هیچ کد تخفیفی تعریف نشده است.</td></tr>
+                    <tr>
+                      <td colSpan={4} className="px-4 py-6 text-center text-slate-400">هیچ کد تخفیف یا هدیه‌ای تعریف نشده است.</td>
+                    </tr>
                   )}
                 </tbody>
-             </table>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Backup and Restore Secured System */}
-      <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 mt-6 space-y-6">
-        <div>
-          <h2 className="text-lg font-bold flex items-center gap-2 text-slate-800 justify-start flex-row-reverse text-right">
-            <span className="ml-auto">🛡️ موتور هوشمند پشتیبان‌گیری و بازیابی فوق‌سریع دیتابیس</span>
-            <Download className="w-5 h-5 text-indigo-600" />
-          </h2>
-          <p className="text-xs text-slate-500 mt-1 leading-relaxed text-right">
-            سیستم به طور خودکار با هر تغییر وضعیت در پنل، تنظیمات، تراکنش‌ها یا مشتریان، تا حداکثر ۲۰ کپی زمانی (Snapshot) به عنوان نقطه بازگردانی روی سرور ذخیره می‌کند. همچنین می‌توانید در هر زمان به صورت اینترنتی بکاپ را دانلود یا مجدداً لود نمایید.
-          </p>
-        </div>
-
-        {/* 1. Local Restore Points Table & Actions */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 space-y-4">
-          <div className="flex flex-col md:flex-row items-center md:justify-between gap-3 border-b pb-3 border-slate-100 flex-row-reverse">
-            <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 justify-start flex-row-reverse">
-              <span>📋 لیست نقاط بازگردانی زمانی (Local Snapshots)</span>
-            </h3>
-            <button
-              onClick={handleCreateLocalBackup}
-              disabled={actionLoading}
-              className="bg-indigo-600 text-white hover:bg-indigo-700 font-semibold text-xs px-3.5 py-2 rounded-md transition duration-150 flex items-center gap-1.5 self-end"
-            >
-              <span>📸 ثبت و ایجاد سریع نقطه بازگردانی دستی</span>
-            </button>
+      {/* SECTION 5: Backups */}
+      {activeSection === 'backups' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center gap-3 border-b pb-4 border-slate-100">
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 font-bold">
+              <Download className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">پشتیبان‌گیری و بازیابی اطلاعات (Backups & Restore)</h2>
+              <p className="text-xs text-slate-500">ایجاد نسخه پشتیبان از کاربران، تنظیمات، محصولات و بازگردانی سریع</p>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-xs">
-              <thead className="bg-slate-50 border-b text-slate-650">
-                <tr>
-                  <th className="px-3 py-2.5 font-semibold">ردیف</th>
-                  <th className="px-3 py-2.5 font-semibold">نام فایل نقطه بازیابی</th>
-                  <th className="px-3 py-2.5 font-semibold">نوع نسخه</th>
-                  <th className="px-3 py-2.5 font-semibold">تاریخ ایجاد</th>
-                  <th className="px-3 py-2.5 font-semibold">حجم فایل</th>
-                  <th className="px-3 py-2.5 font-semibold text-left">عملیات بازگردانی</th>
-                </tr>
-              </thead>
-              <tbody>
-                {localBackups.map((b, idx) => (
-                  <tr key={b.filename} className="border-b last:border-0 hover:bg-slate-50/60 transition">
-                    <td className="px-3 py-3 font-mono text-slate-400">{idx + 1}</td>
-                    <td className="px-3 py-3">
-                      <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-705 text-[10px] break-all">{b.filename}</span>
-                    </td>
-                    <td className="px-3 py-3">
-                      {b.type === 'manual' ? (
-                        <span className="bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold text-[10px]">دستی (Manual)</span>
-                      ) : (
-                        <span className="bg-sky-50 text-sky-700 border border-sky-100 px-2 py-0.5 rounded-full font-semibold text-[10px]">خودکار سیستم</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-3 text-slate-600 font-medium">
-                      {new Date(b.createdAt).toLocaleString('fa-IR', { hour12: false })}
-                    </td>
-                    <td className="px-3 py-3 font-mono text-slate-500">{(b.sizeBytes / 1024).toFixed(2)} KB</td>
-                    <td className="px-3 py-3 text-left flex items-center justify-end gap-2">
-                      <button
-                        onClick={() => handleRestoreLocalBackup(b.filename)}
-                        disabled={actionLoading}
-                        className="bg-emerald-55 text-emerald-700 border border-emerald-100 hover:bg-emerald-100 hover:text-emerald-800 transition px-2.5 py-1 rounded font-semibold text-[11px]"
-                      >
-                        بازیابی این نسخه
-                      </button>
-                      <button
-                        onClick={() => handleUnlinkLocalBackup(b.filename)}
-                        disabled={actionLoading}
-                        className="bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 hover:text-red-700 transition p-1 rounded"
-                        title="حذف دائمی"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {localBackups.length === 0 && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center bg-slate-50 p-4 rounded-xl border border-slate-200">
+              <div>
+                <h4 className="text-sm font-bold text-slate-800">ایجاد نقطه بازیابی دستی (Snapshot)</h4>
+                <p className="text-xs text-slate-500 mt-0.5">یک نسخه پشتیبان کامل از دیتابیس فعلی روی سرور ذخیره می‌شود.</p>
+              </div>
+              <button 
+                onClick={handleCreateLocalBackup} 
+                disabled={actionLoading}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm"
+              >
+                ایجاد نقطه بازیابی اکنون
+              </button>
+            </div>
+
+            {/* Local Backups List */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <table className="w-full text-xs text-right">
+                <thead className="bg-slate-100 text-slate-600 border-b">
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-slate-400 text-xs text-right">
-                      هیچ نقطه بازیابی محلی در حال حاضر یافت نشد. به زودی اولین کپی‌های خودکار ثبت خواهند شد.
-                    </td>
+                    <th className="px-4 py-2.5 font-bold">نام فایل</th>
+                    <th className="px-4 py-2.5 font-bold">تاریخ ایجاد</th>
+                    <th className="px-4 py-2.5 font-bold">حجم</th>
+                    <th className="px-4 py-2.5 font-bold text-left">عملیات</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                </thead>
+                <tbody>
+                  {localBackups.map((b: any) => (
+                    <tr key={b.filename} className="border-b last:border-0 hover:bg-slate-50 transition">
+                      <td className="px-4 py-2.5 font-mono text-slate-700">{b.filename}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{new Date(b.createdAt).toLocaleString('fa-IR')}</td>
+                      <td className="px-4 py-2.5 font-mono text-slate-500">{(b.sizeBytes / 1024).toFixed(1)} KB</td>
+                      <td className="px-4 py-2.5 text-left flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => handleRestoreLocalBackup(b.filename)} 
+                          disabled={actionLoading}
+                          className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg text-xs font-semibold hover:bg-emerald-100"
+                        >
+                          بازیابی
+                        </button>
+                        <button 
+                          onClick={() => handleUnlinkLocalBackup(b.filename)} 
+                          disabled={actionLoading}
+                          className="text-red-500 hover:text-red-700 p-1"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {localBackups.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-6 text-center text-slate-400">هیچ نقطه بازیابی محلی ذخیره نشده است.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
 
-        {/* 2. Download / Upload External Backup Section (2 columns split) */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-200 divide-y md:divide-y-0 md:divide-x md:divide-x-reverse divide-slate-200">
-          {/* Column A: Download backup formats */}
-          <div className="space-y-4 pb-4 md:pb-0 text-right">
-            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5 justify-start flex-row-reverse">
-              <span>📥 دانلود و خروجی فایلی دیتابیس (Export)</span>
-            </h3>
-            <p className="text-xs text-slate-400 leading-relaxed">بکاپ کامل دیتابیس بات شامل اعضا، بدهی‌ها، محصولات و توکن‌ها را با یکی از قالب‌های زیر دانلود کنید:</p>
-            
-            <div className="space-y-4 bg-white p-4 rounded-xl border border-slate-200">
-              {/* Plain Download Option */}
-              <div className="flex items-center justify-between gap-3 border-b pb-3 border-slate-100 flex-row-reverse">
-                <div className="text-right">
-                  <h4 className="text-xs font-bold text-slate-800">۱. دانلود مستقیم و بدون رمز (سریع)</h4>
-                  <p className="text-[10px] text-slate-400 mt-0.5">دانلود سریع به صورت فایل JSON خام و آماده بازنشانی</p>
-                </div>
+            {/* Manual Export & Import */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-200">
+              <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <h4 className="text-xs font-bold text-slate-800">📥 دانلود فایل پشتیبان دیتابیس</h4>
                 <a 
-                  href="/api/backup/plain-download"
-                  download
-                  className="bg-slate-100 text-slate-700 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-200 transition text-[11px] font-semibold flex items-center gap-1 shrink-0"
+                  href="/api/backup/plain-download" 
+                  download 
+                  className="w-full bg-slate-800 hover:bg-slate-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
                 >
-                  <Download className="w-3.5 h-3.5" /> دانلود JSON خام
+                  <Download className="w-4 h-4" /> دانلود JSON خام
                 </a>
               </div>
 
-              {/* Encrypted Download Option */}
-              <div className="space-y-3 pt-1">
-                <h4 className="text-xs font-bold text-slate-800 text-right">۲. خروجی فوق‌امنیتی رمزگذاری شده</h4>
-                <div className="space-y-2">
-                  <label className="block text-[11px] text-slate-500 text-right font-medium">تعриф رمز عبور یا کلید خصوصی جهت قفل کردن فایل بکاپ:</label>
-                  <input 
-                    type="password" 
-                    value={backupPassword} 
-                    onChange={e => setBackupPassword(e.target.value)} 
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-xs text-left" 
-                    dir="ltr"
-                    placeholder="MySecuredPass" 
-                  />
-                </div>
-                <button 
-                  onClick={handleDownloadBackup} 
-                  disabled={actionLoading} 
-                  className="bg-indigo-600 text-white px-3 py-1.5 rounded hover:bg-indigo-700 transition flex items-center text-xs font-medium mr-auto"
-                >
-                  <Download className="w-3.5 h-3.5 ml-1.5" /> تولید و دانلود فایل رمزگذاری شده
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Column B: Upload and Restore backup from External File */}
-          <div className="space-y-4 pt-4 md:pt-0 md:pr-4 text-right">
-            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5 justify-start flex-row-reverse">
-              <span>📤 ورود و ریکاوری فایلی دیتابیس (Import)</span>
-            </h3>
-            <p className="text-xs text-slate-400 leading-relaxed">فایل پشتیبان خارجی با پسوند <code>.json</code> را انتخاب کرده و جهت بازنشانی و جایگذاری تمام اطلاعات آپلود کنید:</p>
-            
-            <div className="space-y-4 bg-white p-4 rounded-xl border border-slate-205">
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1 text-right">فایل بکاپ را انتخاب کنید:</label>
-                  <input 
-                    type="file" 
-                    accept=".json" 
-                    onChange={e => setSelectedFile(e.target.files?.[0] || null)} 
-                    className="w-full text-xs text-slate-550 file:mr-4 file:py-1.5 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer" 
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-650 mb-1 text-right">رمز بازگشایی (فقط در صورتی که فایل رمزشده باشد):</label>
-                  <input 
-                    type="password" 
-                    value={restorePassword} 
-                    onChange={e => setRestorePassword(e.target.value)} 
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-xs text-left" 
-                    dir="ltr"
-                    placeholder="اختیاری - برای فایل‌های بکاپ معمولی و قدیمی خالی بگذارید" 
-                  />
-                  <p className="text-[11px] text-slate-400 mt-1 text-right">💡 این موتور به صورت خودکار انواع بکاپ‌های قدیمی، فایل‌های db.json خام و بکاپ‌های رمزگذاری‌شده را شناسایی و بازیابی می‌کند.</p>
-                </div>
-              </div>
-
-              <div className="flex gap-2">
+              <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <h4 className="text-xs font-bold text-slate-800">📤 بازگردانی از فایل JSON</h4>
+                <input 
+                  type="file" 
+                  accept=".json" 
+                  onChange={e => setSelectedFile(e.target.files?.[0] || null)} 
+                  className="w-full text-xs text-slate-600" 
+                />
                 <button 
                   onClick={handleRestoreBackup} 
-                  disabled={actionLoading} 
-                  className="bg-emerald-600 text-white px-3.5 py-1.5 rounded hover:bg-emerald-700 transition flex items-center text-xs font-medium mr-auto"
+                  disabled={actionLoading}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
                 >
-                  <Upload className="w-3.5 h-3.5 ml-1.5" /> آپلود، بازیابی و بازنشانی دیتابیس
+                  <Upload className="w-4 h-4" /> بازگردانی دیتابیس
                 </button>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1907,7 +1766,7 @@ function ProductsView() {
              {inbounds.length > 0 ? (
                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-slate-50 rounded-lg border max-h-40 overflow-y-auto">
                  {inbounds.map((ib: any) => {
-                   const isChecked = form.inboundIds.some((id: any) => String(id) === String(ib.id)) || String(form.inboundId) === String(ib.id);
+                   const isChecked = form.inboundIds.includes(ib.id) || form.inboundId === String(ib.id);
                    return (
                      <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-indigo-600 cursor-pointer select-none">
                        <input 
@@ -1915,13 +1774,13 @@ function ProductsView() {
                          checked={isChecked}
                          onChange={e => {
                            let updatedIds = [...form.inboundIds];
-                           if (form.inboundId && !updatedIds.some((id: any) => String(id) === String(form.inboundId))) {
-                             updatedIds.push(form.inboundId);
+                           if (form.inboundId && !updatedIds.includes(Number(form.inboundId))) {
+                             updatedIds.push(Number(form.inboundId));
                            }
                            if (e.target.checked) {
-                             if (!updatedIds.some((id: any) => String(id) === String(ib.id))) updatedIds.push(ib.id);
+                             if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
                            } else {
-                             updatedIds = updatedIds.filter((id: any) => String(id) !== String(ib.id));
+                             updatedIds = updatedIds.filter(id => id !== ib.id);
                            }
                            setForm({
                              ...form,
@@ -2219,81 +2078,79 @@ function UsersView() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto w-full min-w-0" dir="rtl">
+    <div className="max-w-5xl mx-auto" dir="rtl">
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-right min-w-[650px]">
-            <thead className="bg-slate-50 border-b">
-              <tr>
-                <th className="px-6 py-4 font-semibold text-slate-600">کاربر / آیدی</th>
-                <th className="px-6 py-4 font-semibold text-slate-600">نقش</th>
-                <th className="px-6 py-4 font-semibold text-slate-600">موجودی / بدهی</th>
-                <th className="px-6 py-4 font-semibold text-slate-600">تاریخ ثبت نام</th>
-                <th className="px-6 py-4 font-semibold text-slate-600 text-left">عملیات</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map(u => (
-                <tr key={u.chatId} className="border-b last:border-0 hover:bg-slate-50 transition">
-                  <td className="px-6 py-4">
-                    <div className="font-medium text-slate-900" dir="ltr">{u.username ? `@${u.username}` : 'No Username'}</div>
-                    <div className="text-sm text-slate-500 font-mono" dir="ltr">{u.chatId}</div>
-                    <div className="mt-1">
-                      {u.testUsed ? (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-semibold">🚫 تست استفاده شده</span>
-                      ) : (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-teal-50 text-teal-700 border border-teal-200 font-semibold">✅ تست مجاز</span>
-                      )}
+        <table className="w-full text-right">
+          <thead className="bg-slate-50 border-b">
+            <tr>
+              <th className="px-6 py-4 font-semibold text-slate-600">کاربر / آیدی</th>
+              <th className="px-6 py-4 font-semibold text-slate-600">نقش</th>
+              <th className="px-6 py-4 font-semibold text-slate-600">موجودی / بدهی</th>
+              <th className="px-6 py-4 font-semibold text-slate-600">تاریخ ثبت نام</th>
+              <th className="px-6 py-4 font-semibold text-slate-600 text-left">عملیات</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map(u => (
+              <tr key={u.chatId} className="border-b last:border-0 hover:bg-slate-50 transition">
+                <td className="px-6 py-4">
+                  <div className="font-medium text-slate-900" dir="ltr">{u.username ? `@${u.username}` : 'No Username'}</div>
+                  <div className="text-sm text-slate-500 font-mono" dir="ltr">{u.chatId}</div>
+                  <div className="mt-1">
+                    {u.testUsed ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-semibold">🚫 تست استفاده شده</span>
+                    ) : (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-teal-50 text-teal-700 border border-teal-200 font-semibold">✅ تست مجاز</span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-6 py-4">
+                  {u.isSeller ? (
+                    <div>
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700 mb-1">فروشنده</span>
                     </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    {u.isSeller ? (
-                      <div>
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700 mb-1">فروشنده</span>
-                      </div>
-                    ) : (
-                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">کاربر عادی</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4">
-                    {u.isSeller ? (
-                       <div>
-                         <div className="text-sm font-bold text-red-600">بدهی: {(u.debt || 0).toLocaleString()} ت</div>
-                         <div className="text-xs text-slate-500 mt-1">فروش: {(u.totalSales || 0).toLocaleString()} ت</div>
-                       </div>
-                    ) : (
-                       <div className="font-mono text-emerald-600 font-semibold text-sm">{(u.balance || 0).toLocaleString()} ت</div>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-slate-500">{new Date(u.registeredAt).toLocaleDateString('fa-IR')}</td>
-                  <td className="px-6 py-4 text-left flex items-center justify-end gap-2">
-                    <button onClick={() => toggleTest(u.chatId, !!u.testUsed)} className={`px-2.5 py-1.5 rounded-md font-medium text-xs transition ${u.testUsed ? 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-150 border border-slate-200'}`}>
-                      {u.testUsed ? '🔄 فعال‌سازی تست مجدد' : 'علامت تست‌شده'}
-                    </button>
-                    <button onClick={() => toggleSeller(u.chatId, !!u.isSeller)} className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition">
-                      تغییر نقش
-                    </button>
-                    {u.isSeller ? (
-                       <button onClick={() => settleDebt(u.chatId)} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
-                         تسویه حساب
-                       </button>
-                    ) : (
-                       <button onClick={() => charge(u.chatId)} className="inline-flex items-center px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
-                         <BatteryCharging className="w-4 h-4 ml-1" /> شارژ موجودی
-                       </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {users.length === 0 && (
-                <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-500">هنوز کاربری ثبت نشده است.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">کاربر عادی</span>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {u.isSeller ? (
+                     <div>
+                       <div className="text-sm font-bold text-red-600">بدهی: {(u.debt || 0).toLocaleString()} ت</div>
+                       <div className="text-xs text-slate-500 mt-1">فروش: {(u.totalSales || 0).toLocaleString()} ت</div>
+                     </div>
+                  ) : (
+                     <div className="font-mono text-emerald-600 font-semibold text-sm">{(u.balance || 0).toLocaleString()} ت</div>
+                  )}
+                </td>
+                <td className="px-6 py-4 text-sm text-slate-500">{new Date(u.registeredAt).toLocaleDateString('fa-IR')}</td>
+                <td className="px-6 py-4 text-left flex items-center justify-end gap-2">
+                  <button onClick={() => toggleTest(u.chatId, !!u.testUsed)} className={`px-2.5 py-1.5 rounded-md font-medium text-xs transition ${u.testUsed ? 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-150 border border-slate-200'}`}>
+                    {u.testUsed ? '🔄 فعال‌سازی تست مجدد' : 'علامت تست‌شده'}
+                  </button>
+                  <button onClick={() => toggleSeller(u.chatId, !!u.isSeller)} className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition">
+                    تغییر نقش
+                  </button>
+                  {u.isSeller ? (
+                     <button onClick={() => settleDebt(u.chatId)} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
+                       تسویه حساب
+                     </button>
+                  ) : (
+                     <button onClick={() => charge(u.chatId)} className="inline-flex items-center px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md font-medium text-xs transition">
+                       <BatteryCharging className="w-4 h-4 ml-1" /> شارژ موجودی
+                     </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {users.length === 0 && (
+              <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-500">هنوز کاربری ثبت نشده است.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
-  );
+  )
 }
 
 function parseAmountInput(input: any): number | null {
@@ -2932,9 +2789,8 @@ function SellersView() {
 
       {/* Sellers List Table */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-right min-w-[750px]">
-            <thead className="bg-slate-50 border-b">
+        <table className="w-full text-right">
+          <thead className="bg-slate-50 border-b">
             <tr>
               <th className="px-6 py-4 font-semibold text-slate-600">همکار / شناسه‌تلگرام</th>
               <th className="px-6 py-4 font-semibold text-slate-600">بدهی مالی / سقف خرید</th>
@@ -3067,7 +2923,6 @@ function SellersView() {
             )}
           </tbody>
         </table>
-        </div>
       </div>
     </div>
   );

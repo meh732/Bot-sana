@@ -2,8 +2,8 @@ import TelegramBot from 'node-telegram-bot-api';
 import { db } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
+import { multiPanel } from './multiPanel.js';
 import { encryptData, decryptData } from './crypto.js';
-import { restoreAnyBackup } from './backupEngine.js';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -167,55 +167,19 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
   return { success: true, settledGb, message: `مصرف تا حجم ${settledGb} گیگابایت تسویه شد و از این حجم به بعد محاسبه خواهد شد.` };
 }
 
-export function escapeHTML(str: string): string {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-export function logDebug(msg: string) {
-  try {
-    const logPath = path.join(process.cwd(), 'bot_debug.log');
-    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`, 'utf8');
-    console.log(`[BOT_DEBUG] ${msg}`);
-  } catch {}
-}
-
-export function isUncategorizedProduct(product: any, activeCategories: any[] = []): boolean {
-  if (!product) return false;
-  const cat = (product.categoryId || '').toString().trim();
-  if (!cat || cat === 'uncategorized' || cat === 'none' || cat === 'null' || cat === 'undefined') {
-    return true;
-  }
-  const catExists = (activeCategories || []).some(c => (String(c.id).trim() === cat || String(c.name).trim() === cat) && !c.disabled);
-  return !catExists;
-}
-
-export function formatCategoryButtonText(c: any): string {
-  if (!c || !c.name) return '📁 دسته‌بندی';
-  const name = String(c.name).trim();
-  const hasEmojiPrefix = /^[\u2700-\u27BF]|^[\uE000-\uF8FF]|^[\uD83C-\uD83E][\uDC00-\uDFFF]|^[\u2011-\u26FF]/u.test(name);
-  return hasEmojiPrefix ? name : `📁 ${name}`;
-}
-
 function getProductButtonText(user: any, p: any): string {
-  if (!p) return 'سرویس نامشخص';
-  const name = p.name || 'سرویس اشتراکی';
-  const price = Number(p.price || 0);
   const isPayG = !!p.isPayAsYouGo;
   const unit = isPayG ? 'تومان/گیگ' : 'تومان';
   
   if (user && user.isSeller) {
     const sellerDiscount = getSellerDiscountForProduct(user, p);
     if (sellerDiscount > 0) {
-      const finalPrice = Math.max(0, Math.round(price * (1 - sellerDiscount / 100)));
-      return `🎁 ${name} - ${finalPrice.toLocaleString()} (با %${sellerDiscount} تخفیف همکار) ${unit}`;
+      const finalPrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
+      return `🎁 ${p.name} - ${finalPrice.toLocaleString()} (با %${sellerDiscount} تخفیف همکار) ${unit}`;
     }
   }
 
-  return `${name} - ${price.toLocaleString()} ${unit}`;
+  return `${p.name} - ${p.price.toLocaleString()} ${unit}`;
 }
 
 let bot: TelegramBot | null = null;
@@ -246,89 +210,56 @@ async function sendServiceInfo(chatId: number, purchase: any) {
   if (!bot) return;
   bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات دقیق، حجم، زمان و لینک ساب از سرور...').catch(() => {});
   try {
-    const cleanPId = purchase.id ? String(purchase.id).trim() : '';
-    const cleanPSubId = purchase.subId ? String(purchase.subId).trim() : '';
-    const pPanel = purchase.panelType;
-
     let clientObj: any = null;
-
-    // 1. Try Rebecca directly if panelType is rebecca or starts with reb_
-    if (pPanel === 'rebecca' || (!pPanel && cleanPId.startsWith('reb_'))) {
-      try {
-        if (cleanPId) clientObj = await rebecca.getClient(cleanPId);
-        if (!clientObj && cleanPSubId) clientObj = await rebecca.getClient(cleanPSubId);
-      } catch {}
+    let allClients: any[] = [];
+    try {
+      allClients = await multiPanel.getAllClientsWithTraffic();
+    } catch (e: any) {
+      console.error('[Bot] sendServiceInfo error fetching clients:', e.message);
     }
 
-    // 2. Fetch from unified clients list (both panels queried with forceBoth = true)
-    if (!clientObj) {
-      try {
-        const allClients = await xui.getAllClientsWithTraffic(true);
-        const pIdLower = cleanPId.toLowerCase();
-        const pSubLower = cleanPSubId.toLowerCase();
-        const pNameLower = (purchase.name || '').trim().toLowerCase();
-        const urlSubId = purchase.subUrl ? purchase.subUrl.split('/sub/')[1]?.split('?')[0]?.split('/')[0]?.toLowerCase() : null;
+    const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
+    const cleanPName = purchase.name ? String(purchase.name).trim().toLowerCase() : '';
+    const urlSubId = purchase.subUrl ? purchase.subUrl.split('/sub/')[1]?.split('?')[0]?.split('/')[0] : null;
 
-        clientObj = allClients.find((cl: any) => {
-          const clEmail = (cl.email || '').trim().toLowerCase();
-          const clId = (cl.id || '').trim().toLowerCase();
-          const clSubId = (cl.subId || '').trim().toLowerCase();
+    if (allClients && allClients.length > 0) {
+      clientObj = allClients.find((cl: any) => {
+        const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
+        const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
+        const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
 
-          if (pIdLower && (clEmail === pIdLower || clId === pIdLower)) return true;
-          if (pSubLower && (clSubId === pSubLower || clEmail === pSubLower || clId === pSubLower)) return true;
-          if (pNameLower && (clEmail === pNameLower || clId === pNameLower)) return true;
-          if (urlSubId && (clSubId === urlSubId || clId === urlSubId || clEmail === urlSubId)) return true;
-          if (clSubId && purchase.subUrl && purchase.subUrl.toLowerCase().includes(clSubId)) return true;
-          if (clEmail && purchase.subUrl && purchase.subUrl.toLowerCase().includes(clEmail)) return true;
-          return false;
-        });
-      } catch (e: any) {
-        console.error('[Bot] sendServiceInfo error fetching clients:', e.message);
-      }
+        if (cleanPId && (clEmail === cleanPId || clId === cleanPId)) return true;
+        if (cleanPName && clEmail === cleanPName) return true;
+        if (clSubId && purchase.subUrl && purchase.subUrl.includes(cl.subId)) return true;
+        if (clEmail && purchase.subUrl && purchase.subUrl.includes(cl.email)) return true;
+        if (urlSubId && (clSubId === urlSubId.toLowerCase() || clId === urlSubId.toLowerCase() || clEmail === urlSubId.toLowerCase())) return true;
+        return false;
+      });
     }
 
-    // 3. Fallback: try Rebecca directly if still not found and wasn't tried
-    if (!clientObj && pPanel !== 'rebecca') {
-      try {
-        if (cleanPId) clientObj = await rebecca.getClient(cleanPId);
-        if (!clientObj && cleanPSubId) clientObj = await rebecca.getClient(cleanPSubId);
-      } catch {}
-    }
-
-    // Determine effective panel
-    const effectivePanel: 'xui' | 'rebecca' = clientObj?.panelType || purchase.panelType || (cleanPId.startsWith('reb_') ? 'rebecca' : 'xui');
-
-    // Subscription URL healing and construction
+    // Heal / update subUrl if missing or outdated for Sanaei
+    const state = db.getState();
     let subUrl = (purchase.subUrl || '').trim();
-    const effectiveSubId = clientObj?.subId || purchase.subId || purchase.id;
+    const effectiveSubId = clientObj?.subId || urlSubId;
 
-    if (!subUrl || !subUrl.startsWith('http')) {
-      if (effectivePanel === 'rebecca') {
-        subUrl = rebecca.buildFullSubUrl(effectiveSubId ? `/sub/${effectiveSubId}` : '');
+    if ((!subUrl || !subUrl.includes('/sub/')) && effectiveSubId && state.panel?.url) {
+      const domain = new URL(state.panel.url).hostname;
+      if (state.panel.subUrlBase && state.panel.subUrlBase.trim() !== '') {
+        let base = state.panel.subUrlBase.trim();
+        if (!base.endsWith('/')) base += '/';
+        subUrl = `${base}${effectiveSubId}`;
       } else {
-        subUrl = xui.buildXuiSubUrl(effectiveSubId);
+        const panelPortMatch = state.panel.url.match(/:(\d+)$/);
+        const panelPort = panelPortMatch ? panelPortMatch[1] : (state.panel.url.startsWith('https') ? '443' : '80');
+        const protocol = state.panel.url.startsWith('https') ? 'https' : 'http';
+        subUrl = `${protocol}://${domain}:${panelPort}/sub/${effectiveSubId}`;
       }
-    } else {
-      if (effectivePanel === 'rebecca') {
-        subUrl = rebecca.buildFullSubUrl(subUrl);
-      } else {
-        const subIdMatch = subUrl.match(/\/sub\/([^/?#]+)/);
-        if (subIdMatch && subIdMatch[1]) {
-          subUrl = xui.buildXuiSubUrl(subIdMatch[1]);
-        }
-      }
-    }
-
-    // Persist updated subUrl and panelType if changed
-    if (subUrl && (subUrl !== purchase.subUrl || purchase.panelType !== effectivePanel)) {
       purchase.subUrl = subUrl;
-      purchase.panelType = effectivePanel;
       const currentUser = db.getUser(chatId);
       if (currentUser && currentUser.purchases) {
         const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
         if (pItem) {
           pItem.subUrl = subUrl;
-          pItem.panelType = effectivePanel;
           db.saveUser(currentUser);
         }
       }
@@ -384,7 +315,7 @@ async function sendServiceInfo(chatId: number, purchase: any) {
         }
 
         let upDownStr = '';
-        if (clientObj && (clientObj.up > 0 || clientObj.down > 0)) {
+        if (clientObj) {
           const upMb = (clientObj.up / (1024 * 1024)).toFixed(1);
           const downMb = (clientObj.down / (1024 * 1024)).toFixed(1);
           upDownStr = `(⬇️ ${downMb} MB | ⬆️ ${upMb} MB)`;
@@ -408,8 +339,8 @@ async function sendServiceInfo(chatId: number, purchase: any) {
         progressBar = `▫️ <b>وضعیت مصرف:</b> [${'🔴'.repeat(filledBlocks)}${'🟢'.repeat(emptyBlocks)}] (${pctUsed}٪ مصرف شده)`;
       } else {
         totalVolStr = purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود';
-        usedVolStr = purchase.lastUsedBytes ? `${(purchase.lastUsedBytes / (1024 * 1024)).toFixed(1)} مگابایت` : '۰ مگابایت';
-        remainingVolStr = purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود';
+        usedVolStr = 'نامشخص';
+        remainingVolStr = 'نامحدود';
       }
     }
 
@@ -443,23 +374,8 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       expiryDateStr = 'پس از اولین اتصال فعال می‌شود';
     } else {
       if (purchase.durationDays && purchase.durationDays > 0) {
-        if (purchase.createdAt) {
-          const calcExp = new Date(purchase.createdAt).getTime() + (purchase.durationDays * 86400000);
-          const remMs = calcExp - Date.now();
-          if (remMs > 0) {
-            const days = Math.floor(remMs / 86400000);
-            const hours = Math.floor((remMs % 86400000) / 3600000);
-            remainingTimeStr = `${days} روز و ${hours} ساعت باقیمانده`;
-            const expDate = new Date(calcExp);
-            expiryDateStr = `${expDate.toLocaleDateString('fa-IR')}`;
-          } else {
-            remainingTimeStr = `${purchase.durationDays} روز (شروع از زمان فعال‌سازی)`;
-            expiryDateStr = 'محاسبه از اولین اتصال';
-          }
-        } else {
-          remainingTimeStr = `${purchase.durationDays} روز`;
-          expiryDateStr = 'شروع از اولین اتصال';
-        }
+        remainingTimeStr = `${purchase.durationDays} روز (شروع پس از اولین اتصال یا بدون انقضا)`;
+        expiryDateStr = 'نامحدود تا اتصال';
       } else {
         remainingTimeStr = 'نامحدود (بدون انقضا)';
         expiryDateStr = 'همیشگی';
@@ -474,11 +390,25 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       statusText = '⚠️ نیاز به تمدید (حجم پایان یافته یا منقضی)';
     }
 
-    const panelNameBadge = effectivePanel === 'rebecca' ? '⚡ ربکا (Rebecca)' : '🌐 سنایی (3X-UI)';
+    // 4. Multi-panel links display
+    let linksText = '';
+    if (purchase.panelType === 'both' || (purchase.sanaeiSubUrl && purchase.rebeccaSubUrl)) {
+      linksText = `🔵 <b>لینک سابسکریپشن سرور سنایی:</b>\n` +
+        `<code>${escapeHtml(purchase.sanaeiSubUrl || purchase.subUrl)}</code>\n\n` +
+        `🟣 <b>لینک سابسکریپشن سرور ربکا:</b>\n` +
+        `<code>${escapeHtml(purchase.rebeccaSubUrl)}</code>\n\n`;
+    } else if (purchase.panelType === 'rebecca') {
+      linksText = `🟣 <b>لینک اختصاصی سرور ربکا:</b>\n` +
+        `<code>${escapeHtml(purchase.rebeccaSubUrl || purchase.subUrl)}</code>\n\n`;
+    } else if (subUrl) {
+      linksText = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n` +
+        `<code>${escapeHtml(subUrl)}</code>\n\n`;
+    } else {
+      linksText = `⚠️ <i>لینک سابسکریپشن در حال حاضر در دسترس نیست.</i>\n\n`;
+    }
 
     const caption = `🔑 <b>اطلاعات کامل سرویس (${escapeHtml(purchase.name || 'سرویس اشتراکی')})</b>\n\n` +
       `📋 <b>شناسه سفارش:</b> <code>${escapeHtml(String(purchase.id || ''))}</code>\n` +
-      `🖥 <b>پنل میزبان:</b> <b>${panelNameBadge}</b>\n` +
       `🔰 <b>وضعیت اکانت:</b> ${statusText}\n\n` +
       `📊 <b>اطلاعات حجم سرویس:</b>\n` +
       `▫️ <b>کل حجم:</b> ${totalVolStr}\n` +
@@ -492,14 +422,11 @@ async function sendServiceInfo(chatId: number, purchase: any) {
         `💸 <b>هزینه هر گیگ:</b> ${purchase.pricePerGb?.toLocaleString()} تومان\n` +
         `📈 <b>مصرف دوره جاری:</b> ${(Math.max(0, (purchase.lastUsedBytes || 0) - (purchase.baseSettledBytes || 0)) / (1024*1024*1024)).toFixed(2)} گیگابایت\n\n`
       ) : '') +
-      (subUrl ? (
-        `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n` +
-        `<code>${escapeHtml(subUrl)}</code>\n\n` +
-        `💡 <i>با لمس لینک بالا، به صورت خودکار در حافظه کپی می‌شود.</i>\n\n`
-      ) : '⚠️ <i>لینک سابسکریپشن در حال حاضر در دسترس نیست.</i>\n\n') +
+      linksText +
+      `💡 <i>با لمس لینک بالا، به صورت خودکار در حافظه کپی می‌شود.</i>\n\n` +
       `📱 <b>راهنمای اتصال:</b>\n` +
       `۱. بارکد QR بالا را اسکن کرده یا لینک سابسکریپشن را کپی و اضافه نمایید.\n` +
-      `۲. در نرم‌افزار گزینه <b>Update Subscription</b> را بزنید.`;
+      `۲. در نرم‌افزار (V2rayNG / Streisand / V2rayN / Sing-box / Shadowrocket) گزینه <b>Update Subscription</b> را بزنید.`;
 
     const inlineButtons: any[] = [
       [
@@ -522,28 +449,12 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     if (subUrl) {
       try {
         const buffer = await QRCode.toBuffer(subUrl, { width: 450, margin: 2 });
-        if (caption.length <= 1024) {
-          await bot.sendPhoto(chatId, buffer, {
-            caption,
-            parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: inlineButtons }
-          });
-          photoSent = true;
-        } else {
-          const shortCaption = `📱 <b>بارکد اختصاصی اتصال (QR Code)</b>\n` +
-            `🔹 <b>سرویس:</b> ${escapeHtml(purchase.name || 'سرویس اشتراکی')}\n` +
-            `🔰 <b>وضعیت:</b> ${statusText}\n` +
-            `📊 <b>باقیمانده:</b> ${remainingVolStr} | ⏳ <b>زمان:</b> ${remainingTimeStr}`;
-          await bot.sendPhoto(chatId, buffer, {
-            caption: shortCaption,
-            parse_mode: 'HTML'
-          });
-          await bot.sendMessage(chatId, caption, {
-            parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: inlineButtons }
-          });
-          photoSent = true;
-        }
+        await bot.sendPhoto(chatId, buffer, {
+          caption: caption.length <= 1024 ? caption : caption.slice(0, 1020) + '...',
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineButtons }
+        });
+        photoSent = true;
       } catch (err: any) {
         console.error('[Bot] sendPhoto failed:', err.message);
       }
@@ -598,20 +509,8 @@ function getSellerReplyKeyboard(): any {
 
 export async function initBot() {
   const state = db.getState();
-  const token = (state.botToken || '').trim();
-  if (!token || token === 'BOM_TEST_TOKEN' || !token.includes(':') || token.length < 20) {
-    console.log('[Bot] No valid Bot Token configured. Bot is waiting for configuration.');
-    if (bot) {
-      try {
-        const activeBot = bot;
-        bot = null;
-        if (typeof activeBot.stopPolling === 'function') {
-          await activeBot.stopPolling();
-        }
-        activeBot.removeAllListeners();
-      } catch {}
-      isPolling = false;
-    }
+  if (!state.botToken) {
+    console.log('[Bot] No Bot Token configured. Bot not started.');
     return;
   }
 
@@ -634,28 +533,17 @@ export async function initBot() {
   await new Promise(resolve => setTimeout(resolve, 1500));
 
   try {
-    console.log(`[Bot] Initializing Telegram Bot with token ending in ...${token.substring(token.length - 8 || 0)}`);
-    bot = new TelegramBot(token, { polling: true });
+    console.log(`[Bot] Initializing Telegram Bot with token ending in ...${state.botToken.substring(state.botToken.length - 8 || 0)}`);
+    bot = new TelegramBot(state.botToken, { polling: true });
     isPolling = true;
 
     // Attach crucial error listeners to avoid crashing or unhandled rejections
-    bot.on('polling_error', async (error: any) => {
-      const errMsg = error?.message || String(error);
-      if (errMsg.includes('404') || errMsg.includes('401') || errMsg.includes('ETELEGRAM: 404') || errMsg.includes('ETELEGRAM: 401')) {
-        console.warn(`[Bot Warning] Telegram Bot Token is invalid (${errMsg}). Polling halted.`);
-        if (bot && typeof bot.stopPolling === 'function') {
-          try {
-            await bot.stopPolling();
-          } catch {}
-          isPolling = false;
-        }
-        return;
-      }
-      console.error('[Bot Error] Polling error:', errMsg);
+    bot.on('polling_error', (error: any) => {
+      console.error('[Bot Error] Polling error:', error.message || error);
     });
 
     bot.on('error', (error: any) => {
-      console.error('[Bot Error] General error:', error?.message || error);
+      console.error('[Bot Error] General error:', error.message || error);
     });
 
     bot.setMyCommands([
@@ -770,8 +658,8 @@ export async function initBot() {
         bot!.sendMessage(chatId, `❌ موجودی کافی نیست!\n\nقیمت سرویس: ${finalPrice.toLocaleString()} تومان\nموجودی شما: ${user.balance.toLocaleString()} تومان\nمبلغ کسری: ${diff.toLocaleString()} تومان\n\nجهت جبران کسری و ادامه خرید می‌توانید از دکمه زیر استفاده کنید:`, {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '💳 شارژ سریع مبلغ کسری', callback_data: `deposit_exact_${diff}` }],
-              [{ text: '💳 شارژ مبلغ دلخواه (سایر روش‌ها)', callback_data: 'user_deposit_flow' }]
+              [{ text: '💳 شارژ سریع مبلغ کسری', callback_data: `deposit_exact_${diff}`, style: 'success' }],
+              [{ text: '💳 شارژ مبلغ دلخواه (سایر روش‌ها)', callback_data: 'user_deposit_flow', style: 'primary' }]
             ]
           }
         });
@@ -782,49 +670,17 @@ export async function initBot() {
     bot!.sendMessage(chatId, `⏳ در حال خرید ${product.name} و ساخت کانفیگ...`);
     
     try {
-      const selectedInboundIds = (product.inboundIds && product.inboundIds.length > 0)
-        ? product.inboundIds
-        : (product.inboundId ? [product.inboundId] : undefined);
-
-      const sellerGroupName = user.isSeller ? (user.nickname ? user.nickname : (user.username ? `${user.username}` : `Seller_${chatId}`)) : undefined;
-      
       const isPAYG = !!product.isPayAsYouGo;
       const volGb = isPAYG ? 0 : (product.volumeGb !== undefined ? Number(product.volumeGb) : 0);
       const durDays = isPAYG ? 0 : (product.durationDays !== undefined ? Number(product.durationDays) : 0);
 
-      let clientEmail = '';
-      if (customName) {
-        clientEmail = customName;
-      } else {
-        const cleanUsername = user.username ? user.username.trim().replace(/[^a-zA-Z0-9_]/g, '') : '';
-        const emailPrefix = cleanUsername || String(chatId);
-        const uniqueSuffix = Date.now().toString().slice(-6);
-        clientEmail = `${emailPrefix}_${uniqueSuffix}`;
-      }
+      const clientResult = await multiPanel.createClientConfig({
+        user,
+        product,
+        customName
+      });
 
-      let effectiveProductPanelType: 'xui' | 'rebecca' | undefined = product.panelType;
-      if (!effectiveProductPanelType) {
-        const category = (state.categories || []).find((c: any) => String(c.id) === String(product.categoryId));
-        if (
-          category?.panelType === 'rebecca' ||
-          category?.name?.includes('ربکا') ||
-          category?.name?.toLowerCase().includes('rebecca') ||
-          product.name?.includes('ربکا') ||
-          product.name?.toLowerCase().includes('rebecca')
-        ) {
-          effectiveProductPanelType = 'rebecca';
-        } else if (
-          category?.panelType === 'xui' ||
-          category?.name?.includes('سنایی') ||
-          category?.name?.toLowerCase().includes('sanaei') ||
-          product.name?.includes('سنایی') ||
-          product.name?.toLowerCase().includes('sanaei')
-        ) {
-          effectiveProductPanelType = 'xui';
-        }
-      }
-
-      const client = await xui.addClient(clientEmail, volGb, durDays, selectedInboundIds, product.limitIp || 0, String(chatId), sellerGroupName, effectiveProductPanelType);
+      const clientEmail = clientResult.clientEmail;
       
       if (user.isSeller) {
         if (!isPAYG) {
@@ -840,13 +696,15 @@ export async function initBot() {
       
       // Save purchase record
       const newPurchase: any = {
-        id: clientEmail, // use the email as id to trace back to xui client accurately
+        id: clientEmail, // use the email as id to trace back to client accurately
         name: product.name,
         price: isPAYG ? 0 : finalPrice,
-        subUrl: client.subUrl,
+        subUrl: clientResult.subUrl,
+        sanaeiSubUrl: clientResult.sanaeiSubUrl,
+        rebeccaSubUrl: clientResult.rebeccaSubUrl,
+        panelType: clientResult.panelType,
         volumeGb: volGb,
         durationDays: durDays,
-        panelType: client.panelType || effectiveProductPanelType || 'xui',
         createdAt: new Date().toISOString(),
         originalPrice: isPAYG ? 0 : product.price,
         discountPercent: effectiveDiscount,
@@ -1781,8 +1639,8 @@ export async function initBot() {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: `🛒 تایید خرید و پرداخت (${finalPrice.toLocaleString()} تومان)`, callback_data: `buy_now_with_coupon_${productId}_${inputCoupon}` }],
-              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+              [{ text: `🛒 تایید خرید و پرداخت (${finalPrice.toLocaleString()} تومان)`, callback_data: `buy_now_with_coupon_${productId}_${inputCoupon}`, style: 'success' }],
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase', style: 'danger' }]
             ]
           }
         });
@@ -2254,7 +2112,7 @@ export async function initBot() {
                   parse_mode: 'HTML',
                   reply_markup: {
                     inline_keyboard: [
-                      [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+                      [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
                     ]
                   }
                 }).catch(() => {});
@@ -2392,7 +2250,7 @@ export async function initBot() {
             parse_mode: 'HTML',
             reply_markup: {
               inline_keyboard: [
-                [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now' }]
+                [{ text: '🛍 خرید و ثبت سفارش', callback_data: 'buy_service_now', style: 'success' }]
               ]
             }
           }).catch(() => {});
@@ -2540,7 +2398,7 @@ export async function initBot() {
       if (sessionType && sessionType.startsWith('restore_pass_')) {
         const fileId = sessionType.replace('restore_pass_', '');
         const backupPassword = text.trim();
-        bot!.sendMessage(chatId, '⏳ در حال دریافت و بازیابی فایل پشتیبان...');
+        bot!.sendMessage(chatId, '⏳ در حال دریافت و رمزگشایی فایل پشتیبان...');
         try {
           const file = await bot!.getFile(fileId);
           const dUrl = `https://api.telegram.org/file/bot${state.botToken}/${file.file_path}`;
@@ -2551,16 +2409,24 @@ export async function initBot() {
             fileData = JSON.stringify(fileData);
           }
           
-          const result = restoreAnyBackup(fileData, backupPassword);
-          if (!result.success) {
-            bot!.sendMessage(chatId, `❌ خطا در بازیابی فایل: ${result.message}\n\nلطفاً مجدداً رمز صحیح را وارد کنید یا فایل سالم دیگری ارسال فرمایید.`);
-            return;
+          const decryptedData = decryptData(fileData, backupPassword);
+          const parsed = JSON.parse(decryptedData);
+          
+          if (!parsed.panel || !parsed.users) {
+            throw new Error('محتوای فایل معتبر نمی‌باشد.');
           }
-
-          adminSession.delete(chatId);
-          bot!.sendMessage(chatId, `✅ بازیابی کامل اطلاعات با موفقیت انجام شد! 🎉\n\n${result.message}\n\n📊 آمار اطلاعات بازیابی‌شده:\n👥 کاربران: ${result.stats?.usersCount || 0}\n📦 محصولات: ${result.stats?.productsCount || 0}\n📂 دسته‌بندی‌ها: ${result.stats?.categoriesCount || 0}`);
+          
+          const dbPath = path.join(process.cwd(), 'db.json');
+          fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
+          db.updateState(parsed);
+          
+          bot!.sendMessage(chatId, '✅ بازیابی کامل اطلاعات با موفقیت انجام شد! تمامی کاربران، محصولات، تراکنش‌ها، کانکشن پنل سنایی و تنظیمات ربات با موفقیت جایگذاری و دیتابیس همگام شد. 🎉');
+          
+          setTimeout(() => {
+            initBot();
+          }, 1500);
         } catch (err: any) {
-          bot!.sendMessage(chatId, `❌ خطا در پردازش فایل پشتیبان: ${err.message}`);
+          bot!.sendMessage(chatId, `❌ خطا در رمزگشایی و بازیابی فایل: ${err.message}\n\nلطفا مجدداً رمز صحیح را بازنویسی کنید یا فایل بکاپ سالمی ارسال کنید.`);
         }
         return;
       }
@@ -2594,19 +2460,34 @@ export async function initBot() {
         const uniqueSuffix = Date.now().toString().slice(-4);
         const clientEmail = `${emailPrefix}_test_${uniqueSuffix}`;
 
-        const client = await xui.addClient(clientEmail, volGb, durDays, testInboundIds, 1, String(chatId));
+        const panelType = state.freeTestPanel || 'sanaei';
+        const clientResult = await multiPanel.createClientConfig({
+          user,
+          product: {
+            name: `تست رایگان (${volGb}GB - ${durDays} روز)`,
+            volumeGb: volGb,
+            durationDays: durDays,
+            panelType,
+            inboundIds: testInboundIds,
+            rebeccaInboundTags: state.freeTestRebeccaInbounds,
+            limitIp: 1
+          },
+          customName: clientEmail
+        });
         
         user.testUsed = true;
 
         // Save purchase record for free test
         const testPurchase = {
-          id: `test_${Date.now()}`,
+          id: clientResult.clientEmail,
           name: `تست رایگان (${volGb}GB - ${durDays} روز)`,
           price: 0,
-          subUrl: client.subUrl,
+          subUrl: clientResult.subUrl,
+          sanaeiSubUrl: clientResult.sanaeiSubUrl,
+          rebeccaSubUrl: clientResult.rebeccaSubUrl,
+          panelType: clientResult.panelType,
           volumeGb: volGb,
           durationDays: durDays,
-          panelType: client.panelType || 'xui',
           createdAt: new Date().toISOString()
         };
         user.purchases = user.purchases || [];
@@ -2716,13 +2597,13 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: formatCategoryButtonText(c), callback_data: `show_category_seller_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
-        if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
+        if (activeProducts.some(p => !p.categoryId)) {
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
         }
-        bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
-           parse_mode: 'HTML',
+        bot!.sendMessage(chatId, '🛒 *خرید سرویس ویژه همکاران*\nلطفا دسته‌بندی محصول را انتخاب کنید:', {
+           parse_mode: 'Markdown',
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
@@ -2731,11 +2612,11 @@ export async function initBot() {
       }
 
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
-      bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
-         parse_mode: 'HTML',
+      bot!.sendMessage(chatId, '🛒 *خرید سرویس ویژه همکاران*:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
+         parse_mode: 'Markdown',
          reply_markup: {
            inline_keyboard: inlineKeyboard
          } as any
@@ -2758,13 +2639,9 @@ export async function initBot() {
           msgReply += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
             `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
-            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n`;
-          if (p.subUrl) {
-            msgReply += `🔗 لینک ساب: <code>${escapeHtml(p.subUrl)}</code>\n`;
-          }
-          msgReply += `----------------------------------\n`;
-          const btnData = String(p.id).length > 28 ? idx : p.id;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و QR Code (${idx + 1})`, callback_data: `resend_link_${btnData}` }]);
+            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
+            `----------------------------------\n`;
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
@@ -2812,13 +2689,13 @@ export async function initBot() {
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: formatCategoryButtonText(c), callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
-        if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
+        if (activeProducts.some(p => !p.categoryId)) {
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
-        bot!.sendMessage(chatId, '🛍 <b>انتخاب دسته‌بندی</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
-           parse_mode: 'HTML',
+        bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
+           parse_mode: 'Markdown',
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
@@ -2828,11 +2705,10 @@ export async function initBot() {
 
       const userObj = db.getUser(chatId);
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
-      bot!.sendMessage(chatId, '🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
-         parse_mode: 'HTML',
+      bot!.sendMessage(chatId, '🛍 لطفا یک محصول انتخاب کنید:', {
          reply_markup: {
            inline_keyboard: inlineKeyboard
          } as any
@@ -2855,13 +2731,9 @@ export async function initBot() {
           msgReply += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
             `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
-            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n`;
-          if (p.subUrl) {
-            msgReply += `🔗 لینک ساب: <code>${escapeHtml(p.subUrl)}</code>\n`;
-          }
-          msgReply += `----------------------------------\n`;
-          const btnData = String(p.id).length > 28 ? idx : p.id;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و QR Code (${idx + 1})`, callback_data: `resend_link_${btnData}` }]);
+            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
+            `----------------------------------\n`;
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msgReply, {
@@ -2887,7 +2759,7 @@ export async function initBot() {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '📞 ارتباط مستقیم تلگرام', url: `https://t.me/${username}` }]
+              [{ text: '📞 ارتباط مستقیم تلگرام', url: `https://t.me/${username}`, style: 'primary' }]
             ]
           }
         });
@@ -2900,45 +2772,9 @@ export async function initBot() {
     // Restore Backup System if admin uploads the json document
     if (msg.document) {
       const state = db.getState();
-      if (state.adminIds.includes(chatId) && (msg.document.file_name?.endsWith('.json') || msg.document.mime_type?.includes('json'))) {
-        try {
-          bot!.sendMessage(chatId, '⏳ در حال دریافت و بررسی فایل پشتیبان...');
-          const file = await bot!.getFile(msg.document.file_id);
-          const dUrl = `https://api.telegram.org/file/bot${state.botToken}/${file.file_path}`;
-          const res = await axios.get(dUrl);
-          let fileData = res.data;
-          if (typeof fileData === 'object') {
-            fileData = JSON.stringify(fileData);
-          }
-
-          // Check if it is encrypted
-          let isEncrypted = false;
-          try {
-            const parsed = typeof fileData === 'string' ? JSON.parse(fileData.replace(/^\uFEFF/, '').trim()) : fileData;
-            if (parsed && parsed.type === 'sanaei_bot_secured_backup' && parsed.iv && parsed.encryptedData) {
-              isEncrypted = true;
-            }
-          } catch (e) {}
-
-          if (isEncrypted) {
-            adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
-            bot!.sendMessage(chatId, '🔒 این فایل پشتیبان دارای رمز عبور است.\n\n🔑 لطفاً رمز عبور فایل بکاپ را ارسال نمایید تا اطلاعات بازیابی گردد:');
-            return;
-          }
-
-          // Plain JSON or legacy backup -> restore directly!
-          const result = restoreAnyBackup(fileData);
-          if (result.success) {
-            bot!.sendMessage(chatId, `✅ بازیابی با موفقیت انجام شد! 🎉\n\n${result.message}\n\n📊 آمار اطلاعات بازیابی‌شده:\n👥 کاربران: ${result.stats?.usersCount || 0}\n📦 محصولات: ${result.stats?.productsCount || 0}\n📂 دسته‌بندی‌ها: ${result.stats?.categoriesCount || 0}`);
-          } else if (result.isPasswordRequired) {
-            adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
-            bot!.sendMessage(chatId, '🔒 این فایل پشتیبان رمزگذاری شده است.\n\n🔑 لطفاً رمز عبور فایل را بفرستید:');
-          } else {
-            bot!.sendMessage(chatId, `❌ بازیابی فایل پشتیبان انجام نشد: ${result.message}`);
-          }
-        } catch (err: any) {
-          bot!.sendMessage(chatId, `❌ خطا در بارگیری یا پردازش فایل: ${err.message}`);
-        }
+      if (state.adminIds.includes(chatId) && msg.document.file_name?.endsWith('.json')) {
+        adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
+        bot!.sendMessage(chatId, '📥 فایل پشتیبان دریافت شد.\n\n🔑 لطفا رمز عبور فایل بکاپ را ارسال کُنید تا رمزگشایی و بازیابی اطلاعات انجام شود:');
         return;
       }
     }
@@ -2950,41 +2786,15 @@ export async function initBot() {
   });
 
   bot.on('callback_query', async (query) => {
-    try {
-      const chatId = query.message?.chat?.id || query.from?.id;
-      const data = query.data;
-      
-      logDebug(`[CallbackQuery] Received data: "${data}" from chatId: ${chatId}`);
+    const chatId = query.message?.chat.id;
+    if (!chatId) return;
+    
+    const user = db.getUser(chatId);
+    if (!user) return;
 
-      if (query.id) {
-        // Answer IMMEDIATELY to stop Telegram UI spinner and make button highly responsive
-        await bot!.answerCallbackQuery(query.id).catch((e: any) => {
-          logDebug(`[CallbackQuery] Error answering query: ${e.message}`);
-        });
-      }
-
-      if (!chatId) {
-        logDebug('[CallbackQuery] No chatId found in query');
-        return;
-      }
-      
-      let user = db.getUser(chatId);
-      if (!user) {
-        user = {
-          chatId: Number(chatId),
-          username: query.from?.username || '',
-          nickname: query.from?.first_name || '',
-          balance: 0,
-          testUsed: false,
-          registeredAt: new Date().toISOString(),
-          purchases: []
-        };
-        db.saveUser(user);
-        logDebug(`[CallbackQuery] Created new user: ${chatId}`);
-      }
-
-      const state = db.getState();
-      const isAdmin = (state.adminIds || []).some((id: any) => String(id) === String(chatId));
+    const data = query.data;
+    const state = db.getState();
+    const isAdmin = state.adminIds.includes(chatId);
 
     // Filter for force join
     if (!isAdmin && state.forceJoinEnabled && state.forceJoinChannels && state.forceJoinChannels.length > 0) {
@@ -3699,13 +3509,9 @@ export async function initBot() {
           msg += `💎 <b>${idx + 1}- سرویس: ${escapeHtml(p.name || 'کانفیگ')}</b>\n` +
             `▫️ شناسه: <code>${escapeHtml(String(p.id))}</code>\n` +
             `▫️ حجم: ${volStr} | مدت: ${durStr}\n` +
-            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n`;
-          if (p.subUrl) {
-            msg += `🔗 لینک ساب: <code>${escapeHtml(p.subUrl)}</code>\n`;
-          }
-          msg += `----------------------------------\n`;
-          const btnData = String(p.id).length > 28 ? idx : p.id;
-          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و QR Code (${idx + 1})`, callback_data: `resend_link_${btnData}` }]);
+            `📅 تاریخ: ${new Date(p.createdAt).toLocaleDateString('fa-IR')}\n` +
+            `----------------------------------\n`;
+          inlineKeyboard.push([{ text: `🔍 استعلام حجم، زمان و لینک ساب (${idx + 1})`, callback_data: `resend_link_${p.id}`, style: 'primary' }]);
         });
 
         bot!.sendMessage(chatId, msg, {
@@ -3789,54 +3595,34 @@ export async function initBot() {
           purchase = userPurchases[idx];
         }
       }
-      if (!purchase) {
-        bot!.sendMessage(chatId, '❌ سرویس یافت نشد.');
+      if (!purchase || !purchase.subUrl) {
+        bot!.sendMessage(chatId, '❌ لینک ساب برای این سرویس یافت نشد.');
         return;
       }
 
       try {
-        let configs = '';
-        if (purchase.subUrl) {
+        const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
+        let text = resp.data;
+        if (typeof text === 'string') {
           try {
-            const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
-            let text = resp.data;
-            if (typeof text === 'string') {
-              try {
-                const decoded = Buffer.from(text, 'base64').toString('utf-8');
-                if (decoded.includes('://')) {
-                  text = decoded;
-                }
-              } catch {}
-            }
-            if (typeof text === 'string' && text.includes('://')) {
-              configs = text.trim();
+            const decoded = Buffer.from(text, 'base64').toString('utf-8');
+            if (decoded.includes('://')) {
+              text = decoded;
             }
           } catch {}
         }
-
-        // Rebecca direct fallback
-        if (!configs) {
-          try {
-            const rebClient = await rebecca.getClient(purchase.id || (purchase as any).subId);
-            if (rebClient && rebClient.links && rebClient.links.length > 0) {
-              configs = rebClient.links.join('\n');
-            }
-          } catch {}
-        }
-
-        if (configs) {
+        if (typeof text === 'string' && text.includes('://')) {
+          const configs = text.trim();
           if (configs.length > 3500) {
             await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs.slice(0, 3500))}</code>`, { parse_mode: 'HTML' });
           } else {
             await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs)}</code>`, { parse_mode: 'HTML' });
           }
-        } else if (purchase.subUrl) {
-          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در نرم‌افزار V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
         } else {
-          bot!.sendMessage(chatId, `⚠️ لینک سابسکریپشن موجود نیست.`);
+          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در برنامه V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
         }
       } catch (e: any) {
-        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl || '')}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
+        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
       }
       return;
     }
@@ -3871,7 +3657,7 @@ export async function initBot() {
         if ((user.balance || 0) < finalPrice) {
           bot!.sendMessage(chatId, `❌ موجودی شما برای تمدید این سرویس کافی نیست.\n\nقیمت: ${finalPrice.toLocaleString()} تومان\nموجودی شما: ${(user.balance || 0).toLocaleString()} تومان`, {
             reply_markup: {
-              inline_keyboard: [[{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow' }]]
+              inline_keyboard: [[{ text: '💳 شارژ حساب (کارت به کارت)', callback_data: 'user_deposit_flow', style: 'success' }]]
             }
           });
           return;
@@ -3889,29 +3675,7 @@ export async function initBot() {
       bot!.sendMessage(chatId, '⏳ در حال تمدید سرویس در سرور... لطفا شکیبا باشید.');
 
       try {
-        let targetEmail = "";
-        if (purchase.id && !purchase.id.startsWith('test_')) {
-          targetEmail = purchase.id;
-        }
-
-        const expectedSubIdMatch = purchase.subUrl ? purchase.subUrl.substring(purchase.subUrl.lastIndexOf('/') + 1) : null;
-        const allClients = await xui.getAllClientsWithTraffic();
-        const foundClient = allClients.find((c: any) => 
-          (c.email && targetEmail && c.email.toLowerCase() === targetEmail.toLowerCase()) ||
-          (c.id && targetEmail && c.id.toLowerCase() === targetEmail.toLowerCase()) ||
-          (expectedSubIdMatch && c.subId && c.subId === expectedSubIdMatch) ||
-          (purchase.subUrl && c.subId && purchase.subUrl.includes(c.subId))
-        );
-
-        if (foundClient) {
-          targetEmail = foundClient.email || foundClient.id || targetEmail;
-        }
-
-        if (!targetEmail) {
-          throw new Error('مشخصات کاربر در پنل اصلی یافت نشد. ممکن است اشتراک حذف شده باشد.');
-        }
-
-        await xui.renewClient(targetEmail, purchase.volumeGb, purchase.durationDays, purchase.panelType);
+        await multiPanel.renewClient(purchase, purchase.volumeGb, purchase.durationDays);
 
         if (!user.isSeller) {
           user.balance = (user.balance || 0) - finalPrice;
@@ -4043,259 +3807,80 @@ export async function initBot() {
     }
 
     if (data === 'buy_service_now') {
-      await bot!.answerCallbackQuery(query.id).catch(() => {});
-      const activeProducts = (state.products || []).filter(p => !p.disabled);
-      if (activeProducts.length === 0) {
-        bot!.sendMessage(chatId, '❌ هیچ محصولی در حال حاضر موجود نیست.');
-        return;
-      }
-
-      const activeCategories = (state.categories || []).filter(c => !c.disabled);
-      const title = '🛍 <b>انتخاب دسته‌بندی</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:';
-
-      if (activeCategories.length > 0) {
-        const inlineKeyboard = activeCategories.map(c => ([
-          { text: formatCategoryButtonText(c), callback_data: `show_category_${c.id}` }
-        ]));
-        if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
-        }
-
-        if (query.message?.message_id) {
-          try {
-            await bot!.editMessageText(title, {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              parse_mode: 'HTML',
-              reply_markup: { inline_keyboard: inlineKeyboard } as any
-            });
-            return;
-          } catch {}
-        }
-
-        bot!.sendMessage(chatId, title, {
-           parse_mode: 'HTML',
-           reply_markup: {
-             inline_keyboard: inlineKeyboard
-           } as any
-        });
-      } else {
-        const inlineKeyboard = activeProducts.map(p => ([
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
-        ]));
-
-        if (query.message?.message_id) {
-          try {
-            await bot!.editMessageText('🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              parse_mode: 'HTML',
-              reply_markup: { inline_keyboard: inlineKeyboard } as any
-            });
-            return;
-          } catch {}
-        }
-
-        bot!.sendMessage(chatId, '🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
-           parse_mode: 'HTML',
-           reply_markup: {
-             inline_keyboard: inlineKeyboard
-           } as any
-        });
-      }
-      return;
-    }
-
-    if (data === 'seller_buy_menu') {
-      const activeProducts = (state.products || []).filter(p => !p.disabled);
+      const activeProducts = state.products.filter(p => !p.disabled);
       if (activeProducts.length === 0) {
         bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
+        bot!.answerCallbackQuery(query.id);
         return;
       }
 
       const activeCategories = (state.categories || []).filter(c => !c.disabled);
-      const title = '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:';
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
-          { text: formatCategoryButtonText(c), callback_data: `show_category_seller_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
-        if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
+        if (activeProducts.some(p => !p.categoryId)) {
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
-
-        if (query.message?.message_id) {
-          try {
-            await bot!.editMessageText(title, {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              parse_mode: 'HTML',
-              reply_markup: { inline_keyboard: inlineKeyboard } as any
-            });
-            return;
-          } catch {}
-        }
-
-        bot!.sendMessage(chatId, title, {
-           parse_mode: 'HTML',
+        bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
+           parse_mode: 'Markdown',
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
         });
       } else {
         const inlineKeyboard = activeProducts.map(p => ([
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
         ]));
 
-        if (query.message?.message_id) {
-          try {
-            await bot!.editMessageText('🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یک محصول انتخاب کنید:', {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              parse_mode: 'HTML',
-              reply_markup: { inline_keyboard: inlineKeyboard } as any
-            });
-            return;
-          } catch {}
-        }
-
-        bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یک محصول انتخاب کنید:', {
-           parse_mode: 'HTML',
+        bot!.sendMessage(chatId, '🛍 لطفا یک محصول انتخاب کنید:', {
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
         });
       }
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
     if (data && data.startsWith('show_category_')) {
-      try {
-        const isSeller = data.startsWith('show_category_seller_');
-        const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '').trim();
-        
-        logDebug(`[show_category_] isSeller: ${isSeller}, categoryId: "${categoryId}"`);
+      const isSeller = data.startsWith('show_category_seller_');
+      const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
+      
+      const filteredProducts = state.products.filter(p => {
+        if (p.disabled) return false;
+        if (categoryId === 'uncategorized') return !p.categoryId;
+        return p.categoryId === categoryId;
+      });
 
-        const activeCategories = (state.categories || []).filter((c: any) => !c.disabled);
-        const isUncat = categoryId === 'uncategorized';
-        const targetCat = activeCategories.find((c: any) => String(c.id).trim() === categoryId || String(c.name).trim() === categoryId);
-
-        logDebug(`[show_category_] targetCat found: ${targetCat ? targetCat.name : 'null'} (total active cats: ${activeCategories.length})`);
-
-        let filteredProducts = (state.products || []).filter(p => {
-          if (p.disabled) return false;
-          if (isUncat) {
-            return isUncategorizedProduct(p, activeCategories);
-          }
-          
-          const pCatId = p.categoryId !== undefined && p.categoryId !== null ? String(p.categoryId).trim() : '';
-          
-          // 1. Direct match by categoryId or Category Name
-          if (pCatId) {
-            if (pCatId === categoryId) return true;
-            if (targetCat && (pCatId === String(targetCat.id).trim() || pCatId === String(targetCat.name).trim())) return true;
-          }
-
-          // 2. Loose Name & Keyword Matching
-          if (targetCat) {
-            const catNameNorm = normalizePersianText(targetCat.name || '');
-            const prodNameNorm = normalizePersianText(p.name || '');
-            
-            if (catNameNorm.length >= 2) {
-              if (prodNameNorm.includes(catNameNorm) || catNameNorm.includes(prodNameNorm)) return true;
-
-              const catParts = catNameNorm.split(/\s+/).filter(part => part.length >= 2);
-              for (const part of catParts) {
-                if (prodNameNorm.includes(part)) return true;
-              }
-            }
-
-            if (targetCat.panelType && p.panelType === targetCat.panelType) return true;
-          }
-          
-          return false;
-        });
-
-        // If no products strictly matched this category
-        logDebug(`[show_category_] filteredProducts count: ${filteredProducts.length}`);
-
-        if (filteredProducts.length === 0) {
-          const emptyTitle = `⚠️ <b>دسته‌بندی خالی است</b>\n\nدر حال حاضر هیچ محصول فعالی در دسته‌بندی <b>${escapeHTML(targetCat?.name || 'نامشخص')}</b> تعریف نشده است.`;
-          const emptyKeyboard = [
-            [{ text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now' }]
-          ];
-
-          if (query.message?.message_id) {
-            try {
-              await bot!.editMessageText(emptyTitle, {
-                chat_id: chatId,
-                message_id: query.message.message_id,
-                parse_mode: 'HTML',
-                reply_markup: { inline_keyboard: emptyKeyboard } as any
-              });
-              return;
-            } catch (err: any) {
-              logDebug(`[show_category_empty editMessageText error] ${err.message}`);
-            }
-          }
-
-          await bot!.sendMessage(chatId, emptyTitle, {
-            parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: emptyKeyboard } as any
-          });
-          return;
-        }
-
-        const inlineKeyboard: any[] = filteredProducts.map(p => ([
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
-        ]));
-
-        // Back to categories button
-        inlineKeyboard.push([
-          { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now' }
-        ]);
-
-        const catDisplayName = targetCat?.name ? ` (${escapeHTML(targetCat.name)})` : '';
-        const title = isSeller 
-          ? `🛒 <b>خرید سرویس ویژه همکاران${catDisplayName}</b>:\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:` 
-          : `🛍 <b>انتخاب پکیج و سرویس${catDisplayName}</b>:\nلطفاً یکی از محصولات زیر را انتخاب فرمایید:`;
-
-        if (query.message?.message_id) {
-          try {
-            await bot!.editMessageText(title, {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              parse_mode: 'HTML',
-              reply_markup: {
-                inline_keyboard: inlineKeyboard
-              } as any
-            });
-            return;
-          } catch (err: any) {
-            logDebug(`[show_category_ editMessageText error] ${err.message}`);
-          }
-        }
-
-        await bot!.sendMessage(chatId, title, {
-           parse_mode: 'HTML',
-           reply_markup: {
-             inline_keyboard: inlineKeyboard
-           } as any
-        });
-      } catch (err: any) {
-        logDebug(`[show_category_ CRITICAL ERROR] ${err.stack || err.message}`);
-        console.error('[show_category_ CRITICAL ERROR]', err);
-        await bot!.sendMessage(chatId, `❌ خطایی در نمایش محصولات رخ داد:\n${err.message || err}`).catch(() => {});
+      if (filteredProducts.length === 0) {
+        bot!.sendMessage(chatId, '❌ هیچ محصولی در این دسته موجود نیست.');
+        bot!.answerCallbackQuery(query.id);
+        return;
       }
+
+      const inlineKeyboard = filteredProducts.map(p => ([
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
+      ]));
+
+      bot!.sendMessage(chatId, isSeller ? '🛒 *خرید سرویس ویژه همکاران*:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:' : '🛍 لطفا یک محصول انتخاب کنید:', {
+         parse_mode: 'Markdown',
+         reply_markup: {
+           inline_keyboard: inlineKeyboard
+         } as any
+      });
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
     if (data && data.startsWith('buy_') && !data.startsWith('buy_now_')) {
       const productId = data.replace('buy_', '');
-      const product = state.products.find(p => String(p.id) === String(productId));
+      const product = state.products.find(p => p.id === productId);
 
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
+        bot!.answerCallbackQuery(query.id);
         return;
       }
 
@@ -4318,10 +3903,10 @@ export async function initBot() {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '🎫 ورود کد تخفیف', callback_data: `enter_coupon_${productId}` },
-                { text: '🛒 خرید بدون تخفیف', callback_data: `buy_now_${productId}` }
+                { text: '🎫 ورود کد تخفیف', callback_data: `enter_coupon_${productId}`, style: 'primary' },
+                { text: '🛒 خرید بدون تخفیف', callback_data: `buy_now_${productId}`, style: 'success' }
               ],
-              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase', style: 'danger' }]
             ]
           }
         });
@@ -4331,13 +3916,14 @@ export async function initBot() {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '✅ بله، خرید انجام شود', callback_data: `buy_now_${productId}` },
-                { text: '❌ خیر، انصراف', callback_data: 'cancel_purchase' }
+                { text: '✅ بله، خرید انجام شود', callback_data: `buy_now_${productId}`, style: 'success' },
+                { text: '❌ خیر، انصراف', callback_data: 'cancel_purchase', style: 'danger' }
               ]
             ]
           }
         });
       }
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
@@ -4345,6 +3931,7 @@ export async function initBot() {
       const productId = data.replace('enter_coupon_', '');
       userSession.set(chatId, { action: `awaiting_coupon_for_${productId}` });
       bot!.sendMessage(chatId, '🎫 لطفاً کد تخفیف خود را ارسال کنید:');
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
@@ -4360,9 +3947,10 @@ export async function initBot() {
         productId = data.replace('buy_now_', '');
       }
 
-      const product = state.products.find(p => String(p.id) === String(productId));
+      const product = state.products.find(p => p.id === productId);
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
+        bot!.answerCallbackQuery(query.id);
         return;
       }
 
@@ -4371,12 +3959,13 @@ export async function initBot() {
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🎲 تولید نام تصادفی', callback_data: 'config_name_random' }],
-            [{ text: '✏️ وارد کردن نام دلخواه', callback_data: 'config_name_custom' }],
-            [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            [{ text: '🎲 تولید نام تصادفی', callback_data: 'config_name_random', style: 'primary' }],
+            [{ text: '✏️ وارد کردن نام دلخواه', callback_data: 'config_name_custom', style: 'primary' }],
+            [{ text: '❌ انصراف', callback_data: 'cancel_purchase', style: 'danger' }]
           ]
         }
       });
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
@@ -4384,12 +3973,14 @@ export async function initBot() {
       const session = userSession.get(chatId);
       if (!session || session.action !== 'awaiting_config_name' || !session.productId) {
         bot!.sendMessage(chatId, '❌ نشست منقضی شده است. لطفا دوباره تلاش کنید.');
+        bot!.answerCallbackQuery(query.id);
         return;
       }
-      const product = state.products.find(p => String(p.id) === String(session.productId));
+      const product = state.products.find(p => p.id === session.productId);
       if (!product) return;
       userSession.delete(chatId);
       await executePurchase(chatId, product, session.couponCode);
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
@@ -4397,31 +3988,26 @@ export async function initBot() {
       const session = userSession.get(chatId);
       if (!session || session.action !== 'awaiting_config_name' || !session.productId) {
         bot!.sendMessage(chatId, '❌ نشست منقضی شده است. لطفا دوباره تلاش کنید.');
+        bot!.answerCallbackQuery(query.id);
         return;
       }
       userSession.set(chatId, { ...session, action: 'awaiting_custom_config_name' });
       bot!.sendMessage(chatId, '✏️ لطفا نام دلخواه خود را (فقط حروف انگلیسی، اعداد و خط تیره/زیرخط) بدون فاصله ارسال کنید:', {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            [{ text: '❌ انصراف', callback_data: 'cancel_purchase', style: 'danger' }]
           ]
         }
       });
+      bot!.answerCallbackQuery(query.id);
       return;
     }
 
     if (data === 'cancel_purchase') {
       bot!.sendMessage(chatId, '❌ فرآیند خرید لغو شد.');
+      bot!.answerCallbackQuery(query.id);
       return;
     }
-  } catch (err: any) {
-    console.error('[Bot Callback Error]', err);
-    try {
-      if (query.id) {
-        bot?.answerCallbackQuery(query.id, { text: 'خطایی در پردازش درخواست رخ داد.' }).catch(() => {});
-      }
-    } catch {}
-  }
   });
 
   // Start daily sales and user report worker
@@ -4501,10 +4087,9 @@ export async function initBot() {
   setInterval(async () => {
     try {
       const state = db.getState();
-      const allClientsArray = await xui.getAllClientsWithTraffic();
+      const allClientsArray = await multiPanel.getAllClientsWithTraffic();
       if (!allClientsArray || allClientsArray.length === 0) return;
 
-      let inboundsList: any[] = [];
       const now = Date.now();
 
       for (const user of state.users) {
@@ -4528,7 +4113,7 @@ export async function initBot() {
               // PAY AS YOU GO (مصرف آزاد / بدون محدودیت) Real-time billing
               if (purchase.isPayAsYouGo && enable) {
                   const baseSettled = purchase.baseSettledBytes || 0;
-                  // Handle case if traffic in X-UI was reset to less than baseSettled
+                  // Handle case if traffic in panel was reset to less than baseSettled
                   if (used < (purchase.lastUsedBytes || 0) && used < baseSettled) {
                       purchase.baseSettledBytes = 0;
                       purchase.lastUsedBytes = used;
@@ -4555,7 +4140,7 @@ export async function initBot() {
                                   const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
                                   if ((user.debt || 0) >= limit) {
                                       if (!purchase.paygDisabled) {
-                                          await xui.updateClientEnable(purchase.id, false);
+                                          await multiPanel.updateClientEnable(purchase, false);
                                           purchase.paygDisabled = true;
                                           bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
                                       }
@@ -4575,7 +4160,7 @@ export async function initBot() {
                               if (user.balance <= 0) {
                                   user.balance = 0;
                                   if (!purchase.paygDisabled) {
-                                      await xui.updateClientEnable(purchase.id, false);
+                                      await multiPanel.updateClientEnable(purchase, false);
                                       purchase.paygDisabled = true;
                                       bot!.sendMessage(user.chatId, `❌ <b>اتمام موجودی کیف پول و قطع سرویس مصرف آزاد</b>\n\n` +
                                         `📦 <b>سرویس:</b> ${purchase.name}\n` +
@@ -4612,7 +4197,7 @@ export async function initBot() {
                       const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
                       if (isUnlimited || (user.debt || 0) < limit) {
                           try {
-                              await xui.updateClientEnable(purchase.id, true);
+                              await multiPanel.updateClientEnable(purchase, true);
                               purchase.paygDisabled = false;
                               purchase.warnedPayg = false;
                               userChanged = true;
@@ -4621,7 +4206,7 @@ export async function initBot() {
                       }
                   } else if ((user.balance || 0) >= 1000) {
                       try {
-                          await xui.updateClientEnable(purchase.id, true);
+                          await multiPanel.updateClientEnable(purchase, true);
                           purchase.paygDisabled = false;
                           purchase.warnedPayg = false;
                           userChanged = true;
@@ -4646,37 +4231,13 @@ export async function initBot() {
                       const daysExpired = (now - purchase.expiredAt) / (1000 * 60 * 60 * 24);
                       if (daysExpired >= 7) {
                           try {
-                              if (inboundsList.length === 0) {
-                                inboundsList = await xui.getInbounds();
-                              }
-                              let ibId: number | undefined;
-                              let cUuid: string | undefined;
-                              for (const ib of inboundsList) {
-                                  if (ib.settings) {
-                                      const p = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
-                                      if (p && p.clients) {
-                                          const clientObj = p.clients.find((cl: any) => 
-                                            (cl.email && purchase.id && cl.email.toLowerCase() === String(purchase.id).toLowerCase()) ||
-                                            (cl.id && purchase.id && cl.id.toLowerCase() === String(purchase.id).toLowerCase()) ||
-                                            (purchase.subUrl && cl.subId && purchase.subUrl.includes(cl.subId))
-                                          );
-                                          if (clientObj) {
-                                              ibId = ib.id;
-                                              cUuid = clientObj.id;
-                                              break;
-                                          }
-                                      }
-                                  }
-                              }
-                              if (ibId && cUuid) {
-                                  await xui.delClient(ibId, cUuid);
-                                  bot!.sendMessage(user.chatId, `🗑 <b>حذف سرویس منقضی شده</b>\n\nسرویس <b>${purchase.name}</b> (نام کانفیگ: <code>${purchase.id}</code>) به دلیل گذشت یک هفته از زمان انقضای آن، برای همیشه از سرور حذف گردید.`, { parse_mode: 'HTML' });
-                                  
-                                  // mark as deleted instead of removing so it persists in financial reports
-                                  purchase.isDeleted = true;
-                                  userChanged = true;
-                                  continue; // Skip further warnings for this deleted config
-                              }
+                              await multiPanel.delClient(purchase);
+                              bot!.sendMessage(user.chatId, `🗑 <b>حذف سرویس منقضی شده</b>\n\nسرویس <b>${purchase.name}</b> (نام کانفیگ: <code>${purchase.id}</code>) به دلیل گذشت یک هفته از زمان انقضای آن، برای همیشه از سرور حذف گردید.`, { parse_mode: 'HTML' });
+                              
+                              // mark as deleted instead of removing so it persists in financial reports
+                              purchase.isDeleted = true;
+                              userChanged = true;
+                              continue; // Skip further warnings for this deleted config
                           } catch (e: any) {
                               console.error('[Bot] Failed to delete expired config:', e.message);
                           }
@@ -4748,7 +4309,7 @@ export async function checkPaygReactivation(user: any) {
         const isUnlimited = isSellerUnlimitedLimit(user);
         const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
         if (isUnlimited || (user.debt || 0) < limit) {
-          await xui.updateClientEnable(purchase.id, true);
+          await multiPanel.updateClientEnable(purchase, true);
           purchase.paygDisabled = false;
           purchase.warnedPayg = false;
           userChanged = true;
@@ -4758,7 +4319,7 @@ export async function checkPaygReactivation(user: any) {
         const pricePerGb = purchase.pricePerGb || 1;
         const balanceEquivalentGb = user.balance / pricePerGb;
         if (user.balance >= 1000 || balanceEquivalentGb >= 0.1) {
-           await xui.updateClientEnable(purchase.id, true);
+           await multiPanel.updateClientEnable(purchase, true);
            purchase.paygDisabled = false;
            purchase.warnedPayg = false;
            userChanged = true;
@@ -4815,7 +4376,7 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
   let updatedCount = 0;
   try {
     const state = db.getState();
-    const allClientsArray = await xui.getAllClientsWithTraffic().catch(() => [] as any[]);
+    const allClientsArray = await multiPanel.getAllClientsWithTraffic().catch(() => [] as any[]);
     const users = state.users || [];
 
     for (const user of users) {
@@ -4938,7 +4499,7 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
           for (const p of purchases) {
             if (p.isPayAsYouGo && p.paygDisabled) {
               try {
-                await xui.updateClientEnable(p.id, true);
+                await multiPanel.updateClientEnable(p, true);
                 p.paygDisabled = false;
                 p.warnedPayg = false;
                 userChanged = true;

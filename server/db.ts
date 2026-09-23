@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 
 export interface PanelConfig {
-  panelType?: 'xui' | 'rebecca';
   url?: string;
   username?: string;
   password?: string;
@@ -12,11 +11,20 @@ export interface PanelConfig {
   subUrlBase?: string;
 }
 
+export interface RebeccaPanelConfig {
+  url?: string;
+  username?: string;
+  password?: string;
+  apiKey?: string;
+  inboundTags?: string[];
+  subUrlBase?: string;
+  enabled?: boolean;
+}
+
 export interface Category {
   id: string;
   name: string;
   disabled?: boolean;
-  panelType?: 'xui' | 'rebecca';
 }
 
 export interface Product {
@@ -26,12 +34,13 @@ export interface Product {
   volumeGb: number; // Gigabytes
   durationDays: number;
   categoryId?: string;
+  panelType?: 'sanaei' | 'rebecca' | 'both';
   inboundId?: number | string;
   inboundIds?: (number | string)[];
+  rebeccaInboundTags?: string[];
   limitIp?: number;
   disabled?: boolean;
   isPayAsYouGo?: boolean;
-  panelType?: 'xui' | 'rebecca' | 'default';
 }
 
 export interface SellerDiscountRule {
@@ -45,10 +54,12 @@ export interface Purchase {
   name: string;
   price: number;
   subUrl: string;
+  sanaeiSubUrl?: string;
+  rebeccaSubUrl?: string;
+  panelType?: 'sanaei' | 'rebecca' | 'both';
   volumeGb: number;
   durationDays: number;
   createdAt: string;
-  panelType?: 'xui' | 'rebecca';
   isPayAsYouGo?: boolean;
   pricePerGb?: number;
   lastUsedBytes?: number;
@@ -113,8 +124,7 @@ export interface PendingPayment {
 export interface AppState {
   botToken?: string;
   panel: PanelConfig;
-  rebeccaPanel?: PanelConfig;
-  activePanelMode?: 'xui' | 'rebecca' | 'both';
+  rebeccaPanel?: RebeccaPanelConfig;
   categories?: Category[];
   products: Product[];
   users: User[];
@@ -122,8 +132,10 @@ export interface AppState {
   freeTestVolumeGb: number;
   freeTestDurationDays: number;
   freeTestEnabled: boolean;
+  freeTestPanel?: 'sanaei' | 'rebecca' | 'both';
   freeTestInboundId?: number | string;
   freeTestInboundIds?: (number | string)[];
+  freeTestRebeccaInbounds?: string[];
   forceJoinEnabled?: boolean;
   forceJoinChannels?: { id: string; name: string; url: string }[];
   adminIds: number[];
@@ -143,13 +155,15 @@ const DB_PATH = path.join(process.cwd(), 'db.json');
 const defaultState: AppState = {
   botToken: '',
   panel: {},
-  rebeccaPanel: {},
-  activePanelMode: 'xui',
+  rebeccaPanel: {
+    enabled: true
+  },
   products: [],
   users: [],
   freeTestVolumeGb: 1,
   freeTestDurationDays: 3,
   freeTestEnabled: true,
+  freeTestPanel: 'sanaei',
   adminIds: [],
   referralRewardToman: 0,
   cardNumber: '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸',
@@ -270,7 +284,7 @@ class Database {
   }
 
   public saveUser(user: User) {
-    const idx = this.state.users.findIndex(u => String(u.chatId) === String(user.chatId));
+    const idx = this.state.users.findIndex(u => u.chatId === user.chatId);
     if (idx >= 0) {
       this.state.users[idx] = user;
     } else {
@@ -279,8 +293,8 @@ class Database {
     this.save();
   }
 
-  public getUser(chatId: number | string): User | undefined {
-    return this.state.users.find(u => String(u.chatId) === String(chatId));
+  public getUser(chatId: number): User | undefined {
+    return this.state.users.find(u => u.chatId === chatId);
   }
 
   public getUserByUsername(username: string): User | undefined {
