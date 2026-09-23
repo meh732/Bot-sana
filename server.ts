@@ -308,8 +308,27 @@ async function startServer() {
         }
       }
       
-      if (!parsed || !parsed.users || !parsed.panel) {
-        return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. بخش‌های حیاتی خالی هستند (مانند کاربران یا پنل).' });
+      if (!parsed || !parsed.users) {
+        return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. ساختار دیتابیس یا لیست کاربران یافت نشد.' });
+      }
+      
+      // Smart Merging: Prevent wiping critical connection parameters with empty values from the backup
+      const currentDbState = db.getState();
+      
+      if ((!parsed.botToken || parsed.botToken.trim() === '') && currentDbState.botToken) {
+        parsed.botToken = currentDbState.botToken;
+      }
+      
+      if ((!parsed.adminIds || parsed.adminIds.length === 0) && currentDbState.adminIds && currentDbState.adminIds.length > 0) {
+        parsed.adminIds = currentDbState.adminIds;
+      }
+      
+      if ((!parsed.panel || !parsed.panel.url) && currentDbState.panel && currentDbState.panel.url) {
+        parsed.panel = { ...currentDbState.panel, ...parsed.panel };
+      }
+      
+      if ((!parsed.rebeccaPanel || !parsed.rebeccaPanel.url) && currentDbState.rebeccaPanel && currentDbState.rebeccaPanel.url) {
+        parsed.rebeccaPanel = { ...currentDbState.rebeccaPanel, ...parsed.rebeccaPanel };
       }
       
       // Write to db.json and update memory state

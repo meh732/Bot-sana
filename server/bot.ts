@@ -230,6 +230,8 @@ const userSession = new Map<number, {
   };
 }>();
 const purchaseLocks = new Set<number>();
+// Memory cache to avoid Telegram rate limits and unresponsiveness during force join checks (valid for 2 minutes)
+const forceJoinCache = new Map<number, { isJoined: boolean; timestamp: number }>();
 // pendingPayments moved to db.getState().pendingPayments
 
 async function sendServiceInfo(chatId: number, purchase: any) {
@@ -2819,12 +2821,21 @@ export async function initBot() {
   });
 
   bot.on('callback_query', async (query) => {
+    const chatId = query.message?.chat.id;
+    const data = query.data;
+    console.log(`[Bot Callback Query] Triggered. chatId: ${chatId}, data: ${data}`);
+
     try {
-      const chatId = query.message?.chat.id;
-      if (!chatId) return;
+      if (!chatId) {
+        console.log('[Bot Callback Query] Exit early: No chatId in query.message');
+        return;
+      }
 
       // Always acknowledge query immediately so Telegram buttons never get stuck/spin
-      bot!.answerCallbackQuery(query.id).catch(() => {});
+      console.log(`[Bot Callback Query] Acknowledging callback: ${query.id}`);
+      bot!.answerCallbackQuery(query.id).catch((err) => {
+        console.error(`[Bot Callback Query] Failed to acknowledge callback: ${err.message}`);
+      });
     
     let user = db.getUser(chatId);
     if (!user) {
@@ -2844,10 +2855,20 @@ export async function initBot() {
     const state = db.getState();
     const isAdmin = state.adminIds.includes(chatId);
 
-    // Filter for force join
-    if (!isAdmin && state.forceJoinEnabled && state.forceJoinChannels && state.forceJoinChannels.length > 0) {
+    // Filter for force join with smart caching to ensure instant, snappy button responses
+    let shouldCheckForceJoin = !isAdmin && state.forceJoinEnabled && state.forceJoinChannels && state.forceJoinChannels.length > 0;
+    if (shouldCheckForceJoin) {
+       const cachedObj = forceJoinCache.get(chatId);
+       const nowTime = Date.now();
+       if (cachedObj && cachedObj.isJoined && (nowTime - cachedObj.timestamp < 120000)) {
+          // User is already verified and cached within the last 2 minutes - bypass heavy Telegram API requests!
+          shouldCheckForceJoin = false;
+       }
+    }
+
+    if (shouldCheckForceJoin) {
        let unjoinedChannels: any[] = [];
-       for (const channel of state.forceJoinChannels) {
+       for (const channel of state.forceJoinChannels!) {
            if (!channel.id) continue;
            const chId = sanitizeChannelId(channel.id);
            if (!chId) continue;
@@ -2862,6 +2883,7 @@ export async function initBot() {
            }
        }
        if (unjoinedChannels.length > 0) {
+           forceJoinCache.set(chatId, { isJoined: false, timestamp: Date.now() });
            bot!.answerCallbackQuery(query.id, { text: '⚠️ ابتدا در کانال‌های تعیین شده عضو شوید.', show_alert: true }).catch(() => {});
            const buttons: any[] = unjoinedChannels.map(ch => ([
              { text: `📢 عضویت در ${ch.title || ch.name || ch.id}`, url: ch.link || (ch.id.startsWith('@') ? `https://t.me/${ch.id.slice(1)}` : `https://t.me/${ch.id}`) }
@@ -2871,12 +2893,16 @@ export async function initBot() {
              reply_markup: { inline_keyboard: buttons }
            }).catch(() => {});
            return;
-       } else if (data === 'check_join') {
-           bot!.answerCallbackQuery(query.id, { text: '✅ عضویت شما تایید شد!', show_alert: true }).catch(() => {});
-           bot!.sendMessage(chatId, '✅ عضویت شما با موفقیت تایید شد.\nاکنون می‌توانید از تمام خدمات ربات استفاده کنید.', {
-             reply_markup: getUserReplyKeyboard(db.getUser(chatId), state, isAdmin)
-           }).catch(() => {});
-           return;
+       } else {
+           // User successfully verified channel membership. Cache the result to make all future button clicks instant!
+           forceJoinCache.set(chatId, { isJoined: true, timestamp: Date.now() });
+           if (data === 'check_join') {
+               bot!.answerCallbackQuery(query.id, { text: '✅ عضویت شما تایید شد!', show_alert: true }).catch(() => {});
+               bot!.sendMessage(chatId, '✅ عضویت شما با موفقیت تایید شد.\nاکنون می‌توانید از تمام خدمات ربات استفاده کنید.', {
+                 reply_markup: getUserReplyKeyboard(db.getUser(chatId), state, isAdmin)
+               }).catch(() => {});
+               return;
+           }
        }
     }
 
@@ -4147,8 +4173,15 @@ export async function initBot() {
       return;
     }
     } catch (err: any) {
-      console.error('[Bot Callback Query Exception Ignored]', err?.message || err);
-      try { await bot!.answerCallbackQuery(query.id, { text: '⚠️ عملیات انجام شد.' }); } catch (e) {}
+      console.error('[Bot Callback Query Exception Ignored]', err?.stack || err?.message || err);
+      try {
+        if (chatId) {
+          await bot!.sendMessage(chatId, `❌ <b>خطای داخلی ربات رخ داد:</b>\n\n<code>${escapeHtml(err?.stack || err?.message || String(err))}</code>`, { parse_mode: 'HTML' });
+        }
+      } catch (e) {
+        console.error('[Callback Error Sender Failed]', e);
+      }
+      try { await bot!.answerCallbackQuery(query.id, { text: '⚠️ خطا در اجرای عملیات.' }); } catch (e) {}
     }
   });
 
