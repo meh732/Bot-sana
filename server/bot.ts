@@ -170,16 +170,20 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
 function getProductButtonText(user: any, p: any): string {
   const isPayG = !!p.isPayAsYouGo;
   const unit = isPayG ? 'تومان/گیگ' : 'تومان';
+  let badge = '';
+  if (p.panelType === 'both') badge = '🌐 ';
+  else if (p.panelType === 'rebecca') badge = '🟣 ';
+  else if (p.panelType === 'sanaei') badge = '🔵 ';
   
   if (user && user.isSeller) {
     const sellerDiscount = getSellerDiscountForProduct(user, p);
     if (sellerDiscount > 0) {
       const finalPrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
-      return `🎁 ${p.name} - ${finalPrice.toLocaleString()} (با %${sellerDiscount} تخفیف همکار) ${unit}`;
+      return `🎁 ${badge}${p.name} - ${finalPrice.toLocaleString()} (${sellerDiscount}٪ تخفیف) ${unit}`;
     }
   }
 
-  return `${p.name} - ${p.price.toLocaleString()} ${unit}`;
+  return `${badge}${p.name} - ${p.price.toLocaleString()} ${unit}`;
 }
 
 let bot: TelegramBot | null = null;
@@ -2602,8 +2606,8 @@ export async function initBot() {
         if (activeProducts.some(p => !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
         }
-        bot!.sendMessage(chatId, '🛒 *خرید سرویس ویژه همکاران*\nلطفا دسته‌بندی محصول را انتخاب کنید:', {
-           parse_mode: 'Markdown',
+        bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول مورد نظر را انتخاب کنید:', {
+           parse_mode: 'HTML',
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
@@ -2615,8 +2619,8 @@ export async function initBot() {
         { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
-      bot!.sendMessage(chatId, '🛒 *خرید سرویس ویژه همکاران*:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
-         parse_mode: 'Markdown',
+      bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
+         parse_mode: 'HTML',
          reply_markup: {
            inline_keyboard: inlineKeyboard
          } as any
@@ -2694,8 +2698,8 @@ export async function initBot() {
         if (activeProducts.some(p => !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
-        bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
-           parse_mode: 'Markdown',
+        bot!.sendMessage(chatId, '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
+           parse_mode: 'HTML',
            reply_markup: {
              inline_keyboard: inlineKeyboard
            } as any
@@ -3844,7 +3848,43 @@ export async function initBot() {
       return;
     }
 
+    if (data && (data === 'back_to_categories' || data === 'back_to_categories_seller')) {
+      try { await bot!.answerCallbackQuery(query.id); } catch (e) {}
+      const isSeller = data === 'back_to_categories_seller';
+      const activeProducts = state.products.filter(p => !p.disabled);
+      const activeCategories = (state.categories || []).filter(c => !c.disabled);
+
+      if (activeCategories.length > 0) {
+        const inlineKeyboard = activeCategories.map(c => ([
+          { text: `📁 ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}`, style: 'primary' }
+        ]));
+        if (activeProducts.some(p => !p.categoryId)) {
+          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: isSeller ? `show_category_seller_uncategorized` : `show_category_uncategorized`, style: 'primary' }]);
+        }
+        bot!.sendMessage(chatId, isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول را انتخاب کنید:' : '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
+           parse_mode: 'HTML',
+           reply_markup: {
+             inline_keyboard: inlineKeyboard
+           } as any
+        });
+        return;
+      }
+
+      const inlineKeyboard = activeProducts.map(p => ([
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
+      ]));
+
+      bot!.sendMessage(chatId, isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:' : '🛍 <b>لطفا یک محصول انتخاب کنید:</b>', {
+         parse_mode: 'HTML',
+         reply_markup: {
+           inline_keyboard: inlineKeyboard
+         } as any
+      });
+      return;
+    }
+
     if (data && data.startsWith('show_category_')) {
+      try { await bot!.answerCallbackQuery(query.id); } catch (e) {}
       const isSeller = data.startsWith('show_category_seller_');
       const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
       
@@ -3855,22 +3895,36 @@ export async function initBot() {
       });
 
       if (filteredProducts.length === 0) {
-        bot!.sendMessage(chatId, '❌ هیچ محصولی در این دسته موجود نیست.');
-        bot!.answerCallbackQuery(query.id);
+        bot!.sendMessage(chatId, '❌ هیچ محصول فعالی در این دسته‌بندی موجود نیست.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories' }]
+            ]
+          }
+        });
         return;
       }
 
-      const inlineKeyboard = filteredProducts.map(p => ([
+      const inlineKeyboard: any[] = filteredProducts.map(p => ([
         { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
       ]));
 
-      bot!.sendMessage(chatId, isSeller ? '🛒 *خرید سرویس ویژه همکاران*:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:' : '🛍 لطفا یک محصول انتخاب کنید:', {
-         parse_mode: 'Markdown',
+      inlineKeyboard.push([
+        { text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories' }
+      ]);
+
+      const catName = categoryId === 'uncategorized' 
+        ? 'سایر محصولات' 
+        : (state.categories?.find(c => c.id === categoryId)?.name || 'دسته‌بندی انتخابی');
+
+      bot!.sendMessage(chatId, isSeller 
+        ? `🛒 <b>محصولات دسته «${escapeHtml(catName)}» (همکاران):</b>\nلطفا یکی از پکیج‌های زیر را انتخاب کنید:` 
+        : `🛍 <b>محصولات دسته «${escapeHtml(catName)}»:</b>\nلطفا پکیج مورد نظر خود را انتخاب کنید:`, {
+         parse_mode: 'HTML',
          reply_markup: {
            inline_keyboard: inlineKeyboard
          } as any
       });
-      bot!.answerCallbackQuery(query.id);
       return;
     }
 

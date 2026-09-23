@@ -1551,11 +1551,26 @@ function ProductsView() {
   const [products, setProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [inbounds, setInbounds] = useState<any[]>([]);
-  const [form, setForm] = useState({ name: '', price: 0, volumeGb: 10, durationDays: 30, inboundId: '', inboundIds: [] as number[], limitIp: 1, categoryId: '', isPayAsYouGo: false });
+  const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
+  const [form, setForm] = useState({
+    name: '',
+    price: 0,
+    volumeGb: 10,
+    durationDays: 30,
+    panelType: 'sanaei' as 'sanaei' | 'rebecca' | 'both',
+    inboundId: '',
+    inboundIds: [] as number[],
+    rebeccaInboundTags: [] as string[],
+    limitIp: 1,
+    categoryId: '',
+    isPayAsYouGo: false
+  });
   const [newCatName, setNewCatName] = useState('');
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [bulkInboundIds, setBulkInboundIds] = useState<number[]>([]);
+  const [bulkRebeccaTags, setBulkRebeccaTags] = useState<string[]>([]);
+  const [bulkPanelType, setBulkPanelType] = useState<'sanaei' | 'rebecca' | 'both' | ''>('');
 
   useEffect(() => {
     fetch('/api/state')
@@ -1565,12 +1580,22 @@ function ProductsView() {
         setCategories(s.categories || []);
       });
     
-    // Fetch inbounds on load if available - don't log errors to main console
+    // Fetch Sanaei inbounds
     fetch('/api/xui-inbounds')
       .then(r => r.json())
       .then(data => {
         if (data && data.success) {
           setInbounds(data.inbounds || []);
+        }
+      })
+      .catch(() => {});
+
+    // Fetch Rebecca inbounds
+    fetch('/api/rebecca-inbounds')
+      .then(r => r.json())
+      .then(data => {
+        if (data && data.success) {
+          setRebeccaInbounds(data.inbounds || []);
         }
       })
       .catch(() => {});
@@ -1627,6 +1652,8 @@ function ProductsView() {
       id: editingProductId || undefined,
       inboundId: form.inboundId ? parseInt(form.inboundId) : undefined,
       inboundIds: form.inboundIds,
+      rebeccaInboundTags: form.rebeccaInboundTags,
+      panelType: form.panelType,
       categoryId: form.categoryId || undefined
     };
     const res = await fetch('/api/products', {
@@ -1648,8 +1675,10 @@ function ProductsView() {
       price: p.price || 0,
       volumeGb: p.volumeGb !== undefined ? p.volumeGb : 10,
       durationDays: p.durationDays !== undefined ? p.durationDays : 30,
+      panelType: p.panelType || 'sanaei',
       inboundId: p.inboundId ? String(p.inboundId) : '',
-      inboundIds: p.inboundIds || [],
+      inboundIds: p.inboundIds || (p.inboundId ? [Number(p.inboundId)] : []),
+      rebeccaInboundTags: p.rebeccaInboundTags || [],
       limitIp: p.limitIp !== undefined ? p.limitIp : 1,
       categoryId: p.categoryId || '',
       isPayAsYouGo: p.isPayAsYouGo || false
@@ -1658,7 +1687,19 @@ function ProductsView() {
 
   const cancelEdit = () => {
     setEditingProductId(null);
-    setForm({ name: '', price: 10000, volumeGb: 10, durationDays: 30, inboundId: '', inboundIds: [], limitIp: 1, categoryId: '', isPayAsYouGo: false });
+    setForm({
+      name: '',
+      price: 10000,
+      volumeGb: 10,
+      durationDays: 30,
+      panelType: 'sanaei',
+      inboundId: '',
+      inboundIds: [],
+      rebeccaInboundTags: [],
+      limitIp: 1,
+      categoryId: '',
+      isPayAsYouGo: false
+    });
   };
 
   const deleteProduct = async (id: string) => {
@@ -1681,7 +1722,7 @@ function ProductsView() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto" dir="rtl">
+    <div className="max-w-5xl mx-auto" dir="rtl">
        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-6">
           <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Box className="w-5 h-5 text-indigo-600"/> مدیریت گروه‌ها (دسته‌بندی‌ها)</h2>
           <div className="flex gap-2">
@@ -1689,7 +1730,7 @@ function ProductsView() {
               type="text" 
               value={newCatName} 
               onChange={e => setNewCatName(e.target.value)} 
-              placeholder="نام گروه (مثلا: سرورهای آلمان)"
+              placeholder="نام گروه (مثلا: سرورهای آلمان، سرورهای ربکا، اشتراک VIP)"
               className="flex-1 px-3 py-2 border rounded-md focus:ring-2 focus:ring-indigo-500 text-sm"
             />
             <button onClick={addCategory} className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 font-semibold text-sm transition">ثبت گروه</button>
@@ -1718,9 +1759,57 @@ function ProductsView() {
        </div>
 
        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8">
-         <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-600"/> {editingProductId ? 'ویرایش و اصلاح جزئیات محصول انتخابی' : 'تعریف پکیج و محصول جدید با اینباندهای انتخابی'}</h2>
+         <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-600"/> {editingProductId ? 'ویرایش و اصلاح جزئیات محصول انتخابی' : 'تعریف پکیج و محصول جدید (سازگار با سنایی و ربکا)'}</h2>
          
          <div className="space-y-4">
+           {/* Panel Selection Selector */}
+           <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+             <label className="block text-xs font-bold text-slate-800 mb-2">🌐 پنل ارائه‌دهنده سرویس (نوع سرور ساخت اکانت):</label>
+             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei' ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                 <input 
+                   type="radio" 
+                   name="panelType" 
+                   checked={form.panelType === 'sanaei'} 
+                   onChange={() => setForm({ ...form, panelType: 'sanaei' })} 
+                   className="text-blue-600"
+                 />
+                 <div className="text-xs">
+                   <div className="font-bold flex items-center gap-1">🔵 پنل سنایی (X-UI)</div>
+                   <div className="text-[11px] text-slate-500">ساخت اتوماتیک در پنل سنایی</div>
+                 </div>
+               </label>
+
+               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'rebecca' ? 'bg-purple-50 border-purple-500 text-purple-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                 <input 
+                   type="radio" 
+                   name="panelType" 
+                   checked={form.panelType === 'rebecca'} 
+                   onChange={() => setForm({ ...form, panelType: 'rebecca' })} 
+                   className="text-purple-600"
+                 />
+                 <div className="text-xs">
+                   <div className="font-bold flex items-center gap-1">🟣 پنل ربکا (Rebecca API)</div>
+                   <div className="text-[11px] text-slate-500">ساخت اتوماتیک در پنل ربکا</div>
+                 </div>
+               </label>
+
+               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'both' ? 'bg-emerald-50 border-emerald-500 text-emerald-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                 <input 
+                   type="radio" 
+                   name="panelType" 
+                   checked={form.panelType === 'both'} 
+                   onChange={() => setForm({ ...form, panelType: 'both' })} 
+                   className="text-emerald-600"
+                 />
+                 <div className="text-xs">
+                   <div className="font-bold flex items-center gap-1">🌐 هر دو پنل (Dual Config)</div>
+                   <div className="text-[11px] text-slate-500">تولید همزمان کانفیگ در هر دو سرور</div>
+                 </div>
+               </label>
+             </div>
+           </div>
+
            {/* Row 1 fields */}
            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
              <div className="md:col-span-2">
@@ -1746,89 +1835,129 @@ function ProductsView() {
                <label className={`block text-xs font-semibold text-slate-700 mb-1 ${form.isPayAsYouGo ? 'opacity-50' : ''}`}>مدت (روز)</label>
                <input type="number" disabled={form.isPayAsYouGo} value={form.isPayAsYouGo ? 0 : form.durationDays} onChange={e=>setForm({...form, durationDays: Number(e.target.value)})} className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-indigo-500 text-sm disabled:bg-slate-100 disabled:text-slate-400"/>
              </div>
+           </div>
+
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
              <div>
-               <label className="block text-xs font-semibold text-slate-700 mb-1">IP Limit</label>
+               <label className="block text-xs font-semibold text-slate-700 mb-1">محدودیت تعداد کاربر همزمان (IP Limit):</label>
                <input type="number" value={form.limitIp} onChange={e=>setForm({...form, limitIp: Number(e.target.value)})} className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-indigo-500 text-sm"/>
+             </div>
+             <div className="flex items-center mt-6">
+                <label className="flex items-center cursor-pointer">
+                  <input type="checkbox" checked={form.isPayAsYouGo} onChange={e => setForm({...form, isPayAsYouGo: e.target.checked})} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 form-checkbox w-4 h-4" />
+                  <span className="mr-2 text-sm font-bold text-slate-800">محصول «پرداخت در ازای مصرف» (PAYG)</span>
+                </label>
              </div>
            </div>
 
-           <div>
-              <label className="flex items-center cursor-pointer mb-2">
-                <input type="checkbox" checked={form.isPayAsYouGo} onChange={e => setForm({...form, isPayAsYouGo: e.target.checked})} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 form-checkbox w-4 h-4" />
-                <span className="mr-2 text-sm font-bold text-slate-800">محصول «پرداخت در ازای مصرف» (Pay-As-You-Go)</span>
-              </label>
-              {form.isPayAsYouGo && <p className="text-xs text-amber-600 font-medium">با انتخاب این گزینه، حجم و زمان کاربر نامحدود تنظیم می‌شود و هزینه بر اساس میزان مصرف (به ازای هر گیگابایت) از کیف پول کاربر کسر خواهد شد.</p>}
-           </div>
+           {/* Sanaei Inbounds Section */}
+           {(form.panelType === 'sanaei' || form.panelType === 'both') && (
+             <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-200">
+               <label className="block text-xs font-bold text-blue-900 mb-1.5">🔵 اینباندهای پنل سنایی (X-UI) برای این پکیج:</label>
+               {inbounds.length > 0 ? (
+                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
+                   {inbounds.map((ib: any) => {
+                     const isChecked = form.inboundIds.includes(ib.id) || form.inboundId === String(ib.id);
+                     return (
+                       <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-blue-600 cursor-pointer select-none">
+                         <input 
+                           type="checkbox" 
+                           checked={isChecked}
+                           onChange={e => {
+                             let updatedIds = [...form.inboundIds];
+                             if (form.inboundId && !updatedIds.includes(Number(form.inboundId))) {
+                               updatedIds.push(Number(form.inboundId));
+                             }
+                             if (e.target.checked) {
+                               if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                             } else {
+                               updatedIds = updatedIds.filter(id => id !== ib.id);
+                             }
+                             setForm({
+                               ...form,
+                               inboundIds: updatedIds,
+                               inboundId: updatedIds[0] ? String(updatedIds[0]) : ''
+                             });
+                           }}
+                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                         />
+                         <span className="font-medium text-slate-800">{ib.remark}</span>
+                         <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1 py-0.5 rounded">ID: {ib.id} ({ib.protocol})</span>
+                       </label>
+                     );
+                   })}
+                 </div>
+               ) : (
+                 <div className="flex gap-2">
+                   <input 
+                     type="text" 
+                     value={form.inboundId} 
+                     onChange={e=> {
+                       const val = e.target.value;
+                       const numeric = parseInt(val);
+                       setForm({
+                         ...form, 
+                         inboundId: val, 
+                         inboundIds: isNaN(numeric) ? [] : [numeric]
+                       });
+                     }} 
+                     className="w-full px-3 py-2 border rounded-md text-xs font-mono bg-white" 
+                     placeholder="آیدی عددی اینباند سنایی (مثلاً 1, 2)"
+                   />
+                   <span className="text-[10px] text-blue-600 self-center">در صورت وارد نکردن، از اینباند پیش‌فرض سنایی استفاده می‌شود.</span>
+                 </div>
+               )}
+             </div>
+           )}
 
-           {/* Row 2: Multiple Inbound Checkboxes */}
-           <div>
-             <label className="block text-xs font-semibold text-slate-700 mb-1.5">اینباندهای منتخب این پکیج (مشتریان جدید به طور خودکار به صورت تقسیم لود بین اینباندهای علامت‌خورده ساخته خواهند شد):</label>
-             {inbounds.length > 0 ? (
-               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-slate-50 rounded-lg border max-h-40 overflow-y-auto">
-                 {inbounds.map((ib: any) => {
-                   const isChecked = form.inboundIds.includes(ib.id) || form.inboundId === String(ib.id);
-                   return (
-                     <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-indigo-600 cursor-pointer select-none">
-                       <input 
-                         type="checkbox" 
-                         checked={isChecked}
-                         onChange={e => {
-                           let updatedIds = [...form.inboundIds];
-                           if (form.inboundId && !updatedIds.includes(Number(form.inboundId))) {
-                             updatedIds.push(Number(form.inboundId));
-                           }
-                           if (e.target.checked) {
-                             if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
-                           } else {
-                             updatedIds = updatedIds.filter(id => id !== ib.id);
-                           }
-                           setForm({
-                             ...form,
-                             inboundIds: updatedIds,
-                             inboundId: updatedIds[0] ? String(updatedIds[0]) : ''
-                           });
-                         }}
-                         className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                       />
-                       <span className="font-medium text-slate-800">{ib.remark}</span>
-                       <span className="text-[10px] text-slate-500 font-mono bg-slate-200 px-1 py-0.5 rounded">ID: {ib.id} ({ib.protocol})</span>
-                     </label>
-                   );
-                 })}
-               </div>
-             ) : (
-               <div className="flex gap-2">
-                 <input 
-                   type="text" 
-                   value={form.inboundId} 
-                   onChange={e=> {
-                     const val = e.target.value;
-                     const numeric = parseInt(val);
-                     setForm({
-                       ...form, 
-                       inboundId: val, 
-                       inboundIds: isNaN(numeric) ? [] : [numeric]
-                     });
-                   }} 
-                   className="w-full px-3 py-2 border rounded-md text-xs font-mono" 
-                   placeholder="آیدی عددی اینباند (مثلاً 2)"
-                 />
-                 <span className="text-[10px] text-amber-600 self-center">ابتدا مشخصات اتصال پنل سنایی را لود کنید تا لیست به صورت خودکار لود شود.</span>
-               </div>
-             )}
-           </div>
+           {/* Rebecca Inbounds Section */}
+           {(form.panelType === 'rebecca' || form.panelType === 'both') && (
+             <div className="p-3 bg-purple-50/50 rounded-lg border border-purple-200">
+               <label className="block text-xs font-bold text-purple-900 mb-1.5">🟣 اینباندهای پنل ربکا (Rebecca Inbounds):</label>
+               {rebeccaInbounds.length > 0 ? (
+                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
+                   {rebeccaInbounds.map((ib: any) => {
+                     const isChecked = form.rebeccaInboundTags.includes(ib.tag);
+                     return (
+                       <label key={ib.tag} className="flex items-center gap-2 text-xs text-slate-700 hover:text-purple-600 cursor-pointer select-none">
+                         <input 
+                           type="checkbox" 
+                           checked={isChecked}
+                           onChange={e => {
+                             let updatedTags = [...form.rebeccaInboundTags];
+                             if (e.target.checked) {
+                               if (!updatedTags.includes(ib.tag)) updatedTags.push(ib.tag);
+                             } else {
+                               updatedTags = updatedTags.filter(t => t !== ib.tag);
+                             }
+                             setForm({ ...form, rebeccaInboundTags: updatedTags });
+                           }}
+                           className="rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+                         />
+                         <span className="font-medium text-slate-800">{ib.tag}</span>
+                         <span className="text-[10px] text-purple-700 font-mono bg-purple-100 px-1 py-0.5 rounded">{ib.protocol || 'VLESS'}</span>
+                       </label>
+                     );
+                   })}
+                 </div>
+               ) : (
+                 <div className="text-xs text-purple-700">
+                   💡 تمام پروتکل‌ها و اینباندهای پیش‌فرض ربکا (VLESS, VMess, Trojan) به طور خودکار به این پکیج اختصاص داده خواهند شد.
+                 </div>
+               )}
+             </div>
+           )}
          </div>
 
-         <p className="text-xs text-slate-400 mt-3.5">💡 سیستم هوشمند موازنه بار: با انتخاب چند اینباند، ربات به طور خودکار به صورت چرخشی (Round-Robin رندم) کلاینت‌های جدید با پروتکل متناظر را روی این اینباندها تقسیم می‌کند تا لود روی سرورها یکنواخت گردد.</p>
-         <div className="mt-4 text-left">
-            <button onClick={addProduct} className={`${editingProductId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'} text-white px-5 py-2 rounded-md font-semibold text-sm transition`}>
+         <div className="mt-5 text-left flex justify-end gap-2">
+            {editingProductId && (
+              <button onClick={cancelEdit} className="bg-slate-100 text-slate-700 hover:bg-slate-200 px-4 py-2 rounded-md font-semibold text-sm transition">
+                انصراف از ویرایش
+              </button>
+            )}
+            <button onClick={addProduct} className={`${editingProductId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'} text-white px-6 py-2 rounded-md font-semibold text-sm transition`}>
                {editingProductId ? 'ذخیره تغییرات محصول' : 'ثبت و افزودن محصول'}
-             </button>
-             {editingProductId && (
-               <button onClick={cancelEdit} className="bg-slate-100 text-slate-700 hover:bg-slate-200 px-4 py-2 rounded-md font-semibold text-sm transition">
-                 انصراف از ویرایش
-               </button>
-             )}
+            </button>
          </div>
        </div>
 
@@ -1838,7 +1967,7 @@ function ProductsView() {
            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
              <div className="flex items-center gap-3">
                <input 
-                 type="checkbox"
+                 type="checkbox" 
                  checked={selectedProductIds.length === products.length && products.length > 0}
                  onChange={(e) => {
                    if (e.target.checked) {
@@ -1874,71 +2003,119 @@ function ProductsView() {
              <div className="mt-4 pt-4 border-t border-slate-200 space-y-4">
                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                  <Settings2 className="w-4 h-4 text-indigo-600" />
-                 تغییر گروهی اینباندهای محصولات انتخاب شده
+                 تنظیمات گروهی محصولات انتخاب شده ({selectedProductIds.length} محصول)
                </h3>
-               <p className="text-xs text-slate-500">
-                 اینباندهای علامت‌زده شده در زیر برای تمام {selectedProductIds.length} محصول انتخابی به طور همزمان تنظیم خواهند شد (سایر مشخصات محصولات بدون تغییر می‌مانند).
-               </p>
 
-               {inbounds.length > 0 ? (
-                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
-                   {inbounds.map((ib: any) => {
-                     const isChecked = bulkInboundIds.includes(ib.id);
-                     return (
-                       <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-indigo-600 cursor-pointer select-none">
-                         <input 
-                           type="checkbox" 
-                           checked={isChecked}
-                           onChange={e => {
-                             let updatedIds = [...bulkInboundIds];
-                             if (e.target.checked) {
-                               if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
-                             } else {
-                               updatedIds = updatedIds.filter(id => id !== ib.id);
-                             }
-                             setBulkInboundIds(updatedIds);
-                           }}
-                           className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                         />
-                         <span className="font-medium text-slate-800">{ib.remark}</span>
-                         <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1.5 py-0.5 rounded">ID: {ib.id} ({ib.protocol})</span>
-                       </label>
-                     );
-                   })}
+               {/* Bulk Panel Type */}
+               <div className="flex items-center gap-4 text-xs">
+                 <span className="font-bold text-slate-700">تغییر پنل ارائه‌دهنده:</span>
+                 <select 
+                   value={bulkPanelType} 
+                   onChange={e => setBulkPanelType(e.target.value as any)}
+                   className="px-3 py-1.5 border rounded-md bg-white text-xs"
+                 >
+                   <option value="">بدون تغییر پنل</option>
+                   <option value="sanaei">🔵 پنل سنایی (X-UI)</option>
+                   <option value="rebecca">🟣 پنل ربکا (Rebecca)</option>
+                   <option value="both">🌐 هر دو پنل همزمان (Dual)</option>
+                 </select>
+               </div>
+
+               {/* Bulk Sanaei inbounds */}
+               {inbounds.length > 0 && (
+                 <div>
+                   <label className="block text-xs font-semibold text-slate-700 mb-1">اینباندهای سنایی برای محصولات انتخابی:</label>
+                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 p-2.5 bg-white rounded-lg border max-h-32 overflow-y-auto">
+                     {inbounds.map((ib: any) => {
+                       const isChecked = bulkInboundIds.includes(ib.id);
+                       return (
+                         <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                           <input 
+                             type="checkbox" 
+                             checked={isChecked}
+                             onChange={e => {
+                               let updated = [...bulkInboundIds];
+                               if (e.target.checked) {
+                                 if (!updated.includes(ib.id)) updated.push(ib.id);
+                               } else {
+                                 updated = updated.filter(id => id !== ib.id);
+                               }
+                               setBulkInboundIds(updated);
+                             }}
+                             className="rounded border-slate-300 text-blue-600"
+                           />
+                           <span>{ib.remark} (ID: {ib.id})</span>
+                         </label>
+                       );
+                     })}
+                   </div>
                  </div>
-               ) : (
-                 <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
-                   ⚠️ لیست اینباندها لود نشده است. لطفاً ابتدا در زبانه «تنظیمات ربات»، مشخصات پنل را لود کنید.
+               )}
+
+               {/* Bulk Rebecca tags */}
+               {rebeccaInbounds.length > 0 && (
+                 <div>
+                   <label className="block text-xs font-semibold text-slate-700 mb-1">اینباندهای ربکا برای محصولات انتخابی:</label>
+                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 p-2.5 bg-white rounded-lg border max-h-32 overflow-y-auto">
+                     {rebeccaInbounds.map((ib: any) => {
+                       const isChecked = bulkRebeccaTags.includes(ib.tag);
+                       return (
+                         <label key={ib.tag} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                           <input 
+                             type="checkbox" 
+                             checked={isChecked}
+                             onChange={e => {
+                               let updated = [...bulkRebeccaTags];
+                               if (e.target.checked) {
+                                 if (!updated.includes(ib.tag)) updated.push(ib.tag);
+                               } else {
+                                 updated = updated.filter(t => t !== ib.tag);
+                               }
+                               setBulkRebeccaTags(updated);
+                             }}
+                             className="rounded border-slate-300 text-purple-600"
+                           />
+                           <span>{ib.tag}</span>
+                         </label>
+                       );
+                     })}
+                   </div>
                  </div>
                )}
 
                <div className="flex justify-end gap-2">
                  <button
                    onClick={async () => {
-                     if (bulkInboundIds.length === 0) {
-                       alert('لطفاً حداقل یک اینباند انتخاب کنید.');
-                       return;
-                     }
-                     if (!confirm(`آیا مطمئن هستید که می‌خواهید اینباندهای ${selectedProductIds.length} محصول انتخابی را به اینباندهای جدید تغییر دهید؟`)) {
+                     if (!confirm(`آیا مطمئن هستید که می‌خواهید تنظیمات ${selectedProductIds.length} محصول انتخابی را بروزرسانی کنید؟`)) {
                        return;
                      }
                      
                      try {
+                       const payload: any = {
+                         productIds: selectedProductIds
+                       };
+                       if (bulkPanelType) payload.panelType = bulkPanelType;
+                       if (bulkInboundIds.length > 0) {
+                         payload.inboundIds = bulkInboundIds;
+                         payload.inboundId = bulkInboundIds[0];
+                       }
+                       if (bulkRebeccaTags.length > 0) {
+                         payload.rebeccaInboundTags = bulkRebeccaTags;
+                       }
+
                        const res = await fetch('/api/products/bulk-update-inbounds', {
                          method: 'POST',
                          headers: { 'Content-Type': 'application/json' },
-                         body: JSON.stringify({
-                           productIds: selectedProductIds,
-                           inboundIds: bulkInboundIds,
-                           inboundId: bulkInboundIds[0]
-                         })
+                         body: JSON.stringify(payload)
                        });
                        const data = await res.json();
                        if (data.success) {
                          setProducts(data.products);
                          setSelectedProductIds([]);
                          setBulkInboundIds([]);
-                         alert('✅ اینباندهای محصولات با موفقیت به صورت گروهی تغییر یافت.');
+                         setBulkRebeccaTags([]);
+                         setBulkPanelType('');
+                         alert('✅ تنظیمات محصولات با موفقیت به صورت گروهی تغییر یافت.');
                        } else {
                          alert('خطا در اعمال تغییرات: ' + data.message);
                        }
@@ -1957,65 +2134,96 @@ function ProductsView() {
        )}
 
        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {products.map(p => (
-            <div key={p.id} className={`bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col hover:shadow-md transition ${p.disabled ? 'opacity-60' : ''}`}>
-               <div className="flex items-start justify-between mb-2 gap-2">
-                 <h3 className={`text-lg font-bold text-slate-900 ${p.disabled ? 'line-through text-slate-500' : ''}`}>
-                   {p.name} {p.disabled && '(غیرفعال)'}
-                   {p.isPayAsYouGo && <span className="mr-2 text-[10px] bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded align-middle">پرداخت در ازای مصرف</span>}
-                 </h3>
-                 <input 
-                   type="checkbox"
-                   checked={selectedProductIds.includes(p.id)}
-                   onChange={(e) => {
-                     if (e.target.checked) {
-                       setSelectedProductIds([...selectedProductIds, p.id]);
-                     } else {
-                       setSelectedProductIds(selectedProductIds.filter(id => id !== p.id));
-                     }
-                   }}
-                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-5 h-5 cursor-pointer flex-shrink-0 mt-1"
-                 />
-               </div>
-               {p.categoryId && (
-                 <div className="text-xs text-indigo-600 bg-indigo-50 px-2 py-1 rounded inline-block w-fit mb-3">
-                   گروه: {categories.find(c => c.id === p.categoryId)?.name || 'نامشخص'}
+          {products.map(p => {
+            const panelType = p.panelType || 'sanaei';
+            return (
+              <div key={p.id} className={`bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col hover:shadow-md transition ${p.disabled ? 'opacity-60' : ''}`}>
+                 <div className="flex items-start justify-between mb-2 gap-2">
+                   <h3 className={`text-base font-bold text-slate-900 ${p.disabled ? 'line-through text-slate-500' : ''}`}>
+                     {p.name} {p.disabled && '(غیرفعال)'}
+                     {p.isPayAsYouGo && <span className="mr-2 text-[10px] bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded align-middle">PAYG</span>}
+                   </h3>
+                   <input 
+                     type="checkbox" 
+                     checked={selectedProductIds.includes(p.id)}
+                     onChange={(e) => {
+                       if (e.target.checked) {
+                         setSelectedProductIds([...selectedProductIds, p.id]);
+                       } else {
+                         setSelectedProductIds(selectedProductIds.filter(id => id !== p.id));
+                       }
+                     }}
+                     className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-5 h-5 cursor-pointer flex-shrink-0 mt-1"
+                   />
                  </div>
-               )}
-               <div className="text-2xl font-black text-indigo-600 mb-4">
-                 {p.price.toLocaleString()} <span className="text-sm font-normal text-slate-500">{p.isPayAsYouGo ? 'تومان / هر گیگابایت' : 'تومان'}</span>
-               </div>
-               <div className="space-y-2 mb-6 flex-1 text-sm text-slate-700">
-                 <div className="flex justify-between border-b pb-1"><span>میزان حجم:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود (پرداخت درصدی)' : p.volumeGb === 0 ? 'نامحدود' : `${p.volumeGb} GB`}</span></div>
-                 <div className="flex justify-between border-b pb-1"><span>مدت زمان:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود' : p.durationDays === 0 ? 'نامحدود' : `${p.durationDays} روز`}</span></div>
-                 <div className="flex justify-between border-b pb-1"><span>محدودیت کاربر (IP):</span><span className="font-bold text-slate-800">{p.limitIp || 0}</span></div>
-                 <div className="flex justify-between pb-1">
-                   <span>اینباندهای پکیج:</span>
-                   <span className="font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded text-[11px]">
-                     {p.inboundIds && p.inboundIds.length > 0 
-                       ? p.inboundIds.map((id: number) => `ID ${id}`).join(', ') 
-                       : (p.inboundId ? `اینباند ${p.inboundId}` : 'پیشفرض عمومی')}
-                   </span>
+
+                 <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                   {panelType === 'both' && (
+                     <span className="text-[11px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                       🌐 هر دو پنل (دوگانه)
+                     </span>
+                   )}
+                   {panelType === 'rebecca' && (
+                     <span className="text-[11px] bg-purple-100 text-purple-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                       🟣 پنل ربکا
+                     </span>
+                   )}
+                   {panelType === 'sanaei' && (
+                     <span className="text-[11px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                       🔵 پنل سنایی
+                     </span>
+                   )}
+                   {p.categoryId && (
+                     <span className="text-[11px] text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                       📁 {categories.find(c => c.id === p.categoryId)?.name || 'دسته نامشخص'}
+                     </span>
+                   )}
                  </div>
-               </div>
-               <div className="flex gap-2 w-full mt-2">
-                  <button onClick={() => startEditProduct(p)} className="flex-1 py-1.5 flex items-center justify-center gap-1 text-amber-600 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-md transition font-medium text-xs">
-                    <Edit2 className="w-3.5 h-3.5" /> <span>ویرایش</span>
-                  </button>
-                  <button onClick={() => toggleProductStatus(p)} className={`flex-1 py-1.5 flex items-center justify-center gap-1 ${p.disabled ? 'text-green-600 bg-green-50 border-green-200' : 'text-slate-600 bg-slate-50 border-slate-200'} border rounded-md transition font-medium text-xs`} title={p.disabled ? 'فعال کردن' : 'غیرفعال کردن'}>
-                    {p.disabled ? <CheckCircle className="w-3.5 h-3.5" /> : <Box className="w-3.5 h-3.5" />} <span>{p.disabled ? 'فعال' : 'غیرفعال'}</span>
-                  </button>
-                  <button onClick={() => deleteProduct(p.id)} className="flex-1 py-1.5 flex items-center justify-center gap-1 text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-md transition font-medium text-xs">
-                    <Trash2 className="w-3.5 h-3.5" /> <span>حذف</span>
-                  </button>
-                </div>
-                <button style={{ display: 'none' }} className="hidden">
-                 <Trash2 className="w-4 h-4" /> <span>حذف محصول</span>
-               </button>
-            </div>
-          ))}
+
+                 <div className="text-2xl font-black text-indigo-600 mb-4">
+                   {p.price.toLocaleString()} <span className="text-sm font-normal text-slate-500">{p.isPayAsYouGo ? 'تومان / هر گیگ' : 'تومان'}</span>
+                 </div>
+                 <div className="space-y-2 mb-6 flex-1 text-sm text-slate-700">
+                   <div className="flex justify-between border-b pb-1"><span>میزان حجم:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود (PAYG)' : p.volumeGb === 0 ? 'نامحدود' : `${p.volumeGb} GB`}</span></div>
+                   <div className="flex justify-between border-b pb-1"><span>مدت زمان:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود' : p.durationDays === 0 ? 'نامحدود' : `${p.durationDays} روز`}</span></div>
+                   <div className="flex justify-between border-b pb-1"><span>محدودیت IP:</span><span className="font-bold text-slate-800">{p.limitIp || 0}</span></div>
+                   {(panelType === 'sanaei' || panelType === 'both') && (
+                     <div className="flex justify-between pb-1 border-b">
+                       <span>اینباندهای سنایی:</span>
+                       <span className="font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
+                         {p.inboundIds && p.inboundIds.length > 0 
+                           ? p.inboundIds.map((id: number) => `ID ${id}`).join(', ') 
+                           : (p.inboundId ? `ID ${p.inboundId}` : 'پیشفرض')}
+                       </span>
+                     </div>
+                   )}
+                   {(panelType === 'rebecca' || panelType === 'both') && (
+                     <div className="flex justify-between pb-1">
+                       <span>اینباندهای ربکا:</span>
+                       <span className="font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded text-[11px]">
+                         {p.rebeccaInboundTags && p.rebeccaInboundTags.length > 0
+                           ? p.rebeccaInboundTags.join(', ')
+                           : 'همه اینباندها (پیش‌فرض)'}
+                       </span>
+                     </div>
+                   )}
+                 </div>
+                 <div className="flex gap-2 w-full mt-2">
+                    <button onClick={() => startEditProduct(p)} className="flex-1 py-1.5 flex items-center justify-center gap-1 text-amber-600 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-md transition font-medium text-xs">
+                      <Edit2 className="w-3.5 h-3.5" /> <span>ویرایش</span>
+                    </button>
+                    <button onClick={() => toggleProductStatus(p)} className={`flex-1 py-1.5 flex items-center justify-center gap-1 ${p.disabled ? 'text-green-600 bg-green-50 border-green-200' : 'text-slate-600 bg-slate-50 border-slate-200'} border rounded-md transition font-medium text-xs`} title={p.disabled ? 'فعال کردن' : 'غیرفعال کردن'}>
+                      {p.disabled ? <CheckCircle className="w-3.5 h-3.5" /> : <Box className="w-3.5 h-3.5" />} <span>{p.disabled ? 'فعال' : 'غیرفعال'}</span>
+                    </button>
+                    <button onClick={() => deleteProduct(p.id)} className="flex-1 py-1.5 flex items-center justify-center gap-1 text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-md transition font-medium text-xs">
+                      <Trash2 className="w-3.5 h-3.5" /> <span>حذف</span>
+                    </button>
+                 </div>
+              </div>
+            );
+          })}
           {products.length === 0 && (
-            <div className="col-span-full bg-slate-100/50 text-slate-500 text-center p-12 rounded-xl border border-dashed">هنوز هیچ پکیجی ثبت nکرده‌اید. از بخش بالا پکیج جدید تعریف کنید.</div>
+            <div className="col-span-full bg-slate-100/50 text-slate-500 text-center p-12 rounded-xl border border-dashed">هنوز هیچ پکیجی ثبت نکرده‌اید. از بخش بالا پکیج جدید تعریف کنید.</div>
           )}
        </div>
     </div>

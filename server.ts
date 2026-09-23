@@ -189,7 +189,12 @@ async function startServer() {
   api.post("/test-rebecca-connection", async (req, res) => {
     try {
       const { url, username, password, apiKey } = req.body;
-      const result = await rebecca.testConnection({ url, username, password, apiKey });
+      let result;
+      if (url) {
+        result = await rebecca.testConnection({ url, username, password, apiKey });
+      } else {
+        result = await rebecca.testConnection();
+      }
       res.json(result);
     } catch (e: any) {
       res.json({ success: false, message: e.message });
@@ -236,30 +241,6 @@ async function startServer() {
       res.json(result);
     } catch (e: any) {
        res.json({ success: false, message: e.message });
-    }
-  });
-
-  api.post("/test-rebecca-connection", async (req, res) => {
-    try {
-      const { url, username, password } = req.body;
-      let result;
-      if (url) {
-        result = await rebecca.testConnection({ url, username, password });
-      } else {
-        result = await rebecca.testConnection();
-      }
-      res.json(result);
-    } catch (e: any) {
-      res.json({ success: false, message: e.message });
-    }
-  });
-
-  api.get("/rebecca-inbounds", async (req, res) => {
-    try {
-      const inbounds = await rebecca.getInbounds();
-      res.json({ success: true, inbounds: inbounds || [] });
-    } catch (e: any) {
-      res.json({ success: false, message: e.message, inbounds: [] });
     }
   });
 
@@ -473,6 +454,14 @@ async function startServer() {
       product.inboundIds = parseInboundIds(product.inboundIds);
     }
 
+    if (product.rebeccaInboundTags !== undefined) {
+      product.rebeccaInboundTags = Array.isArray(product.rebeccaInboundTags) ? product.rebeccaInboundTags : [];
+    }
+
+    if (!product.panelType) {
+      product.panelType = 'sanaei';
+    }
+
     const state = db.getState();
     const existingIndex = state.products.findIndex(p => p.id === product.id);
     const newProducts = [...state.products];
@@ -486,22 +475,24 @@ async function startServer() {
   });
 
   api.post("/products/bulk-update-inbounds", (req, res) => {
-    const { productIds, inboundIds, inboundId } = req.body;
+    const { productIds, inboundIds, inboundId, panelType, rebeccaInboundTags } = req.body;
     if (!Array.isArray(productIds) || productIds.length === 0) {
       return res.status(400).json({ success: false, message: 'لیست محصولات جهت ویرایش گروهی الزامی است.' });
     }
 
     const parsedInboundId = inboundId !== undefined ? parseInboundId(inboundId) : undefined;
     const parsedInboundIds = inboundIds !== undefined ? parseInboundIds(inboundIds) : undefined;
+    const parsedRebeccaInbounds = rebeccaInboundTags !== undefined ? (Array.isArray(rebeccaInboundTags) ? rebeccaInboundTags : []) : undefined;
 
     const state = db.getState();
     const newProducts = state.products.map(p => {
       if (productIds.includes(p.id)) {
-        return {
-          ...p,
-          inboundId: parsedInboundId,
-          inboundIds: parsedInboundIds || []
-        };
+        const updated: any = { ...p };
+        if (parsedInboundId !== undefined) updated.inboundId = parsedInboundId;
+        if (parsedInboundIds !== undefined) updated.inboundIds = parsedInboundIds;
+        if (parsedRebeccaInbounds !== undefined) updated.rebeccaInboundTags = parsedRebeccaInbounds;
+        if (panelType !== undefined) updated.panelType = panelType;
+        return updated;
       }
       return p;
     });
