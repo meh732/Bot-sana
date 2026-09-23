@@ -35,7 +35,8 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Optional Basic Auth for the Panel
   if (process.env.PANEL_USERNAME && process.env.PANEL_PASSWORD) {
@@ -275,25 +276,40 @@ async function startServer() {
       }
       
       let parsed: any = null;
-      
-      // Try parsing directly as plain JSON first
+      let rawJsonStr = typeof payload === 'object' ? JSON.stringify(payload) : String(payload).trim();
+
+      // Determine if this is an encrypted backup
+      let isEncrypted = false;
       try {
-        parsed = typeof payload === 'object' ? payload : JSON.parse(payload);
+        const temp = JSON.parse(rawJsonStr);
+        if (temp && temp.type === 'sanaei_bot_secured_backup') {
+          isEncrypted = true;
+        }
       } catch (e) {
-        // If plain JSON parse fails, attempt decryption using password
+        // Not a standard JSON or raw encrypted string
+        isEncrypted = true; 
+      }
+
+      if (isEncrypted) {
         if (!password) {
           return res.status(400).json({ success: false, message: 'این فایل پشتیبان رمزگذاری شده است. لطفاً رمز عبور بکاپ را وارد کنید.' });
         }
         try {
-          const decryptedData = decryptData(payload, password);
+          const decryptedData = decryptData(rawJsonStr, password);
           parsed = JSON.parse(decryptedData);
         } catch (decryptErr: any) {
-          return res.status(400).json({ success: false, message: 'رمز عبور پشتیبان اشتباه است یا فایل مخدوش می‌باشد.' });
+          return res.status(400).json({ success: false, message: 'رمز عبور پشتیبان اشتباه است یا ساختار فایل پشتیبان مخدوش می‌باشد.' });
+        }
+      } else {
+        try {
+          parsed = JSON.parse(rawJsonStr);
+        } catch (e: any) {
+          return res.status(400).json({ success: false, message: 'ساختار فایل ارسالی یک JSON معتبر نیست: ' + e.message });
         }
       }
       
       if (!parsed || !parsed.users || !parsed.panel) {
-        return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. بخش‌های حیاتی خالی هستند.' });
+        return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. بخش‌های حیاتی خالی هستند (مانند کاربران یا پنل).' });
       }
       
       // Write to db.json and update memory state
