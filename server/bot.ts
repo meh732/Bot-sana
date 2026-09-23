@@ -2821,21 +2821,26 @@ export async function initBot() {
   });
 
   bot.on('callback_query', async (query) => {
-    const chatId = query.message?.chat.id;
+    const chatId = query.from?.id || query.message?.chat.id;
     const data = query.data;
     console.log(`[Bot Callback Query] Triggered. chatId: ${chatId}, data: ${data}`);
 
     try {
       if (!chatId) {
-        console.log('[Bot Callback Query] Exit early: No chatId in query.message');
+        console.log('[Bot Callback Query] Exit early: No chatId');
         return;
       }
 
-      // Always acknowledge query immediately so Telegram buttons never get stuck/spin
-      console.log(`[Bot Callback Query] Acknowledging callback: ${query.id}`);
-      bot!.answerCallbackQuery(query.id).catch((err) => {
-        console.error(`[Bot Callback Query] Failed to acknowledge callback: ${err.message}`);
-      });
+      let queryAnswered = false;
+      const answerQuery = (options?: any): Promise<any> => {
+        if (!queryAnswered) {
+          queryAnswered = true;
+          return bot!.answerCallbackQuery(query.id, options).catch((err) => {
+            console.error(`[Bot Callback Query] Failed to acknowledge callback: ${err.message}`);
+          });
+        }
+        return Promise.resolve();
+      };
     
     let user = db.getUser(chatId);
     if (!user) {
@@ -2884,7 +2889,7 @@ export async function initBot() {
        }
        if (unjoinedChannels.length > 0) {
            forceJoinCache.set(chatId, { isJoined: false, timestamp: Date.now() });
-           bot!.answerCallbackQuery(query.id, { text: '⚠️ ابتدا در کانال‌های تعیین شده عضو شوید.', show_alert: true }).catch(() => {});
+           answerQuery( { text: '⚠️ ابتدا در کانال‌های تعیین شده عضو شوید.', show_alert: true }).catch(() => {});
            const buttons: any[] = unjoinedChannels.map(ch => ([
              { text: `📢 عضویت در ${ch.title || ch.name || ch.id}`, url: ch.link || (ch.id.startsWith('@') ? `https://t.me/${ch.id.slice(1)}` : `https://t.me/${ch.id}`) }
            ]));
@@ -2897,7 +2902,7 @@ export async function initBot() {
            // User successfully verified channel membership. Cache the result to make all future button clicks instant!
            forceJoinCache.set(chatId, { isJoined: true, timestamp: Date.now() });
            if (data === 'check_join') {
-               bot!.answerCallbackQuery(query.id, { text: '✅ عضویت شما تایید شد!', show_alert: true }).catch(() => {});
+               answerQuery( { text: '✅ عضویت شما تایید شد!', show_alert: true }).catch(() => {});
                bot!.sendMessage(chatId, '✅ عضویت شما با موفقیت تایید شد.\nاکنون می‌توانید از تمام خدمات ربات استفاده کنید.', {
                  reply_markup: getUserReplyKeyboard(db.getUser(chatId), state, isAdmin)
                }).catch(() => {});
@@ -2997,7 +3002,7 @@ export async function initBot() {
            bot!.sendMessage(chatId, '❌ این فیش نامعتبر است یا قبلاً پردازش شده است.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3020,14 +3025,14 @@ export async function initBot() {
            bot!.sendMessage(chatId, '❌ این فیش نامعتبر است یا قبلاً پردازش شده است.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
     if (data === 'enter_gift_code') {
       userSession.set(chatId, { action: 'awaiting_gift_code' });
       bot!.sendMessage(chatId, '🎁 *ثبت کد هدیه*\n\nلطفاً کد هدیه خود را ارسال نمایید:', { parse_mode: 'Markdown' });
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3036,7 +3041,7 @@ export async function initBot() {
       const pendingPurchase = prevSession && prevSession.action === 'payment_awaiting_deposit_choice' ? prevSession.pendingPurchase : undefined;
       userSession.set(chatId, { action: 'payment_awaiting_amount', pendingPurchase });
       bot!.sendMessage(chatId, '💰 *شارژ حساب (کارت به کارت)*\n\nلطفاً مبلغ مد نظر جهت شارژ حساب خود را به *تومان* و به صورت عددی ارسال کنید:\n\nمثال: `50000` یا `120000`', { parse_mode: 'Markdown' });
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3059,7 +3064,7 @@ export async function initBot() {
 
         bot!.sendMessage(chatId, paymentInstructions, { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3067,7 +3072,7 @@ export async function initBot() {
       if (isAdmin) {
         sendCardSettingsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3076,7 +3081,7 @@ export async function initBot() {
         adminSession.set(chatId, 'set_card_num');
         bot!.sendMessage(chatId, '💳 لطفا شماره کارت ۱۶ رقمی جدید را بدون فاصله ارسال کنید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3085,7 +3090,7 @@ export async function initBot() {
         adminSession.set(chatId, 'set_card_name');
         bot!.sendMessage(chatId, '👤 لطفا نام دارنده کارت جدید را ارسال کنید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3093,7 +3098,7 @@ export async function initBot() {
       if (isAdmin) {
         bot!.sendMessage(chatId, getDailyReportText(), { parse_mode: 'HTML' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3101,7 +3106,7 @@ export async function initBot() {
       if (isAdmin) {
         sendAdminMainMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3113,7 +3118,7 @@ export async function initBot() {
         txt += `لطفاً برای تنظیم زمان‌بندی جدید، یک عدد بین 1 تا 24 را بفرستید که نشان‌دهنده تعداد ساعت فاصله‌ی بین هر بکاپ است.\n\nبرای غیرفعال کردن بکاپ خودکار عدد 0 را ارسال کنید.`;
         bot!.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3122,7 +3127,7 @@ export async function initBot() {
         adminSession.set(chatId, 'get_backup_password');
         bot!.sendMessage(chatId, '🔑 لطفا یک رمز عبور دلخواه برای رمزگذاری و محافظت از فایل بکاپ خود وارد کنید:\n\n*(هنگام بازیابی این فایل، وارد کردن این رمز عبور الزامی است)*', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3130,7 +3135,7 @@ export async function initBot() {
       if (isAdmin) {
         bot!.sendMessage(chatId, '📤 *راهنمای بازیابی فایل پشتیبان (ری‌استور)*:\n\nلطفاً فایل پشتیبان با پسوند `.json` را که قبلاً از این ربات یا از پنل وب ادمین دریافت کرده‌اید به همین چت فوروارد یا ارسال کُنید.\n\nپس از دریافت فایل، سیستم رمز عبور بکاپ را جهت رمزگشایی و اعمال نهایی از شما خواهد پرسید.', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3138,7 +3143,7 @@ export async function initBot() {
       if (isAdmin) {
         sendSanaeiConnectionMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3160,7 +3165,7 @@ export async function initBot() {
            bot!.sendMessage(chatId, `❌ خطا در برقراری ارتباط با پنل سنایی: ${err.message}`);
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3168,7 +3173,7 @@ export async function initBot() {
       if (isAdmin) {
         sendTestSettingsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3176,7 +3181,7 @@ export async function initBot() {
       if (isAdmin) {
         sendProductsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3184,7 +3189,7 @@ export async function initBot() {
       if (isAdmin) {
         sendUsersMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3206,7 +3211,7 @@ export async function initBot() {
           }
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3235,7 +3240,7 @@ export async function initBot() {
           });
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3244,7 +3249,7 @@ export async function initBot() {
       if (userObj && userObj.isSeller) {
         await sendDetailedSellerReport(chatId, chatId, false);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3265,7 +3270,7 @@ export async function initBot() {
           } as any
         });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3274,7 +3279,7 @@ export async function initBot() {
         const targetChatId = parseInt(data.replace('admin_seller_rep_', ''));
         await sendDetailedSellerReport(chatId, targetChatId, true);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3303,7 +3308,7 @@ export async function initBot() {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3327,7 +3332,7 @@ export async function initBot() {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3344,7 +3349,7 @@ export async function initBot() {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3372,7 +3377,7 @@ export async function initBot() {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3387,7 +3392,7 @@ export async function initBot() {
           bot!.sendMessage(chatId, '❌ همکار یافت نشد.');
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3399,7 +3404,7 @@ export async function initBot() {
         bot!.sendMessage(chatId, `🔘 وضعیت تست رایگان با موفقیت به *${newVal ? 'فعال ✅' : 'غیرفعال ❌'}* تغییر یافت.`, { parse_mode: 'Markdown' });
         sendTestSettingsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3408,7 +3413,7 @@ export async function initBot() {
         adminSession.set(chatId, 'set_support_id');
         bot!.sendMessage(chatId, '📞 لطفا آیدی پشتیبانی جدید را بدون @ ارسال کُنید:\nمثال: `MyVpnSupport`');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3416,7 +3421,7 @@ export async function initBot() {
       if (isAdmin) {
         sendCouponsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3429,7 +3434,7 @@ export async function initBot() {
           'مثال کامل:\n`NOROUZ,50,100,1,10` (۵۰ درصد تخفیف، ۱۰۰ بار قابل استفاده، ۱ بار برای هر نفر، تا ۱۰ روز معتبر)';
         bot!.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3439,7 +3444,7 @@ export async function initBot() {
         adminSession.delete(chatId);
         sendGiftCodeDraftMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3448,7 +3453,7 @@ export async function initBot() {
         adminSession.set(chatId, 'gift_draft_code');
         bot!.sendMessage(chatId, '✏️ لطفاً کد هدیه جدید را ارسال کنید (مثال: `GIFT100`):', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3457,7 +3462,7 @@ export async function initBot() {
         adminSession.set(chatId, 'gift_draft_amount');
         bot!.sendMessage(chatId, '💰 لطفاً مبلغ شارژ هدیه به *تومان* را به صورت عددی ارسال کنید (مثال: `50000`):', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3466,7 +3471,7 @@ export async function initBot() {
         adminSession.set(chatId, 'gift_draft_max');
         bot!.sendMessage(chatId, '📊 لطفاً حداکثر تعداد کل استفاده مجاز را ارسال کنید (برای نامحدود عدد `0` بفرستید):', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3475,7 +3480,7 @@ export async function initBot() {
         adminSession.set(chatId, 'gift_draft_per_user');
         bot!.sendMessage(chatId, '👥 لطفاً حداکثر تعداد دفعات مجاز استفاده برای هر کاربر را ارسال کنید (پیش‌فرض `1`):', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3484,7 +3489,7 @@ export async function initBot() {
         adminSession.set(chatId, 'gift_draft_exp');
         bot!.sendMessage(chatId, '📅 لطفاً تعداد روزهای اعتبار کد هدیه را از امروز وارد کنید (برای نامحدود عدد `0` بفرستید):', { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3494,7 +3499,7 @@ export async function initBot() {
         adminSession.delete(chatId);
         sendCouponsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3503,7 +3508,7 @@ export async function initBot() {
         const draft = giftCodeDrafts.get(chatId);
         if (!draft || !draft.code || !draft.giftAmount) {
           bot!.sendMessage(chatId, '⚠️ لطفاً ابتدا *کد هدیه* و *مبلغ شارژ* را تعیین کنید.', { parse_mode: 'Markdown' });
-          bot!.answerCallbackQuery(query.id);
+          answerQuery();
           return;
         }
 
@@ -3543,7 +3548,7 @@ export async function initBot() {
         bot!.sendMessage(chatId, `🎉 کد هدیه *${code}* با مبلغ شارژ *${giftAmount.toLocaleString()}* تومان با موفقیت ثبت شد.`, { parse_mode: 'Markdown' });
         sendCouponsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3556,7 +3561,7 @@ export async function initBot() {
         bot!.sendMessage(chatId, `🗑 کد تخفیف *${code}* با موفقیت حذف شد.`, { parse_mode: 'Markdown' });
         sendCouponsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3565,7 +3570,7 @@ export async function initBot() {
         adminSession.set(chatId, 'admin_broadcast');
         bot!.sendMessage(chatId, '📢 لطفاً متن پیام همگانی که می‌خواهید به کلیه کاربران ربات ارسال گردد را بنویسید و وارد کنید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3574,7 +3579,7 @@ export async function initBot() {
         adminSession.set(chatId, 'search_user');
         bot!.sendMessage(chatId, '🔍 لطفاً یوذرنیم (بدون @)، شناسه عددی (ChatID) یا بخشی از نام کاربر مدنظر را ارسال کنید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3583,7 +3588,7 @@ export async function initBot() {
         adminSession.set(chatId, 'search_config');
         bot!.sendMessage(chatId, '🔍 لطفاً نام کلاینت، آیدی کلاینت (سرویس) یا لینک اشتراک را جهت جستجو بفرستید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3613,12 +3618,11 @@ export async function initBot() {
           }
         });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
     if (data && data.startsWith('resend_link_')) {
-      bot!.answerCallbackQuery(query.id, { text: '🔍 در حال دریافت اطلاعات سرویس...' });
       const purchaseId = data.replace('resend_link_', '');
       const currentUser = db.getUser(chatId) || user;
       const userPurchases = currentUser?.purchases || [];
@@ -3636,17 +3640,34 @@ export async function initBot() {
           purchase = userPurchases[idx];
         }
       }
+
+      if (!purchase) {
+        const allUsers = db.getState().users || [];
+        for (const u of allUsers) {
+          const found = (u.purchases || []).find((p: any) => 
+            String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+            (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+            (p.subUrl && p.subUrl.includes(purchaseId)) ||
+            (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+          );
+          if (found) {
+            purchase = found;
+            break;
+          }
+        }
+      }
       
       if (purchase) {
+        answerQuery({ text: '🔍 در حال دریافت اطلاعات سرویس...' });
         await sendServiceInfo(chatId, purchase);
       } else {
+        answerQuery({ text: '❌ سرویس یافت نشد' });
         bot!.sendMessage(chatId, '❌ سرویس مورد نظر در لیست شما یافت نشد.');
       }
       return;
     }
 
     if (data && data.startsWith('refresh_service_')) {
-      bot!.answerCallbackQuery(query.id, { text: '🔄 در حال استعلام وضعیت لحظه‌ای...' });
       const purchaseId = data.replace('refresh_service_', '');
       const currentUser = db.getUser(chatId) || user;
       const userPurchases = currentUser?.purchases || [];
@@ -3662,16 +3683,34 @@ export async function initBot() {
           purchase = userPurchases[idx];
         }
       }
+
+      if (!purchase) {
+        const allUsers = db.getState().users || [];
+        for (const u of allUsers) {
+          const found = (u.purchases || []).find((p: any) => 
+            String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+            (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+            (p.subUrl && p.subUrl.includes(purchaseId)) ||
+            (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+          );
+          if (found) {
+            purchase = found;
+            break;
+          }
+        }
+      }
+
       if (purchase) {
+        answerQuery({ text: '🔄 در حال استعلام وضعیت لحظه‌ای...' });
         await sendServiceInfo(chatId, purchase);
       } else {
+        answerQuery({ text: '❌ سرویس یافت نشد' });
         bot!.sendMessage(chatId, '❌ سرویس مورد نظر یافت نشد.');
       }
       return;
     }
 
     if (data && data.startsWith('direct_configs_')) {
-      bot!.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت کانفیگ‌ها...' });
       const purchaseId = data.replace('direct_configs_', '');
       const currentUser = db.getUser(chatId) || user;
       const userPurchases = currentUser?.purchases || [];
@@ -3687,10 +3726,30 @@ export async function initBot() {
           purchase = userPurchases[idx];
         }
       }
+
+      if (!purchase) {
+        const allUsers = db.getState().users || [];
+        for (const u of allUsers) {
+          const found = (u.purchases || []).find((p: any) => 
+            String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+            (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+            (p.subUrl && p.subUrl.includes(purchaseId)) ||
+            (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+          );
+          if (found) {
+            purchase = found;
+            break;
+          }
+        }
+      }
+
       if (!purchase || !purchase.subUrl) {
+        answerQuery({ text: '❌ سرویس یافت نشد' });
         bot!.sendMessage(chatId, '❌ لینک ساب برای این سرویس یافت نشد.');
         return;
       }
+
+      answerQuery({ text: '⏳ در حال دریافت کانفیگ‌ها...' });
 
       try {
         const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
@@ -3720,7 +3779,6 @@ export async function initBot() {
     }
 
     if (data && data.startsWith('renew_service_')) {
-      bot!.answerCallbackQuery(query.id);
       if (!user) return;
       const purchaseId = data.replace('renew_service_', '');
       const currentUser = db.getUser(chatId) || user;
@@ -3731,6 +3789,8 @@ export async function initBot() {
         (p.subUrl && p.subUrl.includes(purchaseId)) ||
         (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
       );
+      let purchaseOwner = currentUser;
+
       if (!purchase && !isNaN(Number(purchaseId))) {
         const idx = parseInt(purchaseId, 10);
         if (idx >= 0 && idx < userPurchases.length) {
@@ -3739,9 +3799,29 @@ export async function initBot() {
       }
 
       if (!purchase) {
+        const allUsers = db.getState().users || [];
+        for (const u of allUsers) {
+          const found = (u.purchases || []).find((p: any) => 
+            String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+            (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+            (p.subUrl && p.subUrl.includes(purchaseId)) ||
+            (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+          );
+          if (found) {
+            purchase = found;
+            purchaseOwner = u;
+            break;
+          }
+        }
+      }
+
+      if (!purchase) {
+        answerQuery({ text: '❌ سرویس یافت نشد' });
         bot!.sendMessage(chatId, '❌ سرویس مورد نظر یافت نشد.');
         return;
       }
+
+      answerQuery({ text: '⏳ در حال تمدید سرویس...' });
 
       const finalPrice = purchase.price;
 
@@ -3823,7 +3903,7 @@ export async function initBot() {
 
         bot!.sendMessage(chatId, `${promptText}\n\n⚠️ برای لغو فرآیند می‌توانید دستور دیگری بفرستید.`, { parse_mode: 'Markdown' });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3835,7 +3915,7 @@ export async function initBot() {
         bot!.sendMessage(chatId, '🗑 محصول با موفقیت حذف شد.');
         sendProductsMenu(chatId);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3845,7 +3925,7 @@ export async function initBot() {
         adminSession.set(chatId, `charge_direct_${uid}`);
         bot!.sendMessage(chatId, '🟢 لطفاً فقط مبلغ افزایش موجودی را (به تومان) ارسال کنید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3855,7 +3935,7 @@ export async function initBot() {
         adminSession.set(chatId, `sub_direct_${uid}`);
         bot!.sendMessage(chatId, '🔴 لطفاً فقط مبلغ کاهش موجودی را (به تومان) ارسال کنید:');
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3873,7 +3953,7 @@ export async function initBot() {
           }
         }
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3884,7 +3964,7 @@ export async function initBot() {
         db.updateState({ users: state.users });
         bot!.sendMessage(chatId, `🗑 کاربر با آیدی ${uid} با موفقیت از دیتابیس ربات حذف شد.`);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3894,7 +3974,7 @@ export async function initBot() {
         adminSession.set(chatId, `send_direct_message_to_${targetId}`);
         bot!.sendMessage(chatId, `✍️ لطفاً پیام خود را برای ارسال مستقیم به کاربر \`${targetId}\` بنویسید و ارسال کنید:`);
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -3902,7 +3982,7 @@ export async function initBot() {
       const activeProducts = (state.products || []).filter(p => p && !p.disabled);
       if (activeProducts.length === 0) {
         bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
-        bot!.answerCallbackQuery(query.id);
+        answerQuery();
         return;
       }
 
@@ -3932,12 +4012,12 @@ export async function initBot() {
            } as any
         });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
     if (data && (data === 'back_to_categories' || data === 'back_to_categories_seller')) {
-      try { await bot!.answerCallbackQuery(query.id); } catch (e) {}
+      try { await answerQuery(); } catch (e) {}
       const isSeller = data === 'back_to_categories_seller';
       const activeProducts = (state.products || []).filter(p => p && !p.disabled);
       const activeCategories = (state.categories || []).filter(c => c && !c.disabled);
@@ -3972,7 +4052,7 @@ export async function initBot() {
     }
 
     if (data && data.startsWith('show_category_')) {
-      try { await bot!.answerCallbackQuery(query.id); } catch (e) {}
+      try { await answerQuery(); } catch (e) {}
       const isSeller = data.startsWith('show_category_seller_');
       const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
       
@@ -4044,7 +4124,7 @@ export async function initBot() {
 
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
-        bot!.answerCallbackQuery(query.id);
+        answerQuery();
         return;
       }
 
@@ -4087,7 +4167,7 @@ export async function initBot() {
           }
         });
       }
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -4095,7 +4175,7 @@ export async function initBot() {
       const productId = data.replace('enter_coupon_', '');
       userSession.set(chatId, { action: `awaiting_coupon_for_${productId}` });
       bot!.sendMessage(chatId, '🎫 لطفاً کد تخفیف خود را ارسال کنید:');
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -4114,7 +4194,7 @@ export async function initBot() {
       const product = (state.products || []).find(p => p && String(p.id) === String(productId));
       if (!product) {
         bot!.sendMessage(chatId, '❌ محصول یافت نشد.');
-        bot!.answerCallbackQuery(query.id);
+        answerQuery();
         return;
       }
 
@@ -4129,7 +4209,7 @@ export async function initBot() {
           ]
         }
       });
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
 
@@ -4137,7 +4217,7 @@ export async function initBot() {
       const session = userSession.get(chatId);
       if (!session || session.action !== 'awaiting_config_name' || !session.productId) {
         bot!.sendMessage(chatId, '❌ نشست منقضی شده است. لطفا دوباره تلاش کنید.');
-        bot!.answerCallbackQuery(query.id);
+        answerQuery();
         return;
       }
       const product = (state.products || []).find(p => p && p.id === session.productId);
