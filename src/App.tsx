@@ -249,6 +249,12 @@ function TabBtn({ active, onClick, children, icon, isCollapsed }: any) {
 function SettingsView() {
   const [state, setState] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  const [savingSanaei, setSavingSanaei] = useState(false);
+  const [savingRebecca, setSavingRebecca] = useState(false);
+  const [testingSanaei, setTestingSanaei] = useState(false);
+  const [testingRebecca, setTestingRebecca] = useState(false);
+  const [sanaeiInbounds, setSanaeiInbounds] = useState<any[]>([]);
+  const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
   const [inbounds, setInbounds] = useState<any[]>([]);
   const [adminIdsStr, setAdminIdsStr] = useState('');
 
@@ -510,12 +516,24 @@ function SettingsView() {
     fetchLocalBackups();
 
     // Prefetch inbounds automatically on mount if connected
+    fetch('/api/sanaei-inbounds')
+      .then(r => r.json())
+      .then(data => {
+        if (data.success && data.inbounds) setSanaeiInbounds(data.inbounds);
+      })
+      .catch(() => {});
+
+    fetch('/api/rebecca-inbounds')
+      .then(r => r.json())
+      .then(data => {
+        if (data.success && data.inbounds) setRebeccaInbounds(data.inbounds);
+      })
+      .catch(() => {});
+
     fetch('/api/xui-inbounds')
       .then(r => r.json())
       .then(data => {
-        if (data.success) {
-          setInbounds(data.inbounds || []);
-        }
+        if (data.success && data.inbounds) setInbounds(data.inbounds);
       })
       .catch(e => console.log('Could not prefetch panel inbounds:', e));
   }, []);
@@ -556,7 +574,7 @@ function SettingsView() {
     });
     const data = await res.json();
     if (data.success) {
-      setState(prevState => ({
+      setState((prevState: any) => ({
         ...prevState,
         adminIds: parsedAdminIds
       }));
@@ -565,15 +583,107 @@ function SettingsView() {
     alert('تنظیمات عمومی با موفقیت ذخیره شد. اگر توکن ربات تغییر کرده، ربات مجدداً راه‌اندازی شد.');
   };
 
-  const savePanel = async () => {
+  const saveSanaeiPanel = async () => {
+    setSavingSanaei(true);
+    try {
+      const res = await fetch('/api/update-panel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          panel: state.panel,
+          activePanelMode: state.activePanelMode
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ تنظیمات پنل سنایی (3X-UI) با موفقیت ذخیره شد.');
+      } else {
+        alert('خطا در ذخیره پنل سنایی: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطا در ذخیره پنل سنایی: ' + e.message);
+    } finally {
+      setSavingSanaei(false);
+    }
+  };
+
+  const saveRebeccaPanel = async () => {
+    setSavingRebecca(true);
+    try {
+      const res = await fetch('/api/update-panel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rebeccaPanel: state.rebeccaPanel,
+          activePanelMode: state.activePanelMode
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ تنظیمات پنل ربکا (Rebecca Panel) با موفقیت ذخیره شد.');
+      } else {
+        alert('خطا در ذخیره پنل ربکا: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطا در ذخیره پنل ربکا: ' + e.message);
+    } finally {
+      setSavingRebecca(false);
+    }
+  };
+
+  const saveAllPanels = async () => {
     setSaving(true);
-    await fetch('/api/update-panel', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(state.panel)
-    });
-    setSaving(false);
-    alert('اطلاعات پنل سنایی ذخیره شد.');
+    try {
+      const res = await fetch('/api/update-panel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          panel: state.panel,
+          rebeccaPanel: state.rebeccaPanel,
+          activePanelMode: state.activePanelMode
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ کلیه تنظیمات پنل‌های سنایی و ربکا و وضعیت عملکرد سیستم با موفقیت ذخیره گردید.');
+      } else {
+        alert('خطا در ذخیره: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const loadSanaeiInbounds = async () => {
+    try {
+      const res = await fetch('/api/sanaei-inbounds');
+      const data = await res.json();
+      if (data.success) {
+        setSanaeiInbounds(data.inbounds || []);
+        alert(`✅ اینباندهای پنل سنایی با موفقیت دریافت شد (${(data.inbounds || []).length} اینباند)`);
+      } else {
+        alert('خطا در دریافت لیست اینباندهای سنایی: ' + (data.message || 'نامشخص'));
+      }
+    } catch(e: any) {
+      alert('خطا در ارتباط با پنل سنایی: ' + e.message);
+    }
+  };
+
+  const loadRebeccaInbounds = async () => {
+    try {
+      const res = await fetch('/api/rebecca-inbounds');
+      const data = await res.json();
+      if (data.success) {
+        setRebeccaInbounds(data.inbounds || []);
+        alert(`✅ لیست پروتکل‌ها/اینباندهای پنل ربکا دریافت شد (${(data.inbounds || []).length} مورد)`);
+      } else {
+        alert('خطا در دریافت لیست اینباندهای ربکا: ' + (data.message || 'نامشخص'));
+      }
+    } catch(e: any) {
+      alert('خطا در ارتباط با پنل ربکا: ' + e.message);
+    }
   };
 
   const loadInbounds = async () => {
@@ -581,7 +691,7 @@ function SettingsView() {
       const res = await fetch('/api/xui-inbounds');
       const data = await res.json();
       if (data.success) {
-        setInbounds(data.inbounds);
+        setInbounds(data.inbounds || []);
       } else {
         alert('خطا در دریافت لیست اینباندها: ' + data.message);
       }
@@ -590,22 +700,47 @@ function SettingsView() {
     }
   };
 
-  const testConnection = async () => {
+  const testSanaeiConnection = async () => {
+    setTestingSanaei(true);
     try {
       const res = await fetch('/api/test-panel-connection', { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state.panel)
+        body: JSON.stringify({ panelType: 'xui', config: state.panel })
       });
       const data = await res.json();
       if (data.success) {
-        alert('✅ ' + data.message);
-        loadInbounds();
+        alert('✅ اتصال به پنل سنایی (3X-UI) برقرار شد!\n' + (data.message || 'ارتباط موفقیت‌آمیز بود.'));
+        loadSanaeiInbounds();
       } else {
-        alert('❌ خطا: ' + data.message);
+        alert('❌ خطا در اتصال به پنل سنایی:\n' + (data.message || 'عدم پاسخگویی سرور'));
       }
     } catch (e: any) {
-      alert('خطای شبکه: ' + e.message);
+      alert('خطای اتصال به سرور: ' + e.message);
+    } finally {
+      setTestingSanaei(false);
+    }
+  };
+
+  const testRebeccaConnection = async () => {
+    setTestingRebecca(true);
+    try {
+      const res = await fetch('/api/test-panel-connection', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ panelType: 'rebecca', config: state.rebeccaPanel })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ اتصال به پنل ربکا (Rebecca Panel) برقرار شد!\n' + (data.message || 'ارتباط موفقیت‌آمیز بود.'));
+        loadRebeccaInbounds();
+      } else {
+        alert('❌ خطا در اتصال به پنل ربکا:\n' + (data.message || 'عدم پاسخگویی سرور'));
+      }
+    } catch (e: any) {
+      alert('خطای اتصال به سرور: ' + e.message);
+    } finally {
+      setTestingRebecca(false);
     }
   };
 
@@ -642,10 +777,6 @@ function SettingsView() {
   };
 
   const handleRestoreBackup = async () => {
-    if (!restorePassword) {
-      alert('لطفا ابتدا رمز عبور فایل بکاپ را وارد کنید.');
-      return;
-    }
     if (!selectedFile) {
       alert('لطفا ابتدا فایل بکاپ (.json) را انتخاب نمایید.');
       return;
@@ -662,20 +793,23 @@ function SettingsView() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               payload: fileContent,
-              password: restorePassword
+              password: restorePassword ? restorePassword.trim() : undefined
             })
           });
           const data = await res.json();
           if (data.success) {
-            alert('بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد! تمامی بخش‌ها لود خواهند شد.');
+            alert('✅ ' + (data.message || 'بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد! تمامی بخش‌ها به‌روزرسانی شدند.'));
             await refreshAppState();
+          } else if (data.isPasswordRequired) {
+            alert('🔒 این فایل پشتیبان با رمز عبور قفل شده است.\nلطفاً رمز عبور فایل را در کادر مربوطه وارد نمایید و مجدداً روی دکمه بازیابی کلیک کنید.');
           } else {
-            alert('پشتیبان بازیابی نشد: ' + data.message);
+            alert('❌ بازیابی انجام نشد: ' + (data.message || 'ساختار فایل نامعتبر است.'));
           }
         } catch (e: any) {
-          alert('خطا در رمزگشایی بکاپ. رمز وارد شده اشتباه است یا فایل مخدوش شده است.');
+          alert('خطا در ارتباط با سرور هنگام بازیابی بکاپ: ' + e.message);
+        } finally {
+          setActionLoading(false);
         }
-        setActionLoading(false);
       };
       reader.readAsText(selectedFile);
     } catch(e: any) {
@@ -860,138 +994,189 @@ function SettingsView() {
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-5 border-b pb-4">
-          <div>
-            <h2 className="text-lg font-bold flex items-center gap-2">
-              <RefreshCw className="w-5 h-5 text-emerald-600"/> 
-              {state.panel?.panelType === 'rebecca' ? 'مشخصات و اتصال پنل ربکا (Rebecca Panel)' : 'مشخصات و اتصال پنل سنایی و علیرضا (3X-UI)'}
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {state.panel?.panelType === 'rebecca' 
-                ? 'اتصال خودکار به REST API پنل ربکا بر پایه Xray و معماری مدرن Go' 
-                : 'اتصال خودکار به API پنل سنایی (3X-UI / MHSanaei / Alireza)'}
-            </p>
-          </div>
-          
-          {/* Panel Type Selector */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
-            <button
-              type="button"
-              onClick={() => setState({ ...state, panel: { ...state.panel, panelType: 'xui' } })}
-              className={`px-3 py-1.5 rounded-md font-medium transition flex items-center gap-1.5 ${state.panel?.panelType !== 'rebecca' ? 'bg-white shadow-sm text-indigo-700 font-bold' : 'text-slate-600 hover:text-slate-900'}`}
-            >
-              <span>3X-UI / سنایی</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setState({ ...state, panel: { ...state.panel, panelType: 'rebecca' } })}
-              className={`px-3 py-1.5 rounded-md font-medium transition flex items-center gap-1.5 ${state.panel?.panelType === 'rebecca' ? 'bg-purple-600 shadow-sm text-white font-bold' : 'text-slate-600 hover:text-slate-900'}`}
-            >
-              <span>ربکا (Rebecca)</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${state.panel?.panelType === 'rebecca' ? 'bg-purple-800 text-white' : 'bg-purple-100 text-purple-700'}`}>REST API</span>
-            </button>
+      {/* Panel Management Suite: Sanaei & Rebecca Independent Isolation */}
+      <div className="space-y-6">
+        {/* Panel Architecture & Mode Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-6 rounded-2xl shadow-md border border-slate-800">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xl">🎛️</span>
+                <h2 className="text-lg font-bold text-white">مدیریت و پیکربندی مستقل پنل‌های سرور (سنایی / 3X-UI و ربکا / Rebecca)</h2>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
+                پنل <strong>سنایی (3X-UI)</strong> و پنل <strong>ربکا (Rebecca)</strong> دارای ساختار، آدرس‌ها، پورت‌ها، پروتکل‌ها و روش‌های لاگین کاملاً مجزایی هستند. در این بخش هر دو پنل به صورت کاملاً مستقل و ایزوله پیکربندی و نگهداری می‌شوند.
+              </p>
+            </div>
+            
+            {/* Mode Selector */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-800/80 p-1.5 rounded-xl border border-slate-700 shrink-0 text-xs">
+              <button
+                type="button"
+                onClick={() => setState({ ...state, activePanelMode: 'both' })}
+                className={`px-3 py-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
+                  (state.activePanelMode || 'both') === 'both' 
+                    ? 'bg-emerald-600 text-white shadow' 
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+              >
+                <span>🌟 هر دو پنل فعال (همزمان)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setState({ ...state, activePanelMode: 'xui' })}
+                className={`px-3 py-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
+                  state.activePanelMode === 'xui' 
+                    ? 'bg-blue-600 text-white shadow' 
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+              >
+                <span>🔷 فقط سنایی (3X-UI)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setState({ ...state, activePanelMode: 'rebecca' })}
+                className={`px-3 py-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
+                  state.activePanelMode === 'rebecca' 
+                    ? 'bg-purple-600 text-white shadow' 
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+              >
+                <span>🟣 فقط ربکا (Rebecca)</span>
+              </button>
+            </div>
           </div>
         </div>
-        
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              {state.panel?.panelType === 'rebecca' ? 'آدرس کامل اتصال به پنل ربکا (HTTPS یا دامنه با پورت)' : 'آدرس کامل اتصال به پنل سنایی (X-UI URL)'}
-            </label>
-            <input 
-              type="text" 
-              value={state.panel.url || ''} 
-              onChange={e => setState({...state, panel: {...state.panel, url: e.target.value}})} 
-              className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 text-left font-mono" 
-              dir="ltr" 
-              placeholder={state.panel?.panelType === 'rebecca' ? 'https://rebecca.example.com:8000' : 'http://1.2.3.4:2053'} 
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                {state.panel?.panelType === 'rebecca' ? 'نام کاربری ادمین ربکا' : 'نام کاربری ورود به پنل'}
-              </label>
-              <input type="text" value={state.panel.username || ''} onChange={e => setState({...state, panel: {...state.panel, username: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
+
+        {/* Panel 1: Sanaei / 3X-UI Dedicated Card */}
+        <div className={`bg-white rounded-2xl shadow-sm border transition-all ${state.activePanelMode === 'rebecca' ? 'opacity-70 border-slate-200' : 'border-blue-200 ring-1 ring-blue-100'}`}>
+          <div className="bg-gradient-to-r from-blue-50/80 to-slate-50 p-5 rounded-t-2xl border-b border-blue-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+                X
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-800">مشخصات و اتصال پنل ۳X-UI / سنایی (MHSanaei / Alireza)</h3>
+                  <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-blue-200">
+                    کوکی / وب بیس‌پث
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">اتصال مستقیم به هسته Xray پنل‌های 3x-ui سنایی و علیرضا با پشتیبانی از پروتکل‌های Vless، Vmess و Trojan</p>
+              </div>
             </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <button 
+                type="button"
+                onClick={testSanaeiConnection}
+                disabled={testingSanaei}
+                className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>{testingSanaei ? 'در حال تست...' : 'تست اتصال سنایی'}</span>
+              </button>
+              <button 
+                type="button"
+                onClick={loadSanaeiInbounds}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>واکشی اینباندهای سنایی</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                {state.panel?.panelType === 'rebecca' ? 'رمز عبور ادمین ربکا' : 'رمز عبور ورود به پنل'}
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                آدرس کامل اتصال به پنل سنایی (IP یا دامنه همراه با پورت و در صورت وجود پروتکل):
               </label>
-              <input type="password" value={state.panel.password || ''} onChange={e => setState({...state, panel: {...state.panel, password: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500" />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              {state.panel?.panelType === 'rebecca' 
-                ? 'توکن دستی Bearer Token (اختیاری - در صورت تمایل به استفاده از توکن اختصاصی بدون نیاز به لاگین)' 
-                : 'کلید API Key اختصاصی پنل جدید (جهت عدم نیاز به نام کاربری و رمز عبور)'}
-            </label>
-            <input type="text" value={state.panel.apiKey || ''} onChange={e => setState({...state, panel: {...state.panel, apiKey: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-left" dir="ltr" placeholder={state.panel?.panelType === 'rebecca' ? 'eyJhbGciOiJIUzI1NiIsIn...' : 'vXg7hY...'} />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">دامنه یا بیس آدرس اختصاصی برای لینک‌های ساب (Subscription Base URL)</label>
-            <input type="text" value={state.panel.subUrlBase || ''} onChange={e => setState({...state, panel: {...state.panel, subUrlBase: e.target.value}})} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-left" dir="ltr" placeholder="https://sub.mydomain.com/" />
-            <p className="text-xs text-slate-400 mt-1">💡 اختیاری: اگر خالی بماند، لینک‌های ساب بر اساس آدرس اصلی پنل به صورت خودکار ساخته خواهند شد.</p>
-          </div>
-
-          <div className="space-y-4">
-            {state.panel?.panelType === 'rebecca' ? (
-              <div className="bg-purple-50 border border-purple-200 p-3.5 rounded-lg flex items-start gap-3">
-                <Settings2 className="w-5 h-5 text-purple-600 mt-0.5 shrink-0" />
-                <div className="text-sm text-purple-900">
-                  <p className="font-bold">راهنمای اتصال به پنل ربکا (Rebecca Panel):</p>
-                  <p className="mt-1">۱. آدرس پنل را با پروتکل <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">https://</code> یا همراه با پورت وارد کنید (پنل ربکا برای امنیت از دسترسی مستقیم IP بدون دامنه/SSL جلوگیری می‌کند).</p>
-                  <p>۲. ربات با استفاده از متد استاندارد OAuth2 از مسیر <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">/api/admin/token</code> لاگین کرده و توکن امنیتی دریافت می‌کند.</p>
-                  <p>۳. ساخت کلاینت‌ها، کنترل انقضا، ترافیک، بازیابی لینک‌های ساب V2Ray/Sing-box و قطع و وصل سرویس‌ها از طریق اندپوینت‌های اختصاصی <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">/api/user</code> و <code className="bg-purple-100 px-1.5 py-0.5 rounded font-mono" dir="ltr">/api/users</code> انجام می‌شود.</p>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-start gap-3">
-                <Settings2 className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
-                <div className="text-sm text-amber-800">
-                  <p className="font-bold">راهنمای اتصال به پنل سنایی (MHSanaei):</p>
-                  <p className="mt-1">۱. آدرس پنل را با پورت وارد کنید (مثلا <code className="bg-amber-100 px-1 rounded font-mono" dir="ltr">http://1.2.3.4:2053</code>).</p>
-                  <p>۲. اگر «Web Base Path» در تنظیمات پنل دارید، آن را به انتهای آدرس اضافه نکنید (ربات خودکار شناسایی می‌کند).</p>
-                  <p>۳. پیشنهاد می‌شود از کلید API برای امنیت و سرعت بیشتر استفاده کنید.</p>
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button 
-                onClick={testConnection} 
-                className="flex-1 bg-slate-800 text-white px-4 py-2.5 rounded-md hover:bg-slate-900 transition flex items-center justify-center font-medium shadow-sm"
-              >
-                <Zap className="w-4 h-4 ml-2" /> تست سریع و شناسایی پنل
-              </button>
-              <button 
-                onClick={loadInbounds} 
-                className="flex-1 bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 transition flex items-center justify-center font-medium shadow-sm"
-              >
-                <RefreshCw className="w-4 h-4 ml-2" /> واکشی اینباندها / نودها
-              </button>
+              <input 
+                type="text" 
+                value={state.panel?.url || ''} 
+                onChange={e => setState({ ...state, panel: { ...state.panel, url: e.target.value, panelType: 'xui' } })} 
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-left font-mono text-sm bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="http://1.2.3.4:2053 یا https://panel.example.com:2053" 
+              />
+              <p className="text-[11px] text-slate-400 mt-1">💡 نیازی به وارد کردن مسیر /panel یا /api در انتهای آدرس نیست؛ سیستم به صورت خودکار شناسایی می‌کند.</p>
             </div>
 
-            <div className="space-y-2 border-t pt-4">
-              <label className="block text-sm font-medium text-slate-700">اینباندهای پیش‌فرض (Global Inbounds)</label>
-              <p className="text-[11px] text-slate-400">اینباندهایی که تیک می‌زنید، مقصد پیش‌فرض برای تمام فروش‌ها خواهند بود.</p>
-              
-              {inbounds.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 p-3 bg-slate-50 rounded-lg border max-h-60 overflow-y-auto">
-                  {inbounds.map((ib: any) => {
-                    const isChecked = (state.panel.inboundIds || []).includes(ib.id) || (state.panel.inboundId === ib.id);
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">نام کاربری ادمین پنل سنایی</label>
+                <input 
+                  type="text" 
+                  value={state.panel?.username || ''} 
+                  onChange={e => setState({ ...state, panel: { ...state.panel, username: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm" 
+                  placeholder="admin"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">رمز عبور ورود به پنل سنایی</label>
+                <input 
+                  type="password" 
+                  value={state.panel?.password || ''} 
+                  onChange={e => setState({ ...state, panel: { ...state.panel, password: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm font-mono" 
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">کلید API Key اختصاصی پنل سنایی (اختیاری جهت امنیت بیشتر)</label>
+                <input 
+                  type="text" 
+                  value={state.panel?.apiKey || ''} 
+                  onChange={e => setState({ ...state, panel: { ...state.panel, apiKey: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono text-left text-sm" 
+                  dir="ltr" 
+                  placeholder="کلید API سنایی (در صورت فعال بودن در پنل)" 
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">دامنه یا بیس اختصاصی لینک‌های ساب سنایی (اختیاری)</label>
+                <input 
+                  type="text" 
+                  value={state.panel?.subUrlBase || ''} 
+                  onChange={e => setState({ ...state, panel: { ...state.panel, subUrlBase: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono text-left text-sm" 
+                  dir="ltr" 
+                  placeholder="https://sub.mydomain.com/" 
+                />
+              </div>
+            </div>
+
+            {/* Inbounds selector for Sanaei */}
+            <div className="border-t border-slate-100 pt-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700">اینباندهای پیش‌فرض پنل سنایی (Global Sanaei Inbounds)</label>
+                  <p className="text-[11px] text-slate-400">اینباندهایی که علامت می‌زنید مقصد اتصال کلاینت‌های سنایی خواهند بود.</p>
+                </div>
+                {sanaeiInbounds.length > 0 && (
+                  <span className="text-xs text-blue-600 font-semibold bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                    {sanaeiInbounds.length} اینباند شناسایی شده
+                  </span>
+                )}
+              </div>
+
+              {(sanaeiInbounds.length > 0 || inbounds.length > 0) ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 bg-blue-50/30 rounded-xl border border-blue-100 max-h-56 overflow-y-auto">
+                  {(sanaeiInbounds.length > 0 ? sanaeiInbounds : inbounds).map((ib: any) => {
+                    const isChecked = (state.panel?.inboundIds || []).includes(ib.id) || (state.panel?.inboundId === ib.id);
                     return (
-                      <label key={ib.id} className="flex items-center gap-2 p-2 hover:bg-white rounded border border-transparent hover:border-slate-200 transition text-sm text-slate-700 cursor-pointer select-none">
+                      <label key={ib.id} className="flex items-center gap-2 p-2 hover:bg-white rounded-lg border border-transparent hover:border-blue-200 transition text-xs text-slate-700 cursor-pointer select-none bg-white/70 shadow-2xs">
                         <input 
                           type="checkbox" 
                           checked={isChecked}
                           onChange={e => {
-                            let updatedIds = [...(state.panel.inboundIds || [])];
-                            if (state.panel.inboundId && !updatedIds.includes(state.panel.inboundId)) {
+                            let updatedIds = [...(state.panel?.inboundIds || [])];
+                            if (state.panel?.inboundId && !updatedIds.includes(state.panel.inboundId)) {
                               updatedIds.push(state.panel.inboundId);
                             }
                             if (e.target.checked) {
@@ -1008,60 +1193,230 @@ function SettingsView() {
                               }
                             });
                           }}
-                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
                         />
-                        <div className="flex flex-col">
-                          <span className="font-bold text-slate-800">{ib.remark}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">Port: {ib.port} | ID: {ib.id}</span>
+                        <div className="flex flex-col min-w-0">
+                          <span className="font-bold text-slate-800 truncate">{ib.remark || `اینباند ${ib.id}`}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">پورت: {ib.port} | پروتکل: {ib.protocol} | ID: {ib.id}</span>
                         </div>
                       </label>
                     );
                   })}
                 </div>
               ) : (
-                <div className="p-8 border-2 border-dashed border-slate-200 rounded-lg flex flex-col items-center justify-center text-slate-400 bg-slate-50">
-                  <Box className="w-10 h-10 mb-2 opacity-20" />
-                  <p className="text-sm">هنوز لیستی دریافت نشده است.</p>
-                  <button onClick={loadInbounds} className="mt-2 text-indigo-600 text-xs font-bold hover:underline">دریافت همین حالا</button>
+                <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-between text-slate-400 bg-slate-50 text-xs">
+                  <span>لیست اینباندهای سنایی هنوز دریافت نشده است.</span>
+                  <button type="button" onClick={loadSanaeiInbounds} className="text-blue-600 font-bold hover:underline">
+                    واکشی اینباندهای سنایی
+                  </button>
                 </div>
               )}
             </div>
-          </div>
 
-          {inbounds.length > 0 && (
-            <div className="mt-4 border rounded-md overflow-hidden bg-slate-50">
-               <table className="w-full text-sm text-right">
-                  <thead className="bg-slate-100 text-slate-600 border-b">
-                    <tr>
-                      <th className="px-4 py-2 font-medium">شناسه ID</th>
-                      <th className="px-4 py-2 font-medium">عنوان (Remark)</th>
-                      <th className="px-4 py-2 font-medium">پورت</th>
-                      <th className="px-4 py-2 font-medium">پروتکل</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {inbounds.map((ib: any) => (
-                      <tr key={ib.id} className="border-b last:border-0 hover:bg-white cursor-pointer" onClick={() => setState({...state, panel: { ...state.panel, inboundId: ib.id }})}>
-                        <td className="px-4 py-2 font-mono">{ib.id}</td>
-                        <td className="px-4 py-2 font-bold text-slate-800">{ib.remark}</td>
-                        <td className="px-4 py-2 font-mono">{ib.port}</td>
-                        <td className="px-4 py-2 text-indigo-600 font-bold">{ib.protocol}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-               </table>
-               <p className="text-xs text-emerald-600 p-2 text-center font-medium">💡 با کلیک روی هر ردیف بالا, شناسه آن به صورت اتوماتیک انتخاب می‌شود.</p>
+            <div className="flex justify-end pt-2">
+              <button 
+                type="button" 
+                onClick={saveSanaeiPanel} 
+                disabled={savingSanaei} 
+                className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition flex items-center text-xs font-bold shadow-sm"
+              >
+                <Save className="w-4 h-4 ml-1.5" /> 
+                {savingSanaei ? 'در حال ذخیره‌سازی...' : 'ذخیره اختصاصی اطلاعات پنل سنایی'}
+              </button>
             </div>
-          )}
-
-          <div className="flex gap-2 mr-auto">
-            <button onClick={testConnection} className="bg-slate-800 text-white px-4 py-2 rounded-md hover:bg-slate-900 transition flex items-center">
-              <Zap className="w-4 h-4 ml-2" /> تست سریع اتصال
-            </button>
-            <button onClick={savePanel} disabled={saving} className="bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 transition flex items-center">
-              <Save className="w-4 h-4 ml-2" /> ذخیره اطلاعات اتصال پنل
-            </button>
           </div>
+        </div>
+
+        {/* Panel 2: Rebecca Panel Dedicated Card */}
+        <div className={`bg-white rounded-2xl shadow-sm border transition-all ${state.activePanelMode === 'xui' ? 'opacity-70 border-slate-200' : 'border-purple-200 ring-1 ring-purple-100'}`}>
+          <div className="bg-gradient-to-r from-purple-50/80 to-slate-50 p-5 rounded-t-2xl border-b border-purple-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+                R
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-800">مشخصات و اتصال پنل ربکا (Rebecca Panel)</h3>
+                  <span className="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-purple-200">
+                    REST API / Go Core
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">اتصال مدرن به REST API پنل ربکا با توکن امنیتی OAuth2 Bearer و سیستم انقضای دقیق</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <button 
+                type="button"
+                onClick={testRebeccaConnection}
+                disabled={testingRebecca}
+                className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>{testingRebecca ? 'در حال تست...' : 'تست اتصال ربکا'}</span>
+              </button>
+              <button 
+                type="button"
+                onClick={loadRebeccaInbounds}
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 shadow-sm"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>واکشی پروتکل‌های ربکا</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                آدرس کامل اتصال به پنل ربکا (دامنه HTTPS با پورت یا آدرس مستقیم وب‌سرویس ربکا):
+              </label>
+              <input 
+                type="text" 
+                value={state.rebeccaPanel?.url || ''} 
+                onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, url: e.target.value, panelType: 'rebecca' } })} 
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-left font-mono text-sm bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="https://rebecca.example.com:8000 یا https://sub.domain.com" 
+              />
+              <p className="text-[11px] text-purple-600 mt-1">🔒 پنل ربکا برای ارتباط امن نیازمند دسترسی از طریق دامنه/پروتکل HTTPS یا پورت REST API ادمین است.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">نام کاربری ادمین پنل ربکا</label>
+                <input 
+                  type="text" 
+                  value={state.rebeccaPanel?.username || ''} 
+                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, username: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-sm" 
+                  placeholder="admin"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">رمز عبور ادمین پنل ربکا</label>
+                <input 
+                  type="password" 
+                  value={state.rebeccaPanel?.password || ''} 
+                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, password: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-sm font-mono" 
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">توکن دسترسی Bearer Token ربکا (اختیاری جهت اتصال بدون لاگین)</label>
+                <input 
+                  type="text" 
+                  value={state.rebeccaPanel?.apiKey || ''} 
+                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, apiKey: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 font-mono text-left text-sm" 
+                  dir="ltr" 
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." 
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">دامنه یا بیس اختصاصی لینک‌های ساب ربکا (اختیاری)</label>
+                <input 
+                  type="text" 
+                  value={state.rebeccaPanel?.subUrlBase || ''} 
+                  onChange={e => setState({ ...state, rebeccaPanel: { ...state.rebeccaPanel, subUrlBase: e.target.value } })} 
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 font-mono text-left text-sm" 
+                  dir="ltr" 
+                  placeholder="https://sub-rebecca.mydomain.com/" 
+                />
+              </div>
+            </div>
+
+            {/* Inbounds selector for Rebecca */}
+            <div className="border-t border-slate-100 pt-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700">اینباندها و پروتکل‌های پیش‌فرض ربکا (Rebecca Inbounds/Tags)</label>
+                  <p className="text-[11px] text-slate-400">تگ‌ها یا اینباندهایی که علامت می‌زنید مقصد اتصال کلاینت‌های ربکا خواهند بود.</p>
+                </div>
+                {rebeccaInbounds.length > 0 && (
+                  <span className="text-xs text-purple-600 font-semibold bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200">
+                    {rebeccaInbounds.length} پروتکل شناسایی شده
+                  </span>
+                )}
+              </div>
+
+              {rebeccaInbounds.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 bg-purple-50/30 rounded-xl border border-purple-100 max-h-56 overflow-y-auto">
+                  {rebeccaInbounds.map((ib: any) => {
+                    const isChecked = (state.rebeccaPanel?.inboundIds || []).includes(ib.id) || (state.rebeccaPanel?.inboundId === ib.id);
+                    return (
+                      <label key={ib.id} className="flex items-center gap-2 p-2 hover:bg-white rounded-lg border border-transparent hover:border-purple-200 transition text-xs text-slate-700 cursor-pointer select-none bg-white/70 shadow-2xs">
+                        <input 
+                          type="checkbox" 
+                          checked={isChecked}
+                          onChange={e => {
+                            let updatedIds = [...(state.rebeccaPanel?.inboundIds || [])];
+                            if (e.target.checked) {
+                              if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                            } else {
+                              updatedIds = updatedIds.filter(id => id !== ib.id);
+                            }
+                            setState({
+                              ...state,
+                              rebeccaPanel: {
+                                ...state.rebeccaPanel,
+                                inboundIds: updatedIds,
+                                inboundId: updatedIds[0] || undefined
+                              }
+                            });
+                          }}
+                          className="rounded border-slate-300 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                        />
+                        <div className="flex flex-col min-w-0">
+                          <span className="font-bold text-slate-800 truncate">{ib.tag || ib.remark || `پروتکل ${ib.protocol}`}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">پروتکل: {ib.protocol} | پورت: {ib.port || 'Auto'}</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-between text-slate-400 bg-slate-50 text-xs">
+                  <span>لیست پروتکل‌های ربکا هنوز دریافت نشده است.</span>
+                  <button type="button" onClick={loadRebeccaInbounds} className="text-purple-600 font-bold hover:underline">
+                    واکشی پروتکل‌های ربکا
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button 
+                type="button" 
+                onClick={saveRebeccaPanel} 
+                disabled={savingRebecca} 
+                className="bg-purple-600 text-white px-5 py-2 rounded-lg hover:bg-purple-700 transition flex items-center text-xs font-bold shadow-sm"
+              >
+                <Save className="w-4 h-4 ml-1.5" /> 
+                {savingRebecca ? 'در حال ذخیره‌سازی...' : 'ذخیره اختصاصی اطلاعات پنل ربکا'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Global Save Button for Everything */}
+        <div className="bg-slate-100 p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="text-xs text-slate-600">
+            💡 برای ذخیره همزمان هر دو پنل و حالت فعال سیستم، می‌توانید از دکمه روبه‌رو استفاده نمایید.
+          </div>
+          <button 
+            type="button" 
+            onClick={saveAllPanels} 
+            disabled={saving} 
+            className="w-full sm:w-auto bg-emerald-600 text-white px-6 py-2.5 rounded-lg hover:bg-emerald-700 transition flex items-center justify-center text-xs font-bold shadow-sm"
+          >
+            <Save className="w-4 h-4 ml-1.5" /> 
+            {saving ? 'در حال ذخیره‌سازی...' : 'ذخیره یکپارچه کلیه تنظیمات پنل‌ها و وضعیت سرورها'}
+          </button>
         </div>
       </div>
 
@@ -1304,15 +1659,16 @@ function SettingsView() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-650 mb-1 text-right">رمز بازگشایی (اگر فایل رمزشده است وارد کنید):</label>
+                  <label className="block text-xs font-medium text-slate-650 mb-1 text-right">رمز بازگشایی (فقط در صورتی که فایل رمزشده باشد):</label>
                   <input 
                     type="password" 
                     value={restorePassword} 
                     onChange={e => setRestorePassword(e.target.value)} 
                     className="w-full px-3 py-1.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 font-mono text-xs text-left" 
                     dir="ltr"
-                    placeholder="رمز عبور بکاپ" 
+                    placeholder="اختیاری - برای فایل‌های بکاپ معمولی و قدیمی خالی بگذارید" 
                   />
+                  <p className="text-[11px] text-slate-400 mt-1 text-right">💡 این موتور به صورت خودکار انواع بکاپ‌های قدیمی، فایل‌های db.json خام و بکاپ‌های رمزگذاری‌شده را شناسایی و بازیابی می‌کند.</p>
                 </div>
               </div>
 

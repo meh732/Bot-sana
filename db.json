@@ -1,0 +1,38 @@
+{
+  "botToken": "BOM_TEST_TOKEN",
+  "panel": {
+    "panelType": "xui",
+    "url": "http://enc.test:2053",
+    "username": "u",
+    "password": "p",
+    "apiKey": "",
+    "subUrlBase": "",
+    "inboundIds": [
+      2
+    ]
+  },
+  "rebeccaPanel": {
+    "panelType": "rebecca",
+    "url": "",
+    "username": "",
+    "password": "pass456",
+    "apiKey": "",
+    "subUrlBase": "",
+    "inboundIds": []
+  },
+  "activePanelMode": "both",
+  "products": [],
+  "users": [],
+  "freeTestVolumeGb": 1,
+  "freeTestDurationDays": 3,
+  "freeTestEnabled": true,
+  "adminIds": [],
+  "referralRewardToman": 0,
+  "cardNumber": "۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸",
+  "cardHolder": "نام مدیر حساب",
+  "supportUsername": "",
+  "coupons": [],
+  "categories": [],
+  "freeTestInboundIds": [],
+  "lastAutoBackupSent": 0
+}

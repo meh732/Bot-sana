@@ -8,7 +8,9 @@ import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
 import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit } from "./server/bot.js";
 import { xui } from "./server/xui.js";
+import { rebecca } from "./server/rebecca.js";
 import { encryptData, decryptData } from "./server/crypto.js";
+import { restoreAnyBackup } from "./server/backupEngine.js";
 
 // Helpers to parse inbound IDs dynamically (supports string tags like "d1" or numbers like 1)
 function parseInboundId(val: any): string | number | undefined {
@@ -61,21 +63,29 @@ async function startServer() {
 
   api.get("/state", (req, res) => {
     const state = db.getState();
-    // Hide password in UI
+    // Hide password in UI and ensure both panels have full structure
     const safeState = {
       ...state,
+      activePanelMode: state.activePanelMode || 'both',
       panel: {
-        ...state.panel,
-        password: state.panel?.password ? '********' : ''
-      },
-      rebeccaPanel: state.rebeccaPanel ? {
-        ...state.rebeccaPanel,
-        password: state.rebeccaPanel.password ? '********' : ''
-      } : {
         url: '',
         username: '',
-        password: '',
-        panelType: 'rebecca'
+        apiKey: '',
+        subUrlBase: '',
+        inboundIds: [],
+        ...state.panel,
+        panelType: 'xui' as const,
+        password: state.panel?.password ? '********' : ''
+      },
+      rebeccaPanel: {
+        url: '',
+        username: '',
+        apiKey: '',
+        subUrlBase: '',
+        inboundIds: [],
+        ...(state.rebeccaPanel || {}),
+        panelType: 'rebecca' as const,
+        password: state.rebeccaPanel?.password ? '********' : ''
       }
     };
     res.json(safeState);
@@ -142,42 +152,49 @@ async function startServer() {
 
   api.post("/update-panel", async (req, res) => {
     const { 
-      panelType, url, username, password, inboundId, inboundIds, apiKey, subUrlBase,
-      activePanelMode, rebeccaPanel 
+      panel,
+      rebeccaPanel,
+      activePanelMode,
+      panelType, url, username, password, inboundId, inboundIds, apiKey, subUrlBase
     } = req.body;
     const currentState = db.getState();
-    
-    const newPanel = { ...currentState.panel };
-    if (panelType !== undefined) newPanel.panelType = panelType;
-    if (url !== undefined) newPanel.url = url;
-    if (username !== undefined) newPanel.username = username;
-    if (password && password !== '********') newPanel.password = password;
-    if (inboundId !== undefined) newPanel.inboundId = parseInboundId(inboundId);
-    if (inboundIds !== undefined) {
-      newPanel.inboundIds = parseInboundIds(inboundIds);
-    }
-    if (apiKey !== undefined) newPanel.apiKey = apiKey;
-    if (subUrlBase !== undefined) newPanel.subUrlBase = subUrlBase;
+    const updates: any = {};
 
-    const updates: any = { panel: newPanel };
     if (activePanelMode !== undefined) {
       updates.activePanelMode = activePanelMode;
     }
 
+    // 1. Process Sanaei (3X-UI) panel configuration
+    const srcPanel = panel || (url !== undefined || username !== undefined || password !== undefined || apiKey !== undefined || inboundIds !== undefined || subUrlBase !== undefined ? req.body : null);
+    if (srcPanel) {
+      const newPanel = { ...currentState.panel, panelType: 'xui' as const };
+      if (srcPanel.url !== undefined) newPanel.url = srcPanel.url;
+      if (srcPanel.username !== undefined) newPanel.username = srcPanel.username;
+      if (srcPanel.password && srcPanel.password !== '********') newPanel.password = srcPanel.password;
+      if (srcPanel.inboundId !== undefined) newPanel.inboundId = parseInboundId(srcPanel.inboundId);
+      if (srcPanel.inboundIds !== undefined) {
+        newPanel.inboundIds = parseInboundIds(srcPanel.inboundIds);
+      }
+      if (srcPanel.apiKey !== undefined) newPanel.apiKey = srcPanel.apiKey;
+      if (srcPanel.subUrlBase !== undefined) newPanel.subUrlBase = srcPanel.subUrlBase;
+      updates.panel = newPanel;
+    }
+
+    // 2. Process Rebecca panel configuration
     if (rebeccaPanel) {
-      const currentReb = currentState.rebeccaPanel || { url: '', username: '', password: '', panelType: 'rebecca' };
-      const newReb = { ...currentReb };
+      const currentReb = currentState.rebeccaPanel || { url: '', username: '', password: '', panelType: 'rebecca' as const };
+      const newReb = { ...currentReb, panelType: 'rebecca' as const };
       if (rebeccaPanel.url !== undefined) newReb.url = rebeccaPanel.url;
       if (rebeccaPanel.username !== undefined) newReb.username = rebeccaPanel.username;
       if (rebeccaPanel.password && rebeccaPanel.password !== '********') newReb.password = rebeccaPanel.password;
+      if (rebeccaPanel.apiKey !== undefined) newReb.apiKey = rebeccaPanel.apiKey;
       if (rebeccaPanel.subUrlBase !== undefined) newReb.subUrlBase = rebeccaPanel.subUrlBase;
       if (rebeccaPanel.inboundIds !== undefined) newReb.inboundIds = parseInboundIds(rebeccaPanel.inboundIds);
-      newReb.panelType = 'rebecca';
       updates.rebeccaPanel = newReb;
     }
 
     db.updateState(updates);
-    res.json({ success: true });
+    res.json({ success: true, message: 'تنظیمات پنل(ها) با موفقیت ذخیره شد.' });
   });
 
   api.post("/broadcast", async (req, res) => {
@@ -190,6 +207,24 @@ async function startServer() {
       res.json({ success: true, ...stats });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message || 'خطا در ارسال پیام همگانی.' });
+    }
+  });
+
+  api.get("/sanaei-inbounds", async (req, res) => {
+    try {
+      const inbounds = await xui.getXuiInboundsDirect();
+      res.json({ success: true, inbounds: inbounds || [] });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message, inbounds: [] });
+    }
+  });
+
+  api.get("/rebecca-inbounds", async (req, res) => {
+    try {
+      const inbounds = await rebecca.getInbounds();
+      res.json({ success: true, inbounds: inbounds || [] });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message, inbounds: [] });
     }
   });
 
@@ -208,8 +243,22 @@ async function startServer() {
 
   api.post("/test-panel-connection", async (req, res) => {
     try {
-      const { panelType, url, username, password, apiKey, xui: xuiConf, rebecca: rebConf } = req.body;
-      const result = await xui.testConnection({ panelType, url, username, password, apiKey, xui: xuiConf, rebecca: rebConf });
+      const { panelType, config, url, username, password, apiKey, xui: xuiConf, rebecca: rebConf } = req.body;
+      const targetType = panelType || config?.panelType || 'xui';
+
+      if (targetType === 'rebecca') {
+        const confToTest = config || (url ? { url, username, password, apiKey } : db.getState().rebeccaPanel);
+        const result = await rebecca.testConnection(confToTest);
+        return res.json(result);
+      }
+
+      if (targetType === 'xui') {
+        const confToTest = config || (url ? { url, username, password, apiKey } : db.getState().panel);
+        const result = await xui.testXuiDirect(confToTest);
+        return res.json(result);
+      }
+
+      const result = await xui.testConnection({ panelType: targetType, url, username, password, apiKey, xui: xuiConf, rebecca: rebConf });
       res.json(result);
     } catch (e: any) {
        res.json({ success: false, message: e.message });
@@ -240,28 +289,18 @@ async function startServer() {
   api.post("/restore", (req, res) => {
     try {
       const { payload, password } = req.body;
-      if (!payload || !password) {
-        return res.status(400).json({ success: false, message: 'مقادیر بکاپ و رمز عبور الزامی می‌باشند.' });
+      if (!payload) {
+        return res.status(400).json({ success: false, message: 'محتوای فایل پشتیبان دریافت نشد.' });
       }
       
-      const decryptedData = decryptData(payload, password);
-      const parsed = JSON.parse(decryptedData);
-      
-      if (!parsed.users || !parsed.panel) {
-        return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. بخش‌های حیاتی خالی هستند.' });
+      const result = restoreAnyBackup(payload, password);
+      if (!result.success) {
+        return res.status(400).json(result);
       }
-      
-      // Write to db.json and update memory state
-      const dbPath = path.join(process.cwd(), 'db.json');
-      fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
-      db.updateState(parsed);
-      
-      // Re-initialize the Telegram bot
-      initBot();
-      
-      res.json({ success: true, message: 'موفقیت‌آمیز: کل دیتابیس و تنظیمات با موفقیت بازیابی شد.' });
+
+      res.json(result);
     } catch (e: any) {
-      res.status(400).json({ success: false, message: e.message || 'خطا در رمزگشایی یا بازیابی دیتابیس.' });
+      res.status(500).json({ success: false, message: e.message || 'خطا در بازیابی دیتابیس.' });
     }
   });
 
@@ -321,23 +360,13 @@ async function startServer() {
       }
 
       const rawData = fs.readFileSync(backupPath, 'utf8');
-      const parsed = JSON.parse(rawData);
+      const result = restoreAnyBackup(rawData);
 
-      if (!parsed.panel || !parsed.users) {
-        return res.status(400).json({ success: false, message: 'ساختار فایل پشتیبان معتبر نیست.' });
+      if (!result.success) {
+        return res.status(400).json(result);
       }
 
-      // Overwrite db.json
-      const dbPath = path.join(process.cwd(), 'db.json');
-      fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
-      
-      // Update DB state
-      db.updateState(parsed);
-
-      // Re-initialize bot
-      initBot();
-
-      res.json({ success: true, message: 'موفقیت‌آمیز: کل دیتابیس با موفقیت به این نقطه بازیابی بازگردانده شد.' });
+      res.json({ success: true, message: `موفقیت‌آمیز: کل دیتابیس با موفقیت به نقطه بازیابی "${filename}" بازگردانده شد.` });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message || 'خطا در بازیابی اطلاعات با فایل نقطه‌ای.' });
     }

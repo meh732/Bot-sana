@@ -1,0 +1,27 @@
+{
+  "botToken": "",
+  "panel": {
+    "panelType": "xui",
+    "url": "http://1.2.3.4:2053",
+    "username": "sanaei_admin",
+    "password": "pass123"
+  },
+  "rebeccaPanel": {
+    "panelType": "rebecca",
+    "url": "https://rebecca.example.com:8000",
+    "username": "rebecca_admin",
+    "password": "pass456"
+  },
+  "activePanelMode": "both",
+  "products": [],
+  "users": [],
+  "freeTestVolumeGb": 1,
+  "freeTestDurationDays": 3,
+  "freeTestEnabled": true,
+  "adminIds": [],
+  "referralRewardToman": 0,
+  "cardNumber": "۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸",
+  "cardHolder": "نام مدیر حساب",
+  "supportUsername": "",
+  "coupons": []
+}

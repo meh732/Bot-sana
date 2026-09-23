@@ -3,6 +3,7 @@ import { db } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
 import { encryptData, decryptData } from './crypto.js';
+import { restoreAnyBackup } from './backupEngine.js';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -2458,7 +2459,7 @@ export async function initBot() {
       if (sessionType && sessionType.startsWith('restore_pass_')) {
         const fileId = sessionType.replace('restore_pass_', '');
         const backupPassword = text.trim();
-        bot!.sendMessage(chatId, '⏳ در حال دریافت و رمزگشایی فایل پشتیبان...');
+        bot!.sendMessage(chatId, '⏳ در حال دریافت و بازیابی فایل پشتیبان...');
         try {
           const file = await bot!.getFile(fileId);
           const dUrl = `https://api.telegram.org/file/bot${state.botToken}/${file.file_path}`;
@@ -2469,24 +2470,16 @@ export async function initBot() {
             fileData = JSON.stringify(fileData);
           }
           
-          const decryptedData = decryptData(fileData, backupPassword);
-          const parsed = JSON.parse(decryptedData);
-          
-          if (!parsed.panel || !parsed.users) {
-            throw new Error('محتوای فایل معتبر نمی‌باشد.');
+          const result = restoreAnyBackup(fileData, backupPassword);
+          if (!result.success) {
+            bot!.sendMessage(chatId, `❌ خطا در بازیابی فایل: ${result.message}\n\nلطفاً مجدداً رمز صحیح را وارد کنید یا فایل سالم دیگری ارسال فرمایید.`);
+            return;
           }
-          
-          const dbPath = path.join(process.cwd(), 'db.json');
-          fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
-          db.updateState(parsed);
-          
-          bot!.sendMessage(chatId, '✅ بازیابی کامل اطلاعات با موفقیت انجام شد! تمامی کاربران، محصولات، تراکنش‌ها، کانکشن پنل سنایی و تنظیمات ربات با موفقیت جایگذاری و دیتابیس همگام شد. 🎉');
-          
-          setTimeout(() => {
-            initBot();
-          }, 1500);
+
+          adminSession.delete(chatId);
+          bot!.sendMessage(chatId, `✅ بازیابی کامل اطلاعات با موفقیت انجام شد! 🎉\n\n${result.message}\n\n📊 آمار اطلاعات بازیابی‌شده:\n👥 کاربران: ${result.stats?.usersCount || 0}\n📦 محصولات: ${result.stats?.productsCount || 0}\n📂 دسته‌بندی‌ها: ${result.stats?.categoriesCount || 0}`);
         } catch (err: any) {
-          bot!.sendMessage(chatId, `❌ خطا در رمزگشایی و بازیابی فایل: ${err.message}\n\nلطفا مجدداً رمز صحیح را بازنویسی کنید یا فایل بکاپ سالمی ارسال کنید.`);
+          bot!.sendMessage(chatId, `❌ خطا در پردازش فایل پشتیبان: ${err.message}`);
         }
         return;
       }
@@ -2825,9 +2818,45 @@ export async function initBot() {
     // Restore Backup System if admin uploads the json document
     if (msg.document) {
       const state = db.getState();
-      if (state.adminIds.includes(chatId) && msg.document.file_name?.endsWith('.json')) {
-        adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
-        bot!.sendMessage(chatId, '📥 فایل پشتیبان دریافت شد.\n\n🔑 لطفا رمز عبور فایل بکاپ را ارسال کُنید تا رمزگشایی و بازیابی اطلاعات انجام شود:');
+      if (state.adminIds.includes(chatId) && (msg.document.file_name?.endsWith('.json') || msg.document.mime_type?.includes('json'))) {
+        try {
+          bot!.sendMessage(chatId, '⏳ در حال دریافت و بررسی فایل پشتیبان...');
+          const file = await bot!.getFile(msg.document.file_id);
+          const dUrl = `https://api.telegram.org/file/bot${state.botToken}/${file.file_path}`;
+          const res = await axios.get(dUrl);
+          let fileData = res.data;
+          if (typeof fileData === 'object') {
+            fileData = JSON.stringify(fileData);
+          }
+
+          // Check if it is encrypted
+          let isEncrypted = false;
+          try {
+            const parsed = typeof fileData === 'string' ? JSON.parse(fileData.replace(/^\uFEFF/, '').trim()) : fileData;
+            if (parsed && parsed.type === 'sanaei_bot_secured_backup' && parsed.iv && parsed.encryptedData) {
+              isEncrypted = true;
+            }
+          } catch (e) {}
+
+          if (isEncrypted) {
+            adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
+            bot!.sendMessage(chatId, '🔒 این فایل پشتیبان دارای رمز عبور است.\n\n🔑 لطفاً رمز عبور فایل بکاپ را ارسال نمایید تا اطلاعات بازیابی گردد:');
+            return;
+          }
+
+          // Plain JSON or legacy backup -> restore directly!
+          const result = restoreAnyBackup(fileData);
+          if (result.success) {
+            bot!.sendMessage(chatId, `✅ بازیابی با موفقیت انجام شد! 🎉\n\n${result.message}\n\n📊 آمار اطلاعات بازیابی‌شده:\n👥 کاربران: ${result.stats?.usersCount || 0}\n📦 محصولات: ${result.stats?.productsCount || 0}\n📂 دسته‌بندی‌ها: ${result.stats?.categoriesCount || 0}`);
+          } else if (result.isPasswordRequired) {
+            adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
+            bot!.sendMessage(chatId, '🔒 این فایل پشتیبان رمزگذاری شده است.\n\n🔑 لطفاً رمز عبور فایل را بفرستید:');
+          } else {
+            bot!.sendMessage(chatId, `❌ بازیابی فایل پشتیبان انجام نشد: ${result.message}`);
+          }
+        } catch (err: any) {
+          bot!.sendMessage(chatId, `❌ خطا در بارگیری یا پردازش فایل: ${err.message}`);
+        }
         return;
       }
     }
