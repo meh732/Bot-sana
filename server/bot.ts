@@ -2853,8 +2853,21 @@ export async function initBot() {
               console.error(`[ForceJoin Check Ignored] ${chId}:`, (e as any)?.message);
            }
        }
-       if (unjoinedChannels.length > 0 && data !== 'check_join') {
+       if (unjoinedChannels.length > 0) {
            bot!.answerCallbackQuery(query.id, { text: '⚠️ ابتدا در کانال‌های تعیین شده عضو شوید.', show_alert: true }).catch(() => {});
+           const buttons: any[] = unjoinedChannels.map(ch => ([
+             { text: `📢 عضویت در ${ch.title || ch.name || ch.id}`, url: ch.link || (ch.id.startsWith('@') ? `https://t.me/${ch.id.slice(1)}` : `https://t.me/${ch.id}`) }
+           ]));
+           buttons.push([{ text: '✅ بررسی عضویت (تایید)', callback_data: 'check_join' }]);
+           bot!.sendMessage(chatId, '⚠️ جهت استفاده از خدمات ربات، ابتدا باید در کانال‌های زیر عضو شوید:', {
+             reply_markup: { inline_keyboard: buttons }
+           }).catch(() => {});
+           return;
+       } else if (data === 'check_join') {
+           bot!.answerCallbackQuery(query.id, { text: '✅ عضویت شما تایید شد!', show_alert: true }).catch(() => {});
+           bot!.sendMessage(chatId, '✅ عضویت شما با موفقیت تایید شد.\nاکنون می‌توانید از تمام خدمات ربات استفاده کنید.', {
+             reply_markup: getUserReplyKeyboard(db.getUser(chatId), state, isAdmin)
+           }).catch(() => {});
            return;
        }
     }
@@ -3937,8 +3950,10 @@ export async function initBot() {
         if (p.disabled) return false;
         if (categoryId === 'uncategorized') return !p.categoryId;
         if (!p.categoryId) return false;
-        const pCatStr = String(p.categoryId);
-        return pCatStr === targetCatId || pCatStr === targetCatName || pCatStr === String(categoryId);
+        const pCatStr = String(p.categoryId).trim().toLowerCase();
+        return pCatStr === targetCatId.trim().toLowerCase() || 
+               pCatStr === targetCatName.trim().toLowerCase() || 
+               pCatStr === String(categoryId).trim().toLowerCase();
       });
 
       if (filteredProducts.length === 0) {

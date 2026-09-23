@@ -42,11 +42,17 @@ export class RebeccaClient {
     }
     let baseURL = formatted.endsWith('/') ? formatted.slice(0, -1) : formatted;
     
-    // Remove common suffixes like /api, /dashboard, etc.
-    const suffixes = ['/api', '/dashboard', '/panel'];
-    for (const suffix of suffixes) {
-      if (baseURL.toLowerCase().endsWith(suffix)) {
-        baseURL = baseURL.slice(0, -suffix.length);
+    // Remove common suffixes like /api, /dashboard, etc. repeatedly
+    const suffixes = ['/api/admin', '/api/user', '/api/users', '/api', '/dashboard', '/panel', '/admin', '/user', '/users'];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const suffix of suffixes) {
+        if (baseURL.toLowerCase().endsWith(suffix)) {
+          baseURL = baseURL.slice(0, -suffix.length);
+          changed = true;
+          if (baseURL.endsWith('/')) baseURL = baseURL.slice(0, -1);
+        }
       }
     }
     return baseURL;
@@ -371,34 +377,78 @@ export class RebeccaClient {
 
     console.log(`[Rebecca Attempt] Creating user: ${cleanUser} with payload:`, JSON.stringify(payload));
 
-    let res = await this.client.post(`${baseURL}/api/user`, payload, {
-      headers,
-      validateStatus: () => true,
-      timeout: 10000
-    });
+    const endpointsToTry = [
+      `${baseURL}/api/user`,
+      `${baseURL}/api/user/`,
+      `${baseURL}/api/users`,
+      `${baseURL}/api/users/`,
+      `${baseURL}/api/admin/user`,
+      `${baseURL}/api/admin/user/`
+    ];
 
-    // Fallback without inbounds if failed due to inbound tag matching
-    if (res.status >= 400 && payload.inbounds) {
-      delete payload.inbounds;
-      res = await this.client.post(`${baseURL}/api/user`, payload, {
-        headers,
-        validateStatus: () => true,
-        timeout: 10000
-      });
+    if (baseURL.startsWith('http://')) {
+      const httpsBase = 'https://' + baseURL.slice(7);
+      endpointsToTry.push(
+        `${httpsBase}/api/user`,
+        `${httpsBase}/api/user/`,
+        `${httpsBase}/api/users`,
+        `${httpsBase}/api/users/`
+      );
     }
 
-    // Fallback: /api/users endpoint
-    if (res.status >= 400) {
-      res = await this.client.post(`${baseURL}/api/users`, payload, {
-        headers,
-        validateStatus: () => true,
-        timeout: 10000
-      });
+    let lastError = '';
+    let res: any = null;
+
+    for (const ep of endpointsToTry) {
+      try {
+        let attemptRes = await this.client.post(ep, payload, {
+          headers,
+          maxRedirects: 0,
+          validateStatus: () => true,
+          timeout: 10000
+        });
+
+        // Handle 301/302/307/308 redirect manually to preserve POST
+        if ([301, 302, 307, 308].includes(attemptRes.status) && attemptRes.headers?.location) {
+          let redirUrl = attemptRes.headers.location;
+          if (!redirUrl.startsWith('http://') && !redirUrl.startsWith('https://')) {
+            redirUrl = `${baseURL}${redirUrl.startsWith('/') ? '' : '/'}${redirUrl}`;
+          }
+          console.log(`[Rebecca Redirect] ${ep} -> ${redirUrl}`);
+          attemptRes = await this.client.post(redirUrl, payload, {
+            headers,
+            maxRedirects: 0,
+            validateStatus: () => true,
+            timeout: 10000
+          });
+        }
+
+        // Fallback without inbounds if inbound tags failed
+        if ((attemptRes.status === 400 || attemptRes.status === 422) && payload.inbounds) {
+          const payloadNoInbounds = { ...payload };
+          delete payloadNoInbounds.inbounds;
+          attemptRes = await this.client.post(ep, payloadNoInbounds, {
+            headers,
+            maxRedirects: 0,
+            validateStatus: () => true,
+            timeout: 10000
+          });
+        }
+
+        if (attemptRes.status >= 200 && attemptRes.status < 300 && attemptRes.data) {
+          res = attemptRes;
+          console.log(`[Rebecca Success Endpoint] ${ep}`);
+          break;
+        } else {
+          lastError = attemptRes.data?.detail || attemptRes.data?.msg || attemptRes.data?.message || `کد خطا: ${attemptRes.status}`;
+        }
+      } catch (err: any) {
+        lastError = err.message;
+      }
     }
 
-    if (res.status >= 400 || !res.data) {
-      const errMsg = res.data?.detail || res.data?.msg || res.data?.message || `کد خطا: ${res.status}`;
-      throw new Error(`خطا در ایجاد اکانت در پنل ربکا: ${errMsg}`);
+    if (!res || !res.data) {
+      throw new Error(`خطا در ایجاد اکانت در پنل ربکا: ${lastError || 'پاسخی از پنل دریافت نشد.'}`);
     }
 
     const userData = res.data;

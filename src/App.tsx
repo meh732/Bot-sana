@@ -645,10 +645,6 @@ function SettingsView() {
   };
 
   const handleRestoreBackup = async () => {
-    if (!restorePassword) {
-      alert('لطفا ابتدا رمز عبور فایل بکاپ را وارد کنید.');
-      return;
-    }
     if (!selectedFile) {
       alert('لطفا ابتدا فایل بکاپ (.json) را انتخاب نمایید.');
       return;
@@ -665,23 +661,25 @@ function SettingsView() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               payload: fileContent,
-              password: restorePassword
+              password: restorePassword || undefined
             })
           });
           const data = await res.json();
           if (data.success) {
-            alert('بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد! تمامی بخش‌ها لود خواهند شد.');
+            alert('✅ بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد!');
+            setRestorePassword('');
+            setSelectedFile(null);
             await refreshAppState();
           } else {
             alert('پشتیبان بازیابی نشد: ' + data.message);
           }
         } catch (e: any) {
-          alert('خطا در رمزگشایی بکاپ. رمز وارد شده اشتباه است یا فایل مخدوش شده است.');
+          alert('خطا در ارتباط با سرور: ' + e.message);
         }
         setActionLoading(false);
       };
       reader.readAsText(selectedFile);
-    } catch(e: any) {
+    } catch (e: any) {
       alert('خطا در خواندن فایل: ' + e.message);
       setActionLoading(false);
     }
@@ -1691,12 +1689,25 @@ function SettingsView() {
 
               <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
                 <h4 className="text-xs font-bold text-slate-800">📤 بازگردانی از فایل JSON</h4>
-                <input 
-                  type="file" 
-                  accept=".json" 
-                  onChange={e => setSelectedFile(e.target.files?.[0] || null)} 
-                  className="w-full text-xs text-slate-600" 
-                />
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-700 mb-1">🔑 رمز عبور فایل بکاپ (در صورت رمزگذاری بودن):</label>
+                  <input 
+                    type="password" 
+                    value={restorePassword}
+                    onChange={e => setRestorePassword(e.target.value)}
+                    placeholder="رمز عبور پشتیبان (اختیاری برای فایل خام)"
+                    className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-700 mb-1">📁 انتخاب فایل پشتیبان (.json):</label>
+                  <input 
+                    type="file" 
+                    accept=".json" 
+                    onChange={e => setSelectedFile(e.target.files?.[0] || null)} 
+                    className="w-full text-xs text-slate-600" 
+                  />
+                </div>
                 <button 
                   onClick={handleRestoreBackup} 
                   disabled={actionLoading}

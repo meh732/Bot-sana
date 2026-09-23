@@ -270,14 +270,29 @@ async function startServer() {
   api.post("/restore", (req, res) => {
     try {
       const { payload, password } = req.body;
-      if (!payload || !password) {
-        return res.status(400).json({ success: false, message: 'مقادیر بکاپ و رمز عبور الزامی می‌باشند.' });
+      if (!payload) {
+        return res.status(400).json({ success: false, message: 'محتوای فایل پشتیبان ارسال نشده است.' });
       }
       
-      const decryptedData = decryptData(payload, password);
-      const parsed = JSON.parse(decryptedData);
+      let parsed: any = null;
       
-      if (!parsed.users || !parsed.panel) {
+      // Try parsing directly as plain JSON first
+      try {
+        parsed = typeof payload === 'object' ? payload : JSON.parse(payload);
+      } catch (e) {
+        // If plain JSON parse fails, attempt decryption using password
+        if (!password) {
+          return res.status(400).json({ success: false, message: 'این فایل پشتیبان رمزگذاری شده است. لطفاً رمز عبور بکاپ را وارد کنید.' });
+        }
+        try {
+          const decryptedData = decryptData(payload, password);
+          parsed = JSON.parse(decryptedData);
+        } catch (decryptErr: any) {
+          return res.status(400).json({ success: false, message: 'رمز عبور پشتیبان اشتباه است یا فایل مخدوش می‌باشد.' });
+        }
+      }
+      
+      if (!parsed || !parsed.users || !parsed.panel) {
         return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. بخش‌های حیاتی خالی هستند.' });
       }
       
@@ -333,7 +348,7 @@ async function startServer() {
 
   api.post("/backup/restore-local", (req, res) => {
     try {
-      const { filename } = req.body;
+      const { filename, password } = req.body;
       if (!filename) {
         return res.status(400).json({ success: false, message: 'نام فایل پشتیبان الزامی است.' });
       }
@@ -351,9 +366,23 @@ async function startServer() {
       }
 
       const rawData = fs.readFileSync(backupPath, 'utf8');
-      const parsed = JSON.parse(rawData);
+      let parsed: any = null;
 
-      if (!parsed.panel || !parsed.users) {
+      try {
+        parsed = JSON.parse(rawData);
+      } catch (e) {
+        if (!password) {
+          return res.status(400).json({ success: false, message: 'این فایل پشتیبان رمزگذاری شده است. لطفاً رمز عبور بکاپ را وارد کنید.' });
+        }
+        try {
+          const decrypted = decryptData(rawData, password);
+          parsed = JSON.parse(decrypted);
+        } catch (decryptErr) {
+          return res.status(400).json({ success: false, message: 'رمز عبور وارد شده نامعتبر است یا فایل مخدوش می‌باشد.' });
+        }
+      }
+
+      if (!parsed || !parsed.panel || !parsed.users) {
         return res.status(400).json({ success: false, message: 'ساختار فایل پشتیبان معتبر نیست.' });
       }
 
