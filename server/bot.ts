@@ -4010,13 +4010,14 @@ export async function initBot() {
 
     if (data === 'buy_service_now') {
       await bot!.answerCallbackQuery(query.id).catch(() => {});
-      const activeProducts = state.products.filter(p => !p.disabled);
+      const activeProducts = (state.products || []).filter(p => !p.disabled);
       if (activeProducts.length === 0) {
-        bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
+        bot!.sendMessage(chatId, '❌ هیچ محصولی در حال حاضر موجود نیست.');
         return;
       }
 
       const activeCategories = (state.categories || []).filter(c => !c.disabled);
+      const title = '🛍 <b>انتخاب دسته‌بندی</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:';
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
@@ -4025,7 +4026,20 @@ export async function initBot() {
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized`, style: 'primary' }]);
         }
-        bot!.sendMessage(chatId, '🛍 <b>انتخاب دسته‌بندی</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
+
+        if (query.message?.message_id) {
+          try {
+            await bot!.editMessageText(title, {
+              chat_id: chatId,
+              message_id: query.message.message_id,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard } as any
+            });
+            return;
+          } catch {}
+        }
+
+        bot!.sendMessage(chatId, title, {
            parse_mode: 'HTML',
            reply_markup: {
              inline_keyboard: inlineKeyboard
@@ -4035,6 +4049,18 @@ export async function initBot() {
         const inlineKeyboard = activeProducts.map(p => ([
           { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
         ]));
+
+        if (query.message?.message_id) {
+          try {
+            await bot!.editMessageText('🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
+              chat_id: chatId,
+              message_id: query.message.message_id,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard } as any
+            });
+            return;
+          } catch {}
+        }
 
         bot!.sendMessage(chatId, '🛍 <b>انتخاب محصول</b>\nلطفاً یک محصول انتخاب کنید:', {
            parse_mode: 'HTML',
@@ -4055,6 +4081,7 @@ export async function initBot() {
       }
 
       const activeCategories = (state.categories || []).filter(c => !c.disabled);
+      const title = '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:';
 
       if (activeCategories.length > 0) {
         const inlineKeyboard = activeCategories.map(c => ([
@@ -4063,7 +4090,20 @@ export async function initBot() {
         if (activeProducts.some(p => isUncategorizedProduct(p, activeCategories))) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized`, style: 'primary' }]);
         }
-        bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً دسته‌بندی محصول را انتخاب کنید:', {
+
+        if (query.message?.message_id) {
+          try {
+            await bot!.editMessageText(title, {
+              chat_id: chatId,
+              message_id: query.message.message_id,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard } as any
+            });
+            return;
+          } catch {}
+        }
+
+        bot!.sendMessage(chatId, title, {
            parse_mode: 'HTML',
            reply_markup: {
              inline_keyboard: inlineKeyboard
@@ -4073,6 +4113,18 @@ export async function initBot() {
         const inlineKeyboard = activeProducts.map(p => ([
           { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'primary' }
         ]));
+
+        if (query.message?.message_id) {
+          try {
+            await bot!.editMessageText('🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یک محصول انتخاب کنید:', {
+              chat_id: chatId,
+              message_id: query.message.message_id,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard } as any
+            });
+            return;
+          } catch {}
+        }
 
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفاً یک محصول انتخاب کنید:', {
            parse_mode: 'HTML',
@@ -4091,17 +4143,37 @@ export async function initBot() {
       
       const activeCategories = (state.categories || []).filter((c: any) => !c.disabled);
       const isUncat = categoryId === 'uncategorized';
+      const targetCat = activeCategories.find((c: any) => String(c.id) === String(categoryId) || String(c.name) === String(categoryId));
 
       const filteredProducts = (state.products || []).filter(p => {
         if (p.disabled) return false;
         if (isUncat) {
           return isUncategorizedProduct(p, activeCategories);
         }
-        return String(p.categoryId) === String(categoryId);
+        
+        // Match by ID or Name
+        if (String(p.categoryId) === String(categoryId)) return true;
+        if (targetCat && (String(p.categoryId) === String(targetCat.id) || p.categoryId === targetCat.name)) return true;
+
+        // Smart panel-type fallback matching
+        if (targetCat) {
+          const catNameLower = (targetCat.name || '').toLowerCase();
+          const prodNameLower = (p.name || '').toLowerCase();
+          
+          if (catNameLower.includes('ربکا') || catNameLower.includes('rebecca') || targetCat.panelType === 'rebecca') {
+            if (p.panelType === 'rebecca' || prodNameLower.includes('ربکا') || prodNameLower.includes('rebecca')) return true;
+          }
+          
+          if (catNameLower.includes('vip') || catNameLower.includes('سنایی') || catNameLower.includes('sanaei') || catNameLower.includes('لوکیشن')) {
+            if (p.panelType === 'xui' || prodNameLower.includes('vip') || prodNameLower.includes('لوکیشن') || prodNameLower.includes('سنایی')) return true;
+          }
+        }
+        
+        return false;
       });
 
       if (filteredProducts.length === 0) {
-        await bot!.sendMessage(chatId, '❌ هیچ محصولی در این دسته موجود نیست.');
+        await bot!.answerCallbackQuery(query.id, { text: '❌ هیچ محصول فعالی در این دسته‌بندی موجود نیست.', show_alert: true }).catch(() => {});
         return;
       }
 
@@ -4114,9 +4186,24 @@ export async function initBot() {
         { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }
       ]);
 
+      const catDisplayName = targetCat?.name ? ` (${targetCat.name})` : '';
       const title = isSeller 
-        ? '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:' 
-        : '🛍 <b>انتخاب پکیج و سرویس</b>:\nلطفاً یکی از محصولات زیر را انتخاب فرمایید:';
+        ? `🛒 <b>خرید سرویس ویژه همکاران${catDisplayName}</b>:\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:` 
+        : `🛍 <b>انتخاب پکیج و سرویس${catDisplayName}</b>:\nلطفاً یکی از محصولات زیر را انتخاب فرمایید:`;
+
+      if (query.message?.message_id) {
+        try {
+          await bot!.editMessageText(title, {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: inlineKeyboard
+            } as any
+          });
+          return;
+        } catch {}
+      }
 
       await bot!.sendMessage(chatId, title, {
          parse_mode: 'HTML',
