@@ -167,6 +167,14 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
   return { success: true, settledGb, message: `مصرف تا حجم ${settledGb} گیگابایت تسویه شد و از این حجم به بعد محاسبه خواهد شد.` };
 }
 
+export function escapeHTML(str: string): string {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export function isUncategorizedProduct(product: any, activeCategories: any[] = []): boolean {
   if (!product) return false;
   const cat = (product.categoryId || '').toString().trim();
@@ -4151,15 +4159,26 @@ export async function initBot() {
           return isUncategorizedProduct(p, activeCategories);
         }
         
-        // Match by ID or Name
-        if (String(p.categoryId) === String(categoryId)) return true;
-        if (targetCat && (String(p.categoryId) === String(targetCat.id) || p.categoryId === targetCat.name)) return true;
+        // 1. Direct match by categoryId or Name
+        if (p.categoryId && String(p.categoryId) === String(categoryId)) return true;
+        if (targetCat && p.categoryId && (String(p.categoryId) === String(targetCat.id) || String(p.categoryId).trim() === String(targetCat.name).trim())) return true;
 
-        // Smart panel-type fallback matching
+        // 2. Loose Name & Substring Matching
         if (targetCat) {
-          const catNameLower = (targetCat.name || '').toLowerCase();
-          const prodNameLower = (p.name || '').toLowerCase();
+          const catNameLower = (targetCat.name || '').toLowerCase().trim();
+          const prodNameLower = (p.name || '').toLowerCase().trim();
           
+          if (catNameLower.length > 1) {
+            if (prodNameLower.includes(catNameLower) || catNameLower.includes(prodNameLower)) return true;
+          }
+
+          // Match by name parts (e.g. "vip", "لوکیشن", "ربکا")
+          const catParts = catNameLower.split(/\s+/).filter(part => part.length >= 2);
+          for (const part of catParts) {
+            if (prodNameLower.includes(part)) return true;
+          }
+
+          // Smart panel-type fallback matching
           if (catNameLower.includes('ربکا') || catNameLower.includes('rebecca') || targetCat.panelType === 'rebecca') {
             if (p.panelType === 'rebecca' || prodNameLower.includes('ربکا') || prodNameLower.includes('rebecca')) return true;
           }
@@ -4173,7 +4192,29 @@ export async function initBot() {
       });
 
       if (filteredProducts.length === 0) {
-        await bot!.answerCallbackQuery(query.id, { text: '❌ هیچ محصول فعالی در این دسته‌بندی موجود نیست.', show_alert: true }).catch(() => {});
+        await bot!.answerCallbackQuery(query.id, { text: '⚠️ این دسته‌بندی در حال حاضر فاقد محصول فعال است.', show_alert: true }).catch(() => {});
+        
+        const emptyTitle = `⚠️ <b>دسته‌بندی خالی است</b>\n\nدر حال حاضر هیچ محصول فعالی در دسته‌بندی <b>${escapeHTML(targetCat?.name || 'نامشخص')}</b> تعریف نشده است.`;
+        const emptyKeyboard = [
+          [{ text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }]
+        ];
+
+        if (query.message?.message_id) {
+          try {
+            await bot!.editMessageText(emptyTitle, {
+              chat_id: chatId,
+              message_id: query.message.message_id,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: emptyKeyboard } as any
+            });
+            return;
+          } catch {}
+        }
+
+        await bot!.sendMessage(chatId, emptyTitle, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: emptyKeyboard } as any
+        });
         return;
       }
 
@@ -4186,7 +4227,7 @@ export async function initBot() {
         { text: '🔙 بازگشت به دسته‌بندی‌ها', callback_data: isSeller ? 'seller_buy_menu' : 'buy_service_now', style: 'danger' }
       ]);
 
-      const catDisplayName = targetCat?.name ? ` (${targetCat.name})` : '';
+      const catDisplayName = targetCat?.name ? ` (${escapeHTML(targetCat.name)})` : '';
       const title = isSeller 
         ? `🛒 <b>خرید سرویس ویژه همکاران${catDisplayName}</b>:\nلطفاً یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:` 
         : `🛍 <b>انتخاب پکیج و سرویس${catDisplayName}</b>:\nلطفاً یکی از محصولات زیر را انتخاب فرمایید:`;
@@ -4202,7 +4243,9 @@ export async function initBot() {
             } as any
           });
           return;
-        } catch {}
+        } catch (err: any) {
+          console.error('[show_category_ editMessageText error]', err.message);
+        }
       }
 
       await bot!.sendMessage(chatId, title, {
