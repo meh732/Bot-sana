@@ -307,6 +307,7 @@ class XuiClient {
 
   public async getInbounds(): Promise<any[]> {
     try {
+      const state = db.getState();
       const mode = this.getActiveMode();
 
       if (mode === 'rebecca') {
