@@ -18,6 +18,7 @@ export interface RebeccaPanelConfig {
   password?: string;
   apiKey?: string;
   inboundTags?: string[];
+  serviceId?: number | string;
   subUrlBase?: string;
   enabled?: boolean;
 }
@@ -39,6 +40,7 @@ export interface Product {
   inboundId?: number | string;
   inboundIds?: (number | string)[];
   rebeccaInboundTags?: string[];
+  rebeccaServiceId?: number | string;
   limitIp?: number;
   disabled?: boolean;
   isPayAsYouGo?: boolean;

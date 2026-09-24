@@ -462,6 +462,35 @@ class XuiClient {
     }
   }
 
+  public async resetClientTraffic(email: string, inboundId?: number | string): Promise<boolean> {
+    try {
+      const opts = await this.getAuthOptions();
+      const workingPrefix = this.workingApiPrefix || '/panel/api';
+      const cleanEmail = encodeURIComponent(email.trim());
+      const endpoints = [
+        `${opts.baseURL}${workingPrefix}/inbounds/resetClientTraffic/${cleanEmail}`,
+        `${opts.baseURL}${workingPrefix}/clients/resetClientTraffic/${cleanEmail}`,
+        `${opts.baseURL}/panel/api/inbounds/resetClientTraffic/${cleanEmail}`
+      ];
+      if (inboundId !== undefined && inboundId !== null) {
+        endpoints.push(`${opts.baseURL}${workingPrefix}/inbounds/${inboundId}/resetClientTraffic/${cleanEmail}`);
+        endpoints.push(`${opts.baseURL}/panel/api/inbounds/${inboundId}/resetClientTraffic/${cleanEmail}`);
+      }
+      for (const ep of endpoints) {
+        try {
+          const res = await this.client.post(ep, {}, { headers: opts.headers, validateStatus: () => true, timeout: 5000 });
+          if (res.data?.success || res.status === 200) {
+            console.log(`[X-UI] Successfully reset client traffic for ${email}`);
+            return true;
+          }
+        } catch {}
+      }
+    } catch (e: any) {
+      console.warn(`[X-UI] resetClientTraffic warning for ${email}:`, e.message);
+    }
+    return false;
+  }
+
   public buildXuiSubUrl(subId: string, panelOverride?: any): string {
     if (!subId) return '';
     const state = db.getState();
@@ -1464,6 +1493,9 @@ class XuiClient {
         }
         throw new Error(errorMsg);
       }
+
+      // Reset any pre-existing or residual traffic stats for this email on the panel
+      await this.resetClientTraffic(email, primaryInboundId).catch(() => {});
 
       const subUrlStr = this.buildXuiSubUrl(subId);
       let domain = 'vpn.domain.com';

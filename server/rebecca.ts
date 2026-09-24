@@ -199,12 +199,37 @@ export class RebeccaClient {
     };
   }
 
-  public async testConnection(overrideConfig?: any): Promise<{ success: boolean; message: string; details?: any }> {
+  public async testConnection(overrideConfig?: any): Promise<{ success: boolean; message: string; details?: any; services?: any[] }> {
     try {
       const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
       
-      // Test admin/system endpoints
-      const testEndpoints = ['/api/admin', '/api/inbounds', '/api/system', '/api/users?limit=1'];
+      // 1. Try Rebecca 0.3.0 services endpoint
+      let services: any[] = [];
+      try {
+        const sRes = await this.client.get(`${baseURL}/api/v2/services`, {
+          headers,
+          validateStatus: () => true,
+          timeout: 7000
+        });
+        if (sRes.status >= 200 && sRes.status < 300 && sRes.data) {
+          services = Array.isArray(sRes.data) 
+            ? sRes.data 
+            : (Array.isArray(sRes.data.services) ? sRes.data.services : (Array.isArray(sRes.data.items) ? sRes.data.items : []));
+          
+          const serviceNames = services.map((s: any) => `• [ID ${s.id}] ${s.name || 'Service'}`).join('\n');
+          return {
+            success: true,
+            message: `✅ اتصال به پنل ربکا (Rebecca 0.3.0) با موفقیت برقرار شد!\n\n🏢 <b>سرویس‌های فعال شناسایی شده (${services.length} عدد):</b>\n${serviceNames || 'هیچ سرویسی در پنل تعریف نشده است.'}`,
+            details: sRes.data,
+            services
+          };
+        }
+      } catch (e) {
+        // Continue to fallback test
+      }
+
+      // 2. Test standard endpoints
+      const testEndpoints = ['/api/admin', '/api/users?limit=1', '/api/inbounds', '/api/system'];
       let lastError = '';
 
       for (const endpoint of testEndpoints) {
@@ -215,7 +240,7 @@ export class RebeccaClient {
             timeout: 6000
           });
 
-          if (res.status === 200 || (res.status >= 200 && res.status < 300)) {
+          if (res.status >= 200 && res.status < 300) {
             return {
               success: true,
               message: `✅ اتصال به پنل ربکا با موفقیت برقرار گردید (مسیر: ${endpoint})`,
@@ -223,7 +248,7 @@ export class RebeccaClient {
             };
           } else if (res.status === 401 || res.status === 403) {
             this.token = ''; // clear token
-            lastError = `خطای دسترسی (کد ${res.status}): نام کاربری یا رمز عبور نامعتبر است.`;
+            lastError = `خطای دسترسی (کد ${res.status}): نام کاربری، رمز عبور یا API Key نامعتبر است.`;
           } else {
             lastError = res.data?.detail || res.data?.msg || `کد پاسخ: ${res.status}`;
           }
@@ -241,6 +266,34 @@ export class RebeccaClient {
         success: false,
         message: e.message
       };
+    }
+  }
+
+  public async getServices(): Promise<Array<{ id: number | string; name: string; description?: string; host_count?: number; user_count?: number; [key: string]: any }>> {
+    try {
+      const state = db.getState();
+      if (!state.rebeccaPanel?.url) return [];
+
+      const { baseURL, headers } = await this.getAuthHeaders();
+      const res = await this.client.get(`${baseURL}/api/v2/services`, {
+        headers,
+        validateStatus: () => true,
+        timeout: 8000
+      });
+
+      if (res.status >= 200 && res.status < 300 && res.data) {
+        if (Array.isArray(res.data)) {
+          return res.data;
+        } else if (res.data.services && Array.isArray(res.data.services)) {
+          return res.data.services;
+        } else if (res.data.items && Array.isArray(res.data.items)) {
+          return res.data.items;
+        }
+      }
+      return [];
+    } catch (e: any) {
+      console.error('[Rebecca] getServices error:', e.message);
+      return [];
     }
   }
 
@@ -308,7 +361,7 @@ export class RebeccaClient {
     username: string,
     volumeGb: number,
     durationDays: number,
-    inboundTags?: string | number | (string | number)[],
+    inboundTagsOrServiceId?: string | number | (string | number)[],
     limitIp?: number,
     telegramId?: string,
     group?: string,
@@ -316,15 +369,6 @@ export class RebeccaClient {
   ): Promise<{ username: string; subUrl: string; links: string[]; raw?: any }> {
     const { baseURL, headers } = await this.getAuthHeaders();
     const state = db.getState();
-
-    let cleanTags: string[] | undefined = undefined;
-    if (inboundTags !== undefined && inboundTags !== null) {
-      if (Array.isArray(inboundTags)) {
-        cleanTags = inboundTags.map(t => String(t).trim()).filter(Boolean);
-      } else {
-        cleanTags = [String(inboundTags).trim()];
-      }
-    }
 
     // Clean username for Rebecca (must be alphanumeric, underscores, min 3 chars)
     let cleanUser = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -335,7 +379,7 @@ export class RebeccaClient {
     const dataLimitBytes = volumeGb > 0 ? Math.floor(volumeGb * 1024 * 1024 * 1024) : 0;
     const expireTimestamp = durationDays > 0 ? Math.floor((Date.now() + durationDays * 24 * 60 * 60 * 1000) / 1000) : 0;
 
-    // Check if client already exists and delete or renew
+    // Check if client already exists and delete first to recreate fresh
     try {
       const checkRes = await this.client.get(`${baseURL}/api/user/${cleanUser}`, {
         headers,
@@ -346,165 +390,144 @@ export class RebeccaClient {
         console.log(`[Rebecca] User ${cleanUser} already exists, deleting first to recreate fresh...`);
         await this.delClient(cleanUser);
       }
-    } catch (e) {
-      // Ignore
+    } catch (e) {}
+
+    // Resolve service_id for Rebecca 0.3.0
+    let targetServiceId: number | string | undefined = undefined;
+    if (typeof inboundTagsOrServiceId === 'number' || (typeof inboundTagsOrServiceId === 'string' && /^\d+$/.test(inboundTagsOrServiceId.trim()))) {
+      targetServiceId = Number(inboundTagsOrServiceId);
+    } else if (state.rebeccaPanel?.serviceId !== undefined && state.rebeccaPanel.serviceId !== '') {
+      targetServiceId = state.rebeccaPanel.serviceId;
     }
 
-    // Construct proxies and inbounds payload
-    const proxies: Record<string, any> = {
-      vless: {},
-      vmess: {},
-      trojan: {},
-      shadowsocks: {}
-    };
-
-    let inboundsPayload: any = undefined;
-    if (cleanTags && cleanTags.length > 0) {
+    // Auto-discover service ID if not explicitly specified
+    if (targetServiceId === undefined) {
       try {
-        const activeInbounds = await this.getInbounds();
-        inboundsPayload = {};
-        for (const tag of cleanTags) {
-          const matched = activeInbounds.find(i => 
-            i.tag.toLowerCase() === tag.toLowerCase() || 
-            String(i.port) === tag
-          );
-          let proto = 'vless';
-          if (matched && matched.protocol) {
-            const p = matched.protocol.toLowerCase();
-            if (p.includes('vmess')) proto = 'vmess';
-            else if (p.includes('trojan')) proto = 'trojan';
-            else if (p.includes('shadowsocks') || p.includes('ss')) proto = 'shadowsocks';
-            else proto = 'vless';
-          } else {
-            const lower = tag.toLowerCase();
-            if (lower.includes('vmess')) proto = 'vmess';
-            else if (lower.includes('trojan')) proto = 'trojan';
-            else if (lower.includes('shadowsocks') || lower.includes('ss')) proto = 'shadowsocks';
-          }
-          if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
-          inboundsPayload[proto].push(matched ? matched.tag : tag);
+        const services = await this.getServices();
+        if (services && services.length > 0) {
+          targetServiceId = services[0].id;
+          console.log(`[Rebecca Auto-Service] Discovered default service ID: ${targetServiceId} (${services[0].name})`);
         }
       } catch (e) {
-        inboundsPayload = {};
-        for (const tag of cleanTags) {
-          const lower = tag.toLowerCase();
-          let proto = 'vless';
-          if (lower.includes('vmess')) proto = 'vmess';
-          else if (lower.includes('trojan')) proto = 'trojan';
-          else if (lower.includes('shadowsocks') || lower.includes('ss')) proto = 'shadowsocks';
-          
-          if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
-          inboundsPayload[proto].push(tag);
-        }
-      }
-    } else {
-      // Auto-fallback: if no inbound tags specified, try to retrieve all from Rebecca panel to avoid 422 errors
-      try {
-        const activeInbounds = await this.getInbounds();
-        if (activeInbounds && activeInbounds.length > 0) {
-          inboundsPayload = {};
-          for (const matched of activeInbounds) {
-            let proto = 'vless';
-            if (matched.protocol) {
-              const p = matched.protocol.toLowerCase();
-              if (p.includes('vmess')) proto = 'vmess';
-              else if (p.includes('trojan')) proto = 'trojan';
-              else if (p.includes('shadowsocks') || p.includes('ss')) proto = 'shadowsocks';
-            }
-            if (!inboundsPayload[proto]) inboundsPayload[proto] = [];
-            inboundsPayload[proto].push(matched.tag);
-          }
-        }
-      } catch (e) {
-        console.error('[Rebecca Autoresolve Inbounds Error]', e);
+        console.error('[Rebecca Service Discovery Error]', e);
       }
     }
 
     const effectiveNote = note || (telegramId ? `Telegram: ${telegramId}` : '');
-    const payload: any = {
-      username: cleanUser,
-      proxies,
-      data_limit: dataLimitBytes,
-      expire: expireTimestamp || 0,
-      data_limit_reset_strategy: 'no_reset',
-      status: 'active',
-      note: effectiveNote
-    };
 
-    if (inboundsPayload && Object.keys(inboundsPayload).length > 0) {
-      payload.inbounds = inboundsPayload;
-    }
-
-    console.log(`[Rebecca Attempt] Creating user: ${cleanUser} with payload:`, JSON.stringify(payload));
-
-    const endpointsToTry = [
-      `${baseURL}/api/user`,
-      `${baseURL}/api/user/`,
-      `${baseURL}/api/users`,
-      `${baseURL}/api/users/`,
-      `${baseURL}/api/admin/user`,
-      `${baseURL}/api/admin/user/`
-    ];
-
-    if (baseURL.startsWith('http://')) {
-      const httpsBase = 'https://' + baseURL.slice(7);
-      endpointsToTry.push(
-        `${httpsBase}/api/user`,
-        `${httpsBase}/api/user/`,
-        `${httpsBase}/api/users`,
-        `${httpsBase}/api/users/`
-      );
-    }
-
-    let lastError = '';
+    // 1. Try Rebecca 0.3.0 native payload with service_id
     let res: any = null;
+    let lastError = '';
 
-    for (const ep of endpointsToTry) {
-      try {
-        let attemptRes = await this.client.post(ep, payload, {
-          headers,
-          maxRedirects: 0,
-          validateStatus: () => true,
-          timeout: 10000
-        });
+    if (targetServiceId !== undefined) {
+      const rebeccaPayload: any = {
+        username: cleanUser,
+        service_id: Number(targetServiceId) || targetServiceId,
+        data_limit: dataLimitBytes,
+        expire: expireTimestamp || 0,
+        status: 'active',
+        note: effectiveNote
+      };
 
-        // Handle 301/302/307/308 redirect manually to preserve POST
-        if ([301, 302, 307, 308].includes(attemptRes.status) && attemptRes.headers?.location) {
-          let redirUrl = attemptRes.headers.location;
-          if (!redirUrl.startsWith('http://') && !redirUrl.startsWith('https://')) {
-            redirUrl = `${baseURL}${redirUrl.startsWith('/') ? '' : '/'}${redirUrl}`;
+      console.log(`[Rebecca 0.3.0] Creating user ${cleanUser} with payload:`, JSON.stringify(rebeccaPayload));
+
+      const endpoints = [
+        `${baseURL}/api/v2/users`,
+        `${baseURL}/api/user`,
+        `${baseURL}/api/user/`
+      ];
+
+      for (const ep of endpoints) {
+        try {
+          const attempt = await this.client.post(ep, rebeccaPayload, {
+            headers,
+            validateStatus: () => true,
+            timeout: 10000
+          });
+
+          if (attempt.status >= 200 && attempt.status < 300 && attempt.data) {
+            res = attempt;
+            console.log(`[Rebecca 0.3.0 Success] User created on ${ep}`);
+            break;
+          } else {
+            lastError = attempt.data?.detail || attempt.data?.msg || attempt.data?.message || `Status ${attempt.status}`;
+            console.log(`[Rebecca 0.3.0 Attempt ${ep}] Status ${attempt.status}:`, lastError);
           }
-          console.log(`[Rebecca Redirect] ${ep} -> ${redirUrl}`);
-          attemptRes = await this.client.post(redirUrl, payload, {
+        } catch (e: any) {
+          lastError = e.message;
+        }
+      }
+    }
+
+    // 2. Fallback to Marzban-compatible payload if Rebecca 0.3.0 was not accepted
+    if (!res || !res.data) {
+      console.log('[Rebecca] Attempting Marzban/legacy fallback payload...');
+      let cleanTags: string[] | undefined = undefined;
+      if (inboundTagsOrServiceId !== undefined && inboundTagsOrServiceId !== null) {
+        if (Array.isArray(inboundTagsOrServiceId)) {
+          cleanTags = inboundTagsOrServiceId.map(t => String(t).trim()).filter(Boolean);
+        } else if (typeof inboundTagsOrServiceId === 'string' && !/^\d+$/.test(inboundTagsOrServiceId)) {
+          cleanTags = [inboundTagsOrServiceId.trim()];
+        }
+      }
+
+      const proxies: Record<string, any> = {
+        vless: {},
+        vmess: {},
+        trojan: {},
+        shadowsocks: {}
+      };
+
+      const legacyPayload: any = {
+        username: cleanUser,
+        proxies,
+        data_limit: dataLimitBytes,
+        expire: expireTimestamp || 0,
+        data_limit_reset_strategy: 'no_reset',
+        status: 'active',
+        note: effectiveNote
+      };
+
+      if (cleanTags && cleanTags.length > 0) {
+        const inboundsPayload: any = { vless: cleanTags };
+        legacyPayload.inbounds = inboundsPayload;
+      }
+
+      const legacyEndpoints = [
+        `${baseURL}/api/user`,
+        `${baseURL}/api/user/`,
+        `${baseURL}/api/users`,
+        `${baseURL}/api/admin/user`
+      ];
+
+      for (const ep of legacyEndpoints) {
+        try {
+          let attempt = await this.client.post(ep, legacyPayload, {
             headers,
-            maxRedirects: 0,
             validateStatus: () => true,
             timeout: 10000
           });
-        }
 
-        // Fallback without inbounds if inbound tags failed or caused 404/400/422/500
-        if (attemptRes.status >= 400 && payload.inbounds) {
-          console.log(`[Rebecca Retry without inbounds] Endpoint ${ep} returned status ${attemptRes.status}`);
-          const payloadNoInbounds = { ...payload };
-          delete payloadNoInbounds.inbounds;
-          attemptRes = await this.client.post(ep, payloadNoInbounds, {
-            headers,
-            maxRedirects: 0,
-            validateStatus: () => true,
-            timeout: 10000
-          });
-        }
+          if (attempt.status >= 400 && legacyPayload.inbounds) {
+            const noInbounds = { ...legacyPayload };
+            delete noInbounds.inbounds;
+            attempt = await this.client.post(ep, noInbounds, {
+              headers,
+              validateStatus: () => true,
+              timeout: 10000
+            });
+          }
 
-        if (attemptRes.status >= 200 && attemptRes.status < 300 && attemptRes.data) {
-          res = attemptRes;
-          console.log(`[Rebecca Success Endpoint] ${ep}`);
-          break;
-        } else {
-          lastError = attemptRes.data?.detail || attemptRes.data?.msg || attemptRes.data?.message || `کد خطا: ${attemptRes.status}`;
+          if (attempt.status >= 200 && attempt.status < 300 && attempt.data) {
+            res = attempt;
+            console.log(`[Rebecca Legacy Success] User created on ${ep}`);
+            break;
+          } else {
+            lastError = attempt.data?.detail || attempt.data?.msg || attempt.data?.message || lastError;
+          }
+        } catch (e: any) {
+          lastError = e.message;
         }
-      } catch (err: any) {
-        lastError = err.message;
       }
     }
 
@@ -515,24 +538,47 @@ export class RebeccaClient {
     const userData = res.data;
     let subUrl = userData.subscription_url || '';
 
-    // If subUrl is relative or missing base URL
-    if (subUrl && !subUrl.startsWith('http://') && !subUrl.startsWith('https://')) {
-      const customSubBase = state.rebeccaPanel?.subUrlBase?.trim();
-      if (customSubBase) {
-        let base = customSubBase.endsWith('/') ? customSubBase.slice(0, -1) : customSubBase;
-        subUrl = `${base}${subUrl.startsWith('/') ? '' : '/'}${subUrl}`;
-      } else {
-        subUrl = `${baseURL}${subUrl.startsWith('/') ? '' : '/'}${subUrl}`;
+    const customSubBase = state.rebeccaPanel?.subUrlBase?.trim();
+    const effectiveBase = customSubBase ? (customSubBase.endsWith('/') ? customSubBase.slice(0, -1) : customSubBase) : baseURL;
+
+    if (subUrl) {
+      if (!subUrl.startsWith('http://') && !subUrl.startsWith('https://')) {
+        subUrl = `${effectiveBase}${subUrl.startsWith('/') ? '' : '/'}${subUrl}`;
+      } else if (customSubBase) {
+        try {
+          const parsed = new URL(subUrl);
+          const pathAndQuery = parsed.pathname + parsed.search;
+          subUrl = `${effectiveBase}${pathAndQuery}`;
+        } catch (e) {}
       }
-    } else if (!subUrl) {
-      const customSubBase = state.rebeccaPanel?.subUrlBase?.trim();
-      const baseToUse = customSubBase ? (customSubBase.endsWith('/') ? customSubBase.slice(0, -1) : customSubBase) : baseURL;
-      subUrl = `${baseToUse}/sub/${cleanUser}`;
+    } else {
+      if (userData.token) {
+        subUrl = `${effectiveBase}/sub/${userData.token}`;
+      } else if (userData.credential_key) {
+        subUrl = `${effectiveBase}/sub/${cleanUser}/${userData.credential_key}`;
+      } else {
+        subUrl = `${effectiveBase}/sub/${cleanUser}`;
+      }
     }
 
-    const links: string[] = Array.isArray(userData.links) ? userData.links : [];
+    let links: string[] = Array.isArray(userData.links) ? userData.links : [];
 
-    console.log(`[Rebecca Success] User "${cleanUser}" created successfully. Sub URL: ${subUrl}`);
+    // If links array is empty, fetch configs directly from subUrl
+    if (links.length === 0 && subUrl) {
+      try {
+        const subRes = await this.client.get(subUrl, { timeout: 6000, validateStatus: () => true });
+        if (subRes.status === 200 && subRes.data) {
+          let content = String(subRes.data);
+          try {
+            const decoded = Buffer.from(content, 'base64').toString('utf-8');
+            if (decoded.includes('://')) content = decoded;
+          } catch {}
+          links = content.split('\n').map(l => l.trim()).filter(l => l.includes('://'));
+        }
+      } catch (e) {}
+    }
+
+    console.log(`[Rebecca Success] User "${cleanUser}" created successfully. Sub URL: ${subUrl}, Links count: ${links.length}`);
 
     return {
       username: cleanUser,
@@ -542,10 +588,60 @@ export class RebeccaClient {
     };
   }
 
+  public async getDirectConfigs(subUrlOrUsername: string): Promise<string[]> {
+    try {
+      const { baseURL, headers } = await this.getAuthHeaders();
+      let subUrl = subUrlOrUsername;
+      if (!subUrl.startsWith('http://') && !subUrl.startsWith('https://')) {
+        const user = await this.getClient(subUrlOrUsername);
+        if (user && user.links && Array.isArray(user.links) && user.links.length > 0) {
+          return user.links;
+        }
+        subUrl = `${baseURL}/sub/${subUrlOrUsername}`;
+      }
+
+      const res = await this.client.get(subUrl, {
+        timeout: 8000,
+        validateStatus: () => true
+      });
+
+      if (res.status === 200 && res.data) {
+        let content = String(res.data);
+        try {
+          const decoded = Buffer.from(content, 'base64').toString('utf-8');
+          if (decoded.includes('://')) {
+            content = decoded;
+          }
+        } catch {}
+
+        const lines = content.split('\n').map(l => l.trim()).filter(l => l.includes('://'));
+        return lines;
+      }
+      return [];
+    } catch (e: any) {
+      console.error('[Rebecca] getDirectConfigs error:', e.message);
+      return [];
+    }
+  }
+
   public async getClient(username: string): Promise<any | null> {
     try {
       const { baseURL, headers } = await this.getAuthHeaders();
-      const res = await this.client.get(`${baseURL}/api/user/${username}`, {
+      const cleanUsername = encodeURIComponent(username.trim());
+
+      // Try Rebecca 0.3.0 endpoint first: /api/v2/users/{username}
+      let res = await this.client.get(`${baseURL}/api/v2/users/${cleanUsername}`, {
+        headers,
+        validateStatus: () => true,
+        timeout: 6000
+      });
+
+      if (res.status === 200 && res.data) {
+        return res.data;
+      }
+
+      // Fallback to legacy endpoint: /api/user/{username}
+      res = await this.client.get(`${baseURL}/api/user/${cleanUsername}`, {
         headers,
         validateStatus: () => true,
         timeout: 6000
@@ -565,36 +661,7 @@ export class RebeccaClient {
     try {
       const { baseURL, headers } = await this.getAuthHeaders();
       const status = enable ? 'active' : 'disabled';
-      
-      const existingUser = await this.getClient(username);
-      const proxies = existingUser?.proxies || {
-        vless: {},
-        vmess: {},
-        trojan: {},
-        shadowsocks: {}
-      };
-
-      const payload: any = {
-        username,
-        status,
-        proxies
-      };
-
-      if (existingUser?.inbounds) {
-        payload.inbounds = existingUser.inbounds;
-      }
-      if (existingUser?.data_limit !== undefined) {
-        payload.data_limit = existingUser.data_limit;
-      }
-      if (existingUser?.expire !== undefined) {
-        payload.expire = existingUser.expire;
-      }
-      if (existingUser?.note !== undefined) {
-        payload.note = existingUser.note;
-      }
-      if (existingUser?.data_limit_reset_strategy !== undefined) {
-        payload.data_limit_reset_strategy = existingUser.data_limit_reset_strategy;
-      }
+      const payload: any = { status };
 
       const res = await this.client.put(`${baseURL}/api/user/${username}`, payload, {
         headers,
@@ -602,7 +669,17 @@ export class RebeccaClient {
         timeout: 6000
       });
 
-      return res.status === 200;
+      if (res.status >= 200 && res.status < 300) {
+        return true;
+      }
+
+      const res2 = await this.client.put(`${baseURL}/api/v2/users/${username}`, payload, {
+        headers,
+        validateStatus: () => true,
+        timeout: 6000
+      });
+
+      return res2.status >= 200 && res2.status < 300;
     } catch (e: any) {
       console.error(`[Rebecca] updateClientEnable error for ${username}:`, e.message);
       return false;
@@ -624,32 +701,12 @@ export class RebeccaClient {
         });
       } catch (e) {}
 
-      // 2. Update limit & expiry
-      const existingUser = await this.getClient(username);
-      const proxies = existingUser?.proxies || {
-        vless: {},
-        vmess: {},
-        trojan: {},
-        shadowsocks: {}
-      };
-
+      // 2. Rebecca 0.3.0: PUT /api/user/{username}
       const payload: any = {
-        username,
         status: 'active',
-        proxies,
         data_limit: dataLimitBytes,
         expire: expireTimestamp || 0
       };
-
-      if (existingUser?.inbounds) {
-        payload.inbounds = existingUser.inbounds;
-      }
-      if (existingUser?.note !== undefined) {
-        payload.note = existingUser.note;
-      }
-      if (existingUser?.data_limit_reset_strategy !== undefined) {
-        payload.data_limit_reset_strategy = existingUser.data_limit_reset_strategy;
-      }
 
       const res = await this.client.put(`${baseURL}/api/user/${username}`, payload, {
         headers,
@@ -657,7 +714,40 @@ export class RebeccaClient {
         timeout: 6000
       });
 
-      return res.status === 200;
+      if (res.status >= 200 && res.status < 300) {
+        return true;
+      }
+
+      const res2 = await this.client.put(`${baseURL}/api/v2/users/${username}`, payload, {
+        headers,
+        validateStatus: () => true,
+        timeout: 6000
+      });
+
+      if (res2.status >= 200 && res2.status < 300) {
+        return true;
+      }
+
+      // Legacy fallback
+      const existingUser = await this.getClient(username);
+      const proxies = existingUser?.proxies || {
+        vless: {},
+        vmess: {},
+        trojan: {},
+        shadowsocks: {}
+      };
+      const legacyPayload = {
+        ...payload,
+        username,
+        proxies
+      };
+      const res3 = await this.client.put(`${baseURL}/api/user/${username}`, legacyPayload, {
+        headers,
+        validateStatus: () => true,
+        timeout: 6000
+      });
+
+      return res3.status >= 200 && res3.status < 300;
     } catch (e: any) {
       console.error(`[Rebecca] renewClient error for ${username}:`, e.message);
       return false;
@@ -702,27 +792,38 @@ export class RebeccaClient {
       if (!state.rebeccaPanel?.url) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders();
-      const res = await this.client.get(`${baseURL}/api/users?limit=1000`, {
+      // Try Rebecca 0.3.0 endpoint first: /api/v2/users
+      let res = await this.client.get(`${baseURL}/api/v2/users?limit=1000`, {
         headers,
         validateStatus: () => true,
         timeout: 10000
       });
 
+      if (res.status === 404) {
+        res = await this.client.get(`${baseURL}/api/users?limit=1000`, {
+          headers,
+          validateStatus: () => true,
+          timeout: 10000
+        });
+      }
+
       if (res.status === 200 && res.data) {
         const rawUsers: any[] = Array.isArray(res.data.users) ? res.data.users : (Array.isArray(res.data) ? res.data : []);
         
         return rawUsers.map((u: any) => {
-          const usedTraffic = Number(u.used_traffic || 0);
-          const dataLimit = Number(u.data_limit || 0);
-          const expireSec = Number(u.expire || 0);
-          const expiryMs = expireSec > 0 ? expireSec * 1000 : 0;
-          const isEnabled = u.status === 'active';
+          const usedTraffic = Number(u.used_traffic !== undefined ? u.used_traffic : (u.usedTraffic !== undefined ? u.usedTraffic : (u.traffic?.used || 0))) || 0;
+          const dataLimit = Number(u.data_limit !== undefined ? u.data_limit : (u.dataLimit !== undefined ? u.dataLimit : (u.traffic?.limit || 0))) || 0;
+          const expireSec = Number(u.expire !== undefined ? u.expire : (u.expire_date !== undefined ? u.expire_date : (u.expiry || 0))) || 0;
+          const expiryMs = expireSec > 10000000000 ? expireSec : (expireSec > 0 ? expireSec * 1000 : 0);
+          const isEnabled = u.status ? (u.status === 'active' || u.status === 'enabled') : (u.enable !== false && u.disabled !== true);
+          const subUrl = u.subscription_url || u.sub_url || u.subscriptionUrl || '';
+          const subId = subUrl ? (subUrl.split('/sub/')[1]?.split('?')[0] || '') : (u.sub_id || u.subId || '');
 
           return {
             id: u.username,
             email: u.username,
             username: u.username,
-            subId: u.subscription_url ? u.subscription_url.split('/sub/')[1]?.split('?')[0] : '',
+            subId: subId,
             up: 0,
             down: usedTraffic,
             totalUsed: usedTraffic,

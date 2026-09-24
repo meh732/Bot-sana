@@ -50,12 +50,23 @@ export class MultiPanelService {
     const state = db.getState();
 
     // Determine target panel
-    const panelType: 'sanaei' | 'rebecca' | 'both' = product.panelType || 'sanaei';
+    let panelType: 'sanaei' | 'rebecca' | 'both' = product.panelType || 'sanaei';
+    if (!product.panelType) {
+      if (state.activePanelMode === 'rebecca') {
+        panelType = 'rebecca';
+      } else if (state.activePanelMode === 'both') {
+        panelType = 'both';
+      } else if (state.rebeccaPanel?.url && (!state.panel?.url || state.panel?.panelType === 'rebecca')) {
+        panelType = 'rebecca';
+      }
+    }
 
     // Generate unique identifier / email
     let clientEmail = '';
     if (customName && customName.trim() !== '') {
-      clientEmail = customName.trim().replace(/[^a-zA-Z0-9_]/g, '_');
+      const cleanCustom = customName.trim().replace(/[^a-zA-Z0-9_]/g, '_');
+      const uniqueSuffix = Date.now().toString().slice(-4);
+      clientEmail = `${cleanCustom}_${uniqueSuffix}`;
     } else {
       const cleanUsername = user.username ? user.username.trim().replace(/[^a-zA-Z0-9_]/g, '') : '';
       const emailPrefix = cleanUsername || String(user.chatId);
@@ -70,6 +81,8 @@ export class MultiPanelService {
     const selectedInboundIds = (product.inboundIds && product.inboundIds.length > 0)
       ? product.inboundIds
       : (product.inboundId ? [product.inboundId] : undefined);
+
+    const targetServiceId = (product as any).rebeccaServiceId || state.rebeccaPanel?.serviceId;
 
     const rebeccaInbounds = product.rebeccaInboundTags && product.rebeccaInboundTags.length > 0
       ? product.rebeccaInboundTags
@@ -119,7 +132,7 @@ export class MultiPanelService {
           clientEmail,
           volGb,
           durDays,
-          rebeccaInbounds,
+          targetServiceId || rebeccaInbounds,
           product.limitIp || 0,
           String(user.chatId),
           undefined,

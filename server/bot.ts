@@ -256,28 +256,55 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     }
 
     const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
-    const cleanPName = purchase.name ? String(purchase.name).trim().toLowerCase() : '';
-    const urlSubId = purchase.subUrl ? purchase.subUrl.split('/sub/')[1]?.split('?')[0]?.split('/')[0] : null;
+    
+    // Extract subId token accurately from subUrl
+    const extractSubId = (url?: string) => {
+      if (!url) return null;
+      const m = url.match(/\/sub\/([a-zA-Z0-9_-]+)/i);
+      return m ? m[1].toLowerCase() : null;
+    };
+
+    const targetSubId = extractSubId(purchase.subUrl) || 
+                        extractSubId(purchase.sanaeiSubUrl) || 
+                        extractSubId(purchase.rebeccaSubUrl) ||
+                        (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null);
 
     if (allClients && allClients.length > 0) {
-      clientObj = allClients.find((cl: any) => {
-        const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
-        const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
-        const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+      // 1. First & highest priority: Match by unique subscription ID (guaranteed unique per service)
+      if (targetSubId) {
+        clientObj = allClients.find((cl: any) => {
+          const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+          const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
+          return (clSubId && clSubId === targetSubId) || (clId && clId === targetSubId);
+        });
+      }
 
-        if (cleanPId && (clEmail === cleanPId || clId === cleanPId)) return true;
-        if (cleanPName && clEmail === cleanPName) return true;
-        if (clSubId && purchase.subUrl && purchase.subUrl.includes(cl.subId)) return true;
-        if (clEmail && purchase.subUrl && purchase.subUrl.includes(cl.email)) return true;
-        if (urlSubId && (clSubId === urlSubId.toLowerCase() || clId === urlSubId.toLowerCase() || clEmail === urlSubId.toLowerCase())) return true;
-        return false;
-      });
+      // 2. Second priority: Match by subUrl containment
+      if (!clientObj) {
+        clientObj = allClients.find((cl: any) => {
+          if (!cl.subId) return false;
+          const sId = String(cl.subId).trim().toLowerCase();
+          return (purchase.subUrl && purchase.subUrl.toLowerCase().includes(sId)) ||
+                 (purchase.sanaeiSubUrl && purchase.sanaeiSubUrl.toLowerCase().includes(sId)) ||
+                 (purchase.rebeccaSubUrl && purchase.rebeccaSubUrl.toLowerCase().includes(sId));
+        });
+      }
+
+      // 3. Third priority: Match by exact client email or username (purchase.id)
+      if (!clientObj && cleanPId) {
+        clientObj = allClients.find((cl: any) => {
+          const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
+          const clUsername = cl.username ? String(cl.username).trim().toLowerCase() : '';
+          const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
+          return clEmail === cleanPId || clUsername === cleanPId || clId === cleanPId;
+        });
+      }
     }
 
     // Heal / update subUrl if missing or outdated for Sanaei
     const state = db.getState();
     let subUrl = (purchase.subUrl || '').trim();
-    const effectiveSubId = clientObj?.subId || urlSubId;
+    const effectiveSubId = clientObj?.subId || targetSubId;
 
     if ((!subUrl || !subUrl.includes('/sub/')) && effectiveSubId && state.panel?.url) {
       const domain = new URL(state.panel.url).hostname;
@@ -302,18 +329,16 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       }
     }
 
-    // Save latest used bytes if available
+    // Save latest used bytes if available and sync with live client traffic
     if (clientObj) {
       const currentUsed = clientObj.totalUsed || ((clientObj.up || 0) + (clientObj.down || 0));
-      if (currentUsed > (purchase.lastUsedBytes || 0)) {
-        purchase.lastUsedBytes = currentUsed;
-        const currentUser = db.getUser(chatId);
-        if (currentUser && currentUser.purchases) {
-          const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
-          if (pItem) {
-            pItem.lastUsedBytes = currentUsed;
-            db.saveUser(currentUser);
-          }
+      purchase.lastUsedBytes = currentUsed;
+      const currentUser = db.getUser(chatId);
+      if (currentUser && currentUser.purchases) {
+        const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
+        if (pItem) {
+          pItem.lastUsedBytes = currentUsed;
+          db.saveUser(currentUser);
         }
       }
     }
@@ -333,10 +358,10 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       remainingVolStr = 'نامحدود (محاسبه بر اساس مصرف)';
     } else {
       let totalBytes = 0;
-      if (clientObj && clientObj.total > 0) {
+      if (purchase.volumeGb && Number(purchase.volumeGb) > 0) {
+        totalBytes = Number(purchase.volumeGb) * 1024 * 1024 * 1024;
+      } else if (clientObj && clientObj.total > 0) {
         totalBytes = clientObj.total;
-      } else if (purchase.volumeGb > 0) {
-        totalBytes = purchase.volumeGb * 1024 * 1024 * 1024;
       }
 
       if (totalBytes > 0) {
@@ -1125,10 +1150,20 @@ export async function initBot() {
   }
 
   const sendAdminMainMenu = (chatId: number) => {
-    bot!.sendMessage(chatId, '🔧 <b>پنل مدیریت ربات</b>:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
+    const state = db.getState();
+    const modeLabel = state.activePanelMode === 'rebecca'
+      ? '🟣 فقط ربکا (Rebecca)'
+      : (state.activePanelMode === 'both' ? '🌐 هر دو همزمان (Dual Panel)' : '🔵 فقط سنایی (X-UI)');
+
+    bot!.sendMessage(chatId, `🔧 <b>پنل مدیریت ربات</b>:\n\n🔘 <b>حالت فعال ساخت کانفیگ:</b> <b>${modeLabel}</b>\nجهت تغییر سرور فعال ساخت کاربر، از دکمه‌های زیر استفاده نمایید:`, {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
+          [
+            { text: `${state.activePanelMode === 'xui' || !state.activePanelMode ? '🔘' : '⚪️'} فقط سنایی`, callback_data: 'admin_set_mode_xui' },
+            { text: `${state.activePanelMode === 'rebecca' ? '🔘' : '⚪️'} فقط ربکا`, callback_data: 'admin_set_mode_rebecca' },
+            { text: `${state.activePanelMode === 'both' ? '🔘' : '⚪️'} هر دو پنل`, callback_data: 'admin_set_mode_both' }
+          ],
           [{ text: '🔵 تنظیمات اتصال سنایی (X-UI)', callback_data: 'admin_panel_menu' }, { text: '🟣 تنظیمات اتصال ربکا (Rebecca)', callback_data: 'admin_rebecca_menu' }],
           [{ text: '🎁 هدیه/تست رایگان', callback_data: 'admin_test_menu' }, { text: '💳 شماره کارت پرداخت', callback_data: 'admin_card_menu' }],
           [{ text: '📦 مدیریت محصولات', callback_data: 'admin_products_menu' }, { text: '🎟 کدهای تخفیف', callback_data: 'admin_coupons_menu' }],
@@ -1188,12 +1223,14 @@ export async function initBot() {
   const sendRebeccaConnectionMenu = (chatId: number) => {
     const state = db.getState();
     const reb = state.rebeccaPanel || {};
+    const serviceIdDisplay = reb.serviceId !== undefined ? String(reb.serviceId) : 'خودکار (اولین سرویس فعال)';
     const msg = `🟣 <b>اطلاعات اتصال به پنل ربکا (Rebecca)</b>:\n\n` +
       `🔗 آدرس: <code>${escapeHtml(reb.url || '❌ تنظیم نشده')}</code>\n` +
       `👤 نام کاربری: <code>${escapeHtml(reb.username || '❌ تنظیم نشده')}</code>\n` +
       `🔑 رمز عبور: <code>${reb.password ? '******' : '❌ تنظیم نشده'}</code>\n` +
       `🔑 کلید API Key: <code>${reb.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}</code>\n` +
-      `🌐 آدرس پایه ساب: <code>${escapeHtml(reb.subUrlBase || 'پیش‌فرض ربکا')}</code>\n\n` +
+      `🌐 آدرس پایه ساب: <code>${escapeHtml(reb.subUrlBase || 'پیش‌فرض ربکا')}</code>\n` +
+      `🏢 شناسه سرویس پیش‌فرض (Service ID): <code>${escapeHtml(serviceIdDisplay)}</code>\n\n` +
       `برای تغییر هر مورد، دکمه مربوطه در زیر را فشرده و پیام جدید را ارسال کنید.`;
 
     bot!.sendMessage(chatId, msg, {
@@ -1202,8 +1239,8 @@ export async function initBot() {
         inline_keyboard: [
           [{ text: '🔗 تغییر آدرس ربکا', callback_data: 'set_reb_url' }, { text: '👤 نام کاربری ربکا', callback_data: 'set_reb_user' }],
           [{ text: '🔑 تغییر رمز عبور ربکا', callback_data: 'set_reb_pass' }, { text: '🔑 کلید API ربکا', callback_data: 'set_reb_apikey' }],
-          [{ text: '🌐 تغییر دامنه ساب ربکا', callback_data: 'set_reb_suburl' }],
-          [{ text: '🔄 تست آنلاین اتصال ربکا', callback_data: 'admin_test_rebecca' }],
+          [{ text: '🌐 تغییر دامنه ساب ربکا', callback_data: 'set_reb_suburl' }, { text: '🏢 تغییر شناسه سرویس', callback_data: 'set_reb_service' }],
+          [{ text: '🏢 دریافت لیست سرویس‌ها', callback_data: 'admin_fetch_reb_services' }, { text: '🔄 تست آنلاین اتصال ربکا', callback_data: 'admin_test_rebecca' }],
           [{ text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }]
         ]
       }
@@ -1899,6 +1936,20 @@ export async function initBot() {
         state.rebeccaPanel.subUrlBase = text.trim();
         db.updateState({ rebeccaPanel: state.rebeccaPanel });
         bot!.sendMessage(chatId, `✅ دامنه پایه ساب ربکا با موفقیت به <code>${escapeHtml(text.trim())}</code> تغییر یافت.`, { parse_mode: 'HTML' });
+        sendRebeccaConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_reb_service') {
+        const val = parseInt(text.trim());
+        if (isNaN(val)) {
+          bot!.sendMessage(chatId, '❌ مقدار وارد شده برای شناسه سرویس باید یک عدد صحیح باشد (مثلاً 1 یا 2).');
+          sendRebeccaConnectionMenu(chatId);
+          return;
+        }
+        state.rebeccaPanel = state.rebeccaPanel || {};
+        state.rebeccaPanel.serviceId = val;
+        db.updateState({ rebeccaPanel: state.rebeccaPanel });
+        bot!.sendMessage(chatId, `✅ شناسه سرویس پیش‌فرض ربکا با موفقیت به <code>${val}</code> تنظیم شد.`, { parse_mode: 'HTML' });
         sendRebeccaConnectionMenu(chatId);
         return;
       }
@@ -3463,6 +3514,79 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'set_reb_service') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_reb_service');
+      bot!.sendMessage(chatId, '🏢 لطفاً شناسه عددی سرویس مورد نظر خود در ربکا (Service ID) را ارسال فرمایید:\n\nنکته: با زدن دکمه «دریافت لیست سرویس‌ها» می‌توانید لیست شناسه‌های موجود در پنل را مشاهده فرمایید.');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_fetch_reb_services') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال دریافت لیست سرویس‌های فعال از پنل ربکا...');
+      try {
+        const services = await rebecca.getServices();
+        if (!services || services.length === 0) {
+          bot!.sendMessage(chatId, '⚠️ هیچ سرویسی در پنل ربکا یافت نشد یا دسترسی به مسیر <code>/api/v2/services</code> مقدور نیست.', { parse_mode: 'HTML' });
+        } else {
+          let text = `🏢 <b>لیست سرویس‌های پنل ربکا (${services.length} مورد):</b>\n\n`;
+          for (const s of services) {
+            text += `🆔 شناسه سرویس (Service ID): <code>${escapeHtml(String(s.id))}</code>\n` +
+              `🏷 نام سرویس: <b>${escapeHtml(String(s.name || 'بدون نام'))}</b>\n` +
+              (s.description ? `📝 توضیحات: ${escapeHtml(String(s.description))}\n` : '') +
+              (s.user_count !== undefined ? `👥 تعداد کاربران: ${s.user_count}\n` : '') +
+              `------------------------\n`;
+          }
+          text += `💡 جهت انتخاب به عنوان پیش‌فرض، دکمه «تغییر شناسه سرویس» را در منوی ربکا بزنید.`;
+          bot!.sendMessage(chatId, text, { parse_mode: 'HTML' });
+        }
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در دریافت سرویس‌های ربکا: ${err.message}`);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_set_mode_xui') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'xui' });
+      answerQuery({ text: 'حالت پنل فعال به فقط سنایی تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_rebecca') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'rebecca' });
+      answerQuery({ text: 'حالت پنل فعال به فقط ربکا تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_both') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'both' });
+      answerQuery({ text: 'حالت پنل فعال به هر دو همزمان (Dual Panel) تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
     if (data === 'admin_test_menu') {
       if (!isAdmin) {
         answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
@@ -4043,7 +4167,8 @@ export async function initBot() {
         }
       }
 
-      if (!purchase || !purchase.subUrl) {
+      const effectiveSubUrl = purchase.rebeccaSubUrl || purchase.subUrl;
+      if (!purchase || !effectiveSubUrl) {
         answerQuery({ text: '❌ سرویس یافت نشد' });
         bot!.sendMessage(chatId, '❌ لینک ساب برای این سرویس یافت نشد.');
         return;
@@ -4052,28 +4177,47 @@ export async function initBot() {
       answerQuery({ text: '⏳ در حال دریافت کانفیگ‌ها...' });
 
       try {
-        const resp = await axios.get(purchase.subUrl, { timeout: 6000 });
-        let text = resp.data;
-        if (typeof text === 'string') {
+        let configsText = '';
+
+        // If Rebecca panel, attempt rebecca.getDirectConfigs first
+        if (purchase.panelType === 'rebecca' || purchase.rebeccaSubUrl) {
           try {
-            const decoded = Buffer.from(text, 'base64').toString('utf-8');
-            if (decoded.includes('://')) {
-              text = decoded;
+            const rebConfigs = await rebecca.getDirectConfigs(effectiveSubUrl);
+            if (rebConfigs && rebConfigs.length > 0) {
+              configsText = rebConfigs.join('\n');
             }
-          } catch {}
+          } catch (e) {}
         }
-        if (typeof text === 'string' && text.includes('://')) {
-          const configs = text.trim();
+
+        // If not retrieved yet, fetch directly via axios
+        if (!configsText) {
+          const resp = await axios.get(effectiveSubUrl, { timeout: 8000 });
+          let text = resp.data;
+          if (typeof text === 'string') {
+            try {
+              const decoded = Buffer.from(text, 'base64').toString('utf-8');
+              if (decoded.includes('://')) {
+                text = decoded;
+              }
+            } catch {}
+          }
+          if (typeof text === 'string' && text.includes('://')) {
+            configsText = text.trim();
+          }
+        }
+
+        if (configsText && configsText.includes('://')) {
+          const configs = configsText.trim();
           if (configs.length > 3500) {
             await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs.slice(0, 3500))}</code>`, { parse_mode: 'HTML' });
           } else {
             await bot!.sendMessage(chatId, `⚙️ <b>کانفیگ‌های مستقیم سرویس:</b>\n\n<code>${escapeHtml(configs)}</code>`, { parse_mode: 'HTML' });
           }
         } else {
-          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در برنامه V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
+          bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(effectiveSubUrl)}</code>\n\nجهت دریافت کانفیگ‌ها، لینک فوق را در برنامه V2ray وارد کرده و دکمه Update Subscription را بزنید.`, { parse_mode: 'HTML' });
         }
       } catch (e: any) {
-        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
+        bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(effectiveSubUrl)}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
       }
       return;
     }
