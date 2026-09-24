@@ -301,29 +301,47 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       }
     }
 
-    // Heal / update subUrl if missing or outdated for Sanaei
+    // Clean up any previously stored duplicate /sub/sub/ or trailing slashes
     const state = db.getState();
     let subUrl = (purchase.subUrl || '').trim();
-    const effectiveSubId = clientObj?.subId || targetSubId;
+    let updatedUrls = false;
 
-    if ((!subUrl || !subUrl.includes('/sub/')) && effectiveSubId && state.panel?.url) {
-      const domain = new URL(state.panel.url).hostname;
-      if (state.panel.subUrlBase && state.panel.subUrlBase.trim() !== '') {
-        let base = state.panel.subUrlBase.trim();
-        if (!base.endsWith('/')) base += '/';
-        subUrl = `${base}${effectiveSubId}`;
-      } else {
-        const panelPortMatch = state.panel.url.match(/:(\d+)$/);
-        const panelPort = panelPortMatch ? panelPortMatch[1] : (state.panel.url.startsWith('https') ? '443' : '80');
-        const protocol = state.panel.url.startsWith('https') ? 'https' : 'http';
-        subUrl = `${protocol}://${domain}:${panelPort}/sub/${effectiveSubId}`;
-      }
+    if (subUrl.includes('/sub/sub/')) {
+      subUrl = subUrl.replace(/\/sub\/sub\//g, '/sub/');
       purchase.subUrl = subUrl;
+      updatedUrls = true;
+    }
+    if (purchase.sanaeiSubUrl && purchase.sanaeiSubUrl.includes('/sub/sub/')) {
+      purchase.sanaeiSubUrl = purchase.sanaeiSubUrl.replace(/\/sub\/sub\//g, '/sub/');
+      updatedUrls = true;
+    }
+    if (purchase.rebeccaSubUrl && purchase.rebeccaSubUrl.includes('/sub/sub/')) {
+      purchase.rebeccaSubUrl = purchase.rebeccaSubUrl.replace(/\/sub\/sub\//g, '/sub/');
+      updatedUrls = true;
+    }
+
+    // ONLY generate a fallback subUrl if purchase.subUrl is completely blank
+    if (!subUrl) {
+      const effectiveSubId = clientObj?.subId || targetSubId;
+      if (purchase.panelType === 'rebecca' || purchase.rebeccaSubUrl) {
+        subUrl = (purchase.rebeccaSubUrl || '').trim();
+      } else if (effectiveSubId && state.panel?.url) {
+        subUrl = xui.buildXuiSubUrl(effectiveSubId);
+      }
+      if (subUrl) {
+        purchase.subUrl = subUrl;
+        updatedUrls = true;
+      }
+    }
+
+    if (updatedUrls) {
       const currentUser = db.getUser(chatId);
       if (currentUser && currentUser.purchases) {
         const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
         if (pItem) {
-          pItem.subUrl = subUrl;
+          pItem.subUrl = purchase.subUrl;
+          pItem.sanaeiSubUrl = purchase.sanaeiSubUrl;
+          pItem.rebeccaSubUrl = purchase.rebeccaSubUrl;
           db.saveUser(currentUser);
         }
       }

@@ -497,24 +497,30 @@ class XuiClient {
     const panelConfig = panelOverride || (state.panel?.panelType !== 'rebecca' ? state.panel : {}) || {};
     const subBase = (panelConfig.subUrlBase || '').trim();
 
+    // Clean subId so it never has leading slashes or redundant sub/ prefix
+    let cleanSubId = String(subId).trim().replace(/^\/+/, '');
+    if (cleanSubId.startsWith('sub/')) {
+      cleanSubId = cleanSubId.slice(4);
+    }
+
     if (subBase && subBase.startsWith('http')) {
       const baseClean = subBase.replace(/\/+$/, '');
       if (baseClean.endsWith('/sub')) {
-        return `${baseClean}/${subId}`;
+        return `${baseClean}/${cleanSubId}`;
       } else if (baseClean.includes('/sub/')) {
-        return `${baseClean}/${subId}`;
+        return `${baseClean}/${cleanSubId}`;
       } else {
-        return `${baseClean}/sub/${subId}`;
+        return `${baseClean}/sub/${cleanSubId}`;
       }
     }
 
     if (!panelConfig.url) return '';
     try {
       const parsed = new URL(panelConfig.url);
-      return `${parsed.origin}/sub/${subId}`;
+      return `${parsed.origin}/sub/${cleanSubId}`;
     } catch {
       const cleanUrl = panelConfig.url.replace(/\/+$/, '').replace(/\/panel.*$/, '');
-      return `${cleanUrl}/sub/${subId}`;
+      return `${cleanUrl}/sub/${cleanSubId}`;
     }
   }
 

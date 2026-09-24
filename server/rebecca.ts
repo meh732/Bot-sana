@@ -543,22 +543,41 @@ export class RebeccaClient {
 
     if (subUrl) {
       if (!subUrl.startsWith('http://') && !subUrl.startsWith('https://')) {
-        subUrl = `${effectiveBase}${subUrl.startsWith('/') ? '' : '/'}${subUrl}`;
+        let cleanRel = subUrl.startsWith('/') ? subUrl.slice(1) : subUrl;
+        let cleanBase = effectiveBase.replace(/\/+$/, '');
+        if (cleanBase.endsWith('/sub') && cleanRel.startsWith('sub/')) {
+          cleanRel = cleanRel.slice(4);
+        }
+        subUrl = `${cleanBase}/${cleanRel}`;
       } else if (customSubBase) {
         try {
           const parsed = new URL(subUrl);
-          const pathAndQuery = parsed.pathname + parsed.search;
-          subUrl = `${effectiveBase}${pathAndQuery}`;
+          let cleanBase = customSubBase.replace(/\/+$/, '');
+          let pathAndQuery = parsed.pathname + parsed.search;
+
+          // Prevent duplicate /sub/ if cleanBase ends with /sub and path starts with /sub
+          if (cleanBase.endsWith('/sub') && pathAndQuery.startsWith('/sub')) {
+            pathAndQuery = pathAndQuery.slice(4);
+          }
+          subUrl = `${cleanBase}${pathAndQuery.startsWith('/') ? '' : '/'}${pathAndQuery}`;
         } catch (e) {}
       }
     } else {
-      if (userData.token) {
-        subUrl = `${effectiveBase}/sub/${userData.token}`;
-      } else if (userData.credential_key) {
-        subUrl = `${effectiveBase}/sub/${cleanUser}/${userData.credential_key}`;
-      } else {
-        subUrl = `${effectiveBase}/sub/${cleanUser}`;
+      let cleanBase = effectiveBase.replace(/\/+$/, '');
+      const token = userData.token || cleanUser;
+      let cleanToken = String(token).replace(/^\/+/, '');
+      if (cleanToken.startsWith('sub/')) {
+        cleanToken = cleanToken.slice(4);
       }
+      if (cleanBase.endsWith('/sub')) {
+        subUrl = `${cleanBase}/${cleanToken}`;
+      } else {
+        subUrl = `${cleanBase}/sub/${cleanToken}`;
+      }
+    }
+
+    if (subUrl && subUrl.includes('/sub/sub/')) {
+      subUrl = subUrl.replace(/\/sub\/sub\//g, '/sub/');
     }
 
     let links: string[] = Array.isArray(userData.links) ? userData.links : [];
