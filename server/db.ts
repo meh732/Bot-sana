@@ -56,6 +56,7 @@ export interface Purchase {
   id: string;
   name: string;
   price: number;
+  subId?: string;
   subUrl: string;
   sanaeiSubUrl?: string;
   rebeccaSubUrl?: string;

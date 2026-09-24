@@ -243,6 +243,56 @@ const purchaseLocks = new Set<number>();
 const forceJoinCache = new Map<number, { isJoined: boolean; timestamp: number }>();
 // pendingPayments moved to db.getState().pendingPayments
 
+// Helper to fetch live traffic info directly from standard V2Ray/X-UI/Rebecca Subscription-Userinfo header
+async function fetchSubscriptionLiveInfo(subUrl: string): Promise<{
+  upload: number;
+  download: number;
+  totalUsed: number;
+  total: number;
+  expiryTime: number;
+} | null> {
+  if (!subUrl || (!subUrl.startsWith('http://') && !subUrl.startsWith('https://'))) {
+    return null;
+  }
+  try {
+    const res = await axios.get(subUrl, {
+      headers: {
+        'User-Agent': 'v2rayNG/1.8.5'
+      },
+      timeout: 5000,
+      validateStatus: () => true
+    });
+
+    const userInfoHeader = res.headers['subscription-userinfo'] || res.headers['Subscription-Userinfo'];
+    if (userInfoHeader && typeof userInfoHeader === 'string') {
+      const parts = userInfoHeader.split(';').map(p => p.trim());
+      let upload = 0;
+      let download = 0;
+      let total = 0;
+      let expire = 0;
+      for (const part of parts) {
+        const [k, v] = part.split('=').map(s => s ? s.trim().toLowerCase() : '');
+        if (k === 'upload') upload = Number(v) || 0;
+        else if (k === 'download') download = Number(v) || 0;
+        else if (k === 'total') total = Number(v) || 0;
+        else if (k === 'expire') expire = Number(v) || 0;
+      }
+      const totalUsed = upload + download;
+      const expiryMs = expire > 10000000000 ? expire : (expire > 0 ? expire * 1000 : 0);
+      return {
+        upload,
+        download,
+        totalUsed,
+        total,
+        expiryTime: expiryMs
+      };
+    }
+  } catch (err: any) {
+    // subUrl not reachable from server, fallback to panel API
+  }
+  return null;
+}
+
 async function sendServiceInfo(chatId: number, purchase: any) {
   if (!bot) return;
   bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات دقیق، حجم، زمان و لینک ساب از سرور...').catch(() => {});
@@ -257,46 +307,99 @@ async function sendServiceInfo(chatId: number, purchase: any) {
 
     const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
     
-    // Extract subId token accurately from subUrl
-    const extractSubId = (url?: string) => {
-      if (!url) return null;
-      const m = url.match(/\/sub\/([a-zA-Z0-9_-]+)/i);
-      return m ? m[1].toLowerCase() : null;
-    };
+    // Extract unique subscription ID / token
+    const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) ||
+                        rebecca.extractSubToken(purchase.subUrl) || 
+                        rebecca.extractSubToken(purchase.sanaeiSubUrl) || 
+                        rebecca.extractSubToken(purchase.rebeccaSubUrl);
 
-    const targetSubId = extractSubId(purchase.subUrl) || 
-                        extractSubId(purchase.sanaeiSubUrl) || 
-                        extractSubId(purchase.rebeccaSubUrl) ||
-                        (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null);
+    let effectiveSubUrl = (purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || '').trim();
+    if (effectiveSubUrl.includes('/sub/sub/')) {
+      effectiveSubUrl = effectiveSubUrl.replace(/\/sub\/sub\//g, '/sub/');
+    }
 
-    if (allClients && allClients.length > 0) {
-      // 1. First & highest priority: Match by unique subscription ID (guaranteed unique per service)
+    // 0. FIRST & MOST SPECIFIC: Query the subscription link directly for live userinfo headers!
+    if (effectiveSubUrl) {
+      try {
+        const liveSub = await fetchSubscriptionLiveInfo(effectiveSubUrl);
+        if (liveSub) {
+          clientObj = {
+            id: purchase.id || targetSubId,
+            subId: targetSubId || purchase.id,
+            up: liveSub.upload,
+            down: liveSub.download,
+            totalUsed: liveSub.totalUsed,
+            total: liveSub.total,
+            expiryTime: liveSub.expiryTime,
+            enable: true,
+            fromLiveSub: true
+          };
+          console.log(`[Subscription Inquiry] Live traffic fetched via subscription URL for ${targetSubId || purchase.id}: Used=${(liveSub.totalUsed / (1024*1024*1024)).toFixed(2)}GB, Exp=${liveSub.expiryTime}`);
+        }
+      } catch (e: any) {
+        console.error('[Subscription Inquiry] Live sub fetch failed:', e.message);
+      }
+    }
+
+    // 1. If not fetched from live sub header, match strictly by unique subscription ID (subId / token)
+    if (!clientObj && allClients && allClients.length > 0) {
       if (targetSubId) {
         clientObj = allClients.find((cl: any) => {
           const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+          const clToken = cl.token ? String(cl.token).trim().toLowerCase() : '';
           const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
-          return (clSubId && clSubId === targetSubId) || (clId && clId === targetSubId);
+          return (clSubId && clSubId === targetSubId) || 
+                 (clToken && clToken === targetSubId) || 
+                 (clId && clId === targetSubId);
         });
       }
 
       // 2. Second priority: Match by subUrl containment
-      if (!clientObj) {
+      if (!clientObj && targetSubId) {
         clientObj = allClients.find((cl: any) => {
-          if (!cl.subId) return false;
-          const sId = String(cl.subId).trim().toLowerCase();
-          return (purchase.subUrl && purchase.subUrl.toLowerCase().includes(sId)) ||
-                 (purchase.sanaeiSubUrl && purchase.sanaeiSubUrl.toLowerCase().includes(sId)) ||
-                 (purchase.rebeccaSubUrl && purchase.rebeccaSubUrl.toLowerCase().includes(sId));
+          const clSub = (cl.subUrl || '').toLowerCase();
+          return clSub && clSub.includes(targetSubId);
+        });
+      }
+      if (!clientObj && effectiveSubUrl) {
+        const cleanSubUrlLower = effectiveSubUrl.toLowerCase();
+        clientObj = allClients.find((cl: any) => {
+          const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+          return clSubId && cleanSubUrlLower.includes(clSubId);
         });
       }
 
-      // 3. Third priority: Match by exact client email or username (purchase.id)
-      if (!clientObj && cleanPId) {
+      // 3. Third priority: If Rebecca panel, query Rebecca API directly by username or token
+      if (!clientObj && (purchase.panelType === 'rebecca' || purchase.rebeccaSubUrl)) {
+        try {
+          const rebUser = await rebecca.getClient(purchase.id || targetSubId);
+          if (rebUser) {
+            const usedTraffic = Number(rebUser.used_traffic !== undefined ? rebUser.used_traffic : (rebUser.usedTraffic !== undefined ? rebUser.usedTraffic : (rebUser.traffic?.used || 0))) || 0;
+            const dataLimit = Number(rebUser.data_limit !== undefined ? rebUser.data_limit : (rebUser.dataLimit !== undefined ? rebUser.dataLimit : (rebUser.traffic?.limit || 0))) || 0;
+            const expireSec = Number(rebUser.expire !== undefined ? rebUser.expire : (rebUser.expire_date !== undefined ? rebUser.expire_date : (rebUser.expiry || 0))) || 0;
+            const expiryMs = expireSec > 10000000000 ? expireSec : (expireSec > 0 ? expireSec * 1000 : 0);
+            clientObj = {
+              id: rebUser.username,
+              username: rebUser.username,
+              subId: rebUser.token || targetSubId,
+              up: 0,
+              down: usedTraffic,
+              totalUsed: usedTraffic,
+              total: dataLimit,
+              expiryTime: expiryMs,
+              enable: rebUser.status ? (rebUser.status === 'active' || rebUser.status === 'enabled') : true,
+              panel: 'rebecca'
+            };
+          }
+        } catch (e) {}
+      }
+
+      // 4. Strict Fourth priority: Match by unique client email or username, BUT ONLY if email is not generic and is at least 6 characters
+      if (!clientObj && cleanPId && cleanPId.length >= 6 && !['test', 'free', 'admin', 'user'].includes(cleanPId)) {
         clientObj = allClients.find((cl: any) => {
           const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
           const clUsername = cl.username ? String(cl.username).trim().toLowerCase() : '';
-          const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
-          return clEmail === cleanPId || clUsername === cleanPId || clId === cleanPId;
+          return clEmail === cleanPId || clUsername === cleanPId;
         });
       }
     }
@@ -305,6 +408,35 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     const state = db.getState();
     let subUrl = (purchase.subUrl || '').trim();
     let updatedUrls = false;
+
+    // If admin configured custom subUrlBase without /sub, strip unwanted /sub/ from stored link
+    const sanaeiBase = (state.panel?.subUrlBase || '').trim();
+    if (sanaeiBase && !sanaeiBase.includes('/sub')) {
+      const cleanBase = sanaeiBase.replace(/\/+$/, '');
+      if (subUrl.startsWith(`${cleanBase}/sub/`)) {
+        subUrl = subUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+        purchase.subUrl = subUrl;
+        updatedUrls = true;
+      }
+      if (purchase.sanaeiSubUrl && purchase.sanaeiSubUrl.startsWith(`${cleanBase}/sub/`)) {
+        purchase.sanaeiSubUrl = purchase.sanaeiSubUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+        updatedUrls = true;
+      }
+    }
+
+    const rebeccaBase = (state.rebeccaPanel?.subUrlBase || '').trim();
+    if (rebeccaBase && !rebeccaBase.includes('/sub')) {
+      const cleanBase = rebeccaBase.replace(/\/+$/, '');
+      if (subUrl.startsWith(`${cleanBase}/sub/`)) {
+        subUrl = subUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+        purchase.subUrl = subUrl;
+        updatedUrls = true;
+      }
+      if (purchase.rebeccaSubUrl && purchase.rebeccaSubUrl.startsWith(`${cleanBase}/sub/`)) {
+        purchase.rebeccaSubUrl = purchase.rebeccaSubUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+        updatedUrls = true;
+      }
+    }
 
     if (subUrl.includes('/sub/sub/')) {
       subUrl = subUrl.replace(/\/sub\/sub\//g, '/sub/');
@@ -334,28 +466,32 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       }
     }
 
+    let updatedDb = false;
+    if (targetSubId && !purchase.subId) {
+      purchase.subId = targetSubId;
+      updatedDb = true;
+    }
     if (updatedUrls) {
-      const currentUser = db.getUser(chatId);
-      if (currentUser && currentUser.purchases) {
-        const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
-        if (pItem) {
-          pItem.subUrl = purchase.subUrl;
-          pItem.sanaeiSubUrl = purchase.sanaeiSubUrl;
-          pItem.rebeccaSubUrl = purchase.rebeccaSubUrl;
-          db.saveUser(currentUser);
-        }
-      }
+      updatedDb = true;
     }
 
     // Save latest used bytes if available and sync with live client traffic
     if (clientObj) {
       const currentUsed = clientObj.totalUsed || ((clientObj.up || 0) + (clientObj.down || 0));
       purchase.lastUsedBytes = currentUsed;
+      updatedDb = true;
+    }
+
+    if (updatedDb) {
       const currentUser = db.getUser(chatId);
       if (currentUser && currentUser.purchases) {
         const pItem = currentUser.purchases.find((p: any) => p.id === purchase.id);
         if (pItem) {
-          pItem.lastUsedBytes = currentUsed;
+          if (purchase.subId) pItem.subId = purchase.subId;
+          pItem.subUrl = purchase.subUrl;
+          pItem.sanaeiSubUrl = purchase.sanaeiSubUrl;
+          pItem.rebeccaSubUrl = purchase.rebeccaSubUrl;
+          if (purchase.lastUsedBytes !== undefined) pItem.lastUsedBytes = purchase.lastUsedBytes;
           db.saveUser(currentUser);
         }
       }
@@ -697,6 +833,68 @@ export async function initBot() {
     }).catch(err => {
       console.error("[Bot Error] Failed to set Bot commands menu (Check token):", err.message || err);
     });
+
+    // Self-healing migration: Ensure all existing purchases have unique subId populated and clean subUrls
+    try {
+      const dbState = db.getState();
+      for (const u of (dbState.users || [])) {
+        let uModified = false;
+        for (const p of (u.purchases || [])) {
+          if (!p.subId) {
+            const extracted = rebecca.extractSubToken(p.subUrl) || 
+                              rebecca.extractSubToken(p.sanaeiSubUrl) || 
+                              rebecca.extractSubToken(p.rebeccaSubUrl);
+            if (extracted) {
+              p.subId = extracted;
+              uModified = true;
+            }
+          }
+          if (p.subUrl && p.subUrl.includes('/sub/sub/')) {
+            p.subUrl = p.subUrl.replace(/\/sub\/sub\//g, '/sub/');
+            uModified = true;
+          }
+          if (p.sanaeiSubUrl && p.sanaeiSubUrl.includes('/sub/sub/')) {
+            p.sanaeiSubUrl = p.sanaeiSubUrl.replace(/\/sub\/sub\//g, '/sub/');
+            uModified = true;
+          }
+          if (p.rebeccaSubUrl && p.rebeccaSubUrl.includes('/sub/sub/')) {
+            p.rebeccaSubUrl = p.rebeccaSubUrl.replace(/\/sub\/sub\//g, '/sub/');
+            uModified = true;
+          }
+
+          const sanaeiBase = (dbState.panel?.subUrlBase || '').trim();
+          if (sanaeiBase && !sanaeiBase.includes('/sub')) {
+            const cleanBase = sanaeiBase.replace(/\/+$/, '');
+            if (p.subUrl && p.subUrl.startsWith(`${cleanBase}/sub/`)) {
+              p.subUrl = p.subUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+              uModified = true;
+            }
+            if (p.sanaeiSubUrl && p.sanaeiSubUrl.startsWith(`${cleanBase}/sub/`)) {
+              p.sanaeiSubUrl = p.sanaeiSubUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+              uModified = true;
+            }
+          }
+
+          const rebeccaBase = (dbState.rebeccaPanel?.subUrlBase || '').trim();
+          if (rebeccaBase && !rebeccaBase.includes('/sub')) {
+            const cleanBase = rebeccaBase.replace(/\/+$/, '');
+            if (p.subUrl && p.subUrl.startsWith(`${cleanBase}/sub/`)) {
+              p.subUrl = p.subUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+              uModified = true;
+            }
+            if (p.rebeccaSubUrl && p.rebeccaSubUrl.startsWith(`${cleanBase}/sub/`)) {
+              p.rebeccaSubUrl = p.rebeccaSubUrl.replace(`${cleanBase}/sub/`, `${cleanBase}/`);
+              uModified = true;
+            }
+          }
+        }
+        if (uModified) {
+          db.saveUser(u);
+        }
+      }
+    } catch (e: any) {
+      console.error('[Bot Init Migration Error]', e.message);
+    }
   } catch (err: any) {
     console.error('[Bot Error] Exception thrown during Bot creation:', err.message || err);
   }
@@ -842,6 +1040,7 @@ export async function initBot() {
         id: clientEmail, // use the email as id to trace back to client accurately
         name: product.name,
         price: isPAYG ? 0 : finalPrice,
+        subId: clientResult.subId,
         subUrl: clientResult.subUrl,
         sanaeiSubUrl: clientResult.sanaeiSubUrl,
         rebeccaSubUrl: clientResult.rebeccaSubUrl,
@@ -2727,6 +2926,7 @@ export async function initBot() {
           id: clientResult.clientEmail,
           name: `تست رایگان (${volGb}GB - ${durDays} روز)`,
           price: 0,
+          subId: clientResult.subId,
           subUrl: clientResult.subUrl,
           sanaeiSubUrl: clientResult.sanaeiSubUrl,
           rebeccaSubUrl: clientResult.rebeccaSubUrl,

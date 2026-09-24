@@ -505,13 +505,9 @@ class XuiClient {
 
     if (subBase && subBase.startsWith('http')) {
       const baseClean = subBase.replace(/\/+$/, '');
-      if (baseClean.endsWith('/sub')) {
-        return `${baseClean}/${cleanSubId}`;
-      } else if (baseClean.includes('/sub/')) {
-        return `${baseClean}/${cleanSubId}`;
-      } else {
-        return `${baseClean}/sub/${cleanSubId}`;
-      }
+      // When subUrlBase is configured by the admin (e.g. "https://lazem.templatetesti.shop/7070/"),
+      // directly append the token to the base. Do NOT inject or force /sub/!
+      return `${baseClean}/${cleanSubId}`;
     }
 
     if (!panelConfig.url) return '';

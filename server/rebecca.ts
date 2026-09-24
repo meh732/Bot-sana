@@ -366,7 +366,7 @@ export class RebeccaClient {
     telegramId?: string,
     group?: string,
     note?: string
-  ): Promise<{ username: string; subUrl: string; links: string[]; raw?: any }> {
+  ): Promise<{ username: string; subUrl: string; subId?: string; token?: string; links: string[]; raw?: any }> {
     const { baseURL, headers } = await this.getAuthHeaders();
     const state = db.getState();
 
@@ -569,7 +569,9 @@ export class RebeccaClient {
       if (cleanToken.startsWith('sub/')) {
         cleanToken = cleanToken.slice(4);
       }
-      if (cleanBase.endsWith('/sub')) {
+      if (customSubBase) {
+        subUrl = `${cleanBase}/${cleanToken}`;
+      } else if (cleanBase.endsWith('/sub')) {
         subUrl = `${cleanBase}/${cleanToken}`;
       } else {
         subUrl = `${cleanBase}/sub/${cleanToken}`;
@@ -599,12 +601,46 @@ export class RebeccaClient {
 
     console.log(`[Rebecca Success] User "${cleanUser}" created successfully. Sub URL: ${subUrl}, Links count: ${links.length}`);
 
+    const subToken = userData.token || this.extractSubToken(subUrl) || cleanUser;
+
     return {
       username: cleanUser,
       subUrl,
+      subId: subToken,
+      token: subToken,
       links,
       raw: userData
     };
+  }
+
+  public extractSubToken(url?: string): string | null {
+    if (!url || typeof url !== 'string') return null;
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+
+    try {
+      const parsed = new URL(trimmed.startsWith('http') ? trimmed : `http://${trimmed}`);
+      const qToken = parsed.searchParams.get('token') || parsed.searchParams.get('sub') || parsed.searchParams.get('id');
+      if (qToken && qToken.length >= 3) {
+        return qToken.toLowerCase();
+      }
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      if (segments.length > 0) {
+        const subIdx = segments.findIndex(s => s.toLowerCase() === 'sub');
+        if (subIdx !== -1 && subIdx < segments.length - 1) {
+          return segments[subIdx + 1].toLowerCase();
+        }
+        const last = segments[segments.length - 1];
+        if (last && last.toLowerCase() !== 'sub' && last.length >= 3) {
+          return last.toLowerCase();
+        }
+      }
+    } catch {}
+
+    const m = trimmed.match(/\/sub\/([a-zA-Z0-9_-]+)/i);
+    if (m) return m[1].toLowerCase();
+
+    return null;
   }
 
   public async getDirectConfigs(subUrlOrUsername: string): Promise<string[]> {
@@ -836,13 +872,17 @@ export class RebeccaClient {
           const expiryMs = expireSec > 10000000000 ? expireSec : (expireSec > 0 ? expireSec * 1000 : 0);
           const isEnabled = u.status ? (u.status === 'active' || u.status === 'enabled') : (u.enable !== false && u.disabled !== true);
           const subUrl = u.subscription_url || u.sub_url || u.subscriptionUrl || '';
-          const subId = subUrl ? (subUrl.split('/sub/')[1]?.split('?')[0] || '') : (u.sub_id || u.subId || '');
+          const token = u.token || '';
+          const extractedToken = this.extractSubToken(subUrl);
+          const subId = token || extractedToken || u.sub_id || u.subId || '';
 
           return {
             id: u.username,
             email: u.username,
             username: u.username,
             subId: subId,
+            token: token || subId,
+            subUrl: subUrl,
             up: 0,
             down: usedTraffic,
             totalUsed: usedTraffic,

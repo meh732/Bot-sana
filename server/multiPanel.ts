@@ -5,6 +5,7 @@ import { db, Product, User, Purchase } from './db.js';
 export interface UnifiedClientCreationResult {
   panelType: 'sanaei' | 'rebecca' | 'both';
   clientEmail: string;
+  subId?: string;
   subUrl: string;
   sanaeiSubUrl?: string;
   rebeccaSubUrl?: string;
@@ -17,6 +18,8 @@ export interface UnifiedTrafficClient {
   email: string;
   username: string;
   subId?: string;
+  token?: string;
+  subUrl?: string;
   up: number;
   down: number;
   totalUsed: number;
@@ -176,9 +179,14 @@ export class MultiPanelService {
       throw new Error('هیچ لینک اتصالی از پنل‌های انتخاب شده تولید نشد. لطفاً از اتصال پنل به ربات اطمینان حاصل فرمایید.');
     }
 
+    const sanaeiSubId = sanaeiDetails?.subId || '';
+    const rebeccaSubId = rebeccaDetails?.subId || rebeccaDetails?.token || (rebeccaDetails?.subUrl ? rebecca.extractSubToken(rebeccaDetails.subUrl) : '');
+    const primarySubId = sanaeiSubId || rebeccaSubId || '';
+
     return {
       panelType,
       clientEmail,
+      subId: primarySubId,
       subUrl: primarySubUrl,
       sanaeiSubUrl: sanaeiSubUrl || undefined,
       rebeccaSubUrl: rebeccaSubUrl || undefined,
@@ -202,6 +210,8 @@ export class MultiPanelService {
           email: cl.email,
           username: cl.email,
           subId: cl.subId,
+          token: cl.subId,
+          subUrl: cl.subUrl,
           up: cl.up || 0,
           down: cl.down || 0,
           totalUsed: (cl.up || 0) + (cl.down || 0),
@@ -224,6 +234,8 @@ export class MultiPanelService {
           email: cl.email,
           username: cl.username,
           subId: cl.subId,
+          token: (cl as any).token || cl.subId,
+          subUrl: (cl as any).subUrl,
           up: cl.up || 0,
           down: cl.down || 0,
           totalUsed: cl.totalUsed || 0,
