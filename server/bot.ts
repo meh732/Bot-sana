@@ -504,6 +504,14 @@ async function sendServiceInfo(chatId: number, purchase: any) {
   }
 }
 
+function isUserAdmin(chatId: number | string | undefined, state?: any): boolean {
+  if (!chatId) return false;
+  const s = state || db.getState();
+  if (!s || !Array.isArray(s.adminIds) || s.adminIds.length === 0) return false;
+  const targetIdStr = String(chatId).trim();
+  return s.adminIds.some((id: any) => String(id).trim() === targetIdStr);
+}
+
 function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
   const keyboard = [];
   const firstRow = [];
@@ -1091,8 +1099,8 @@ export async function initBot() {
   }
 
   const sendAdminMainMenu = (chatId: number) => {
-    bot!.sendMessage(chatId, '🔧 *پنل مدیریت ربات سنایی (X-UI)*:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
-      parse_mode: 'Markdown',
+    bot!.sendMessage(chatId, '🔧 <b>پنل مدیریت ربات سنایی (X-UI)</b>:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [{ text: '🔵 تنظیمات اتصال سنایی (X-UI)', callback_data: 'admin_panel_menu' }],
@@ -1110,13 +1118,13 @@ export async function initBot() {
 
   const sendCardSettingsMenu = (chatId: number) => {
     const s = db.getState();
-    const msg = `💳 *تنظیمات کارت پرداخت بانکی (کارت به کارت)*:\n\n` +
-      `💳 شماره کارت فعلی: \`${s.cardNumber || '❌ تنظیم نشده'}\`\n` +
-      `👤 نام دارنده حساب: *${s.cardHolder || '❌ تنظیم نشده'}*\n\n` +
+    const msg = `💳 <b>تنظیمات کارت پرداخت بانکی (کارت به کارت)</b>:\n\n` +
+      `💳 شماره کارت فعلی: <code>${escapeHtml(s.cardNumber || '❌ تنظیم نشده')}</code>\n` +
+      `👤 نام دارنده حساب: <b>${escapeHtml(s.cardHolder || '❌ تنظیم نشده')}</b>\n\n` +
       `شما می‌توانید هر کدام از مشخصات کارت زیر را از طریق دکمه‌های زیر تغییر دهید:`;
 
     bot!.sendMessage(chatId, msg, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [{ text: '💳 تغییر شماره کارت', callback_data: 'set_card_num' }, { text: '👤 تغییر نام دارنده حساب', callback_data: 'set_card_name' }],
@@ -1128,17 +1136,16 @@ export async function initBot() {
 
   const sendSanaeiConnectionMenu = (chatId: number) => {
     const state = db.getState();
-    const msg = `🖥 اطلاعات اتصال به پنل سنایی (X-UI):
-
-🔗 آدرس: ${state.panel.url || '❌ تنظیم نشده'}
-👤 نام کاربری: ${state.panel.username || '❌ تنظیم نشده'}
-🔑 رمز عبور: ${state.panel.password ? '******' : '❌ تنظیم نشده'}
-🔑 کلید API Key: ${state.panel.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}
-🆔 اینباند (Inbound ID): ${state.panel.inboundId || '❌ تنظیم نشده'}
-
-برای تغییر هر مورد، دکمه مربوطه در زیر را فشرده و پیام جدید را ارسال کنید.`;
+    const msg = `🖥 <b>اطلاعات اتصال به پنل سنایی (X-UI)</b>:\n\n` +
+      `🔗 آدرس: <code>${escapeHtml(state.panel.url || '❌ تنظیم نشده')}</code>\n` +
+      `👤 نام کاربری: <code>${escapeHtml(state.panel.username || '❌ تنظیم نشده')}</code>\n` +
+      `🔑 رمز عبور: <code>${state.panel.password ? '******' : '❌ تنظیم نشده'}</code>\n` +
+      `🔑 کلید API Key: <code>${state.panel.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}</code>\n` +
+      `🆔 اینباند (Inbound ID): <code>${escapeHtml(String(state.panel.inboundId || '❌ تنظیم نشده'))}</code>\n\n` +
+      `برای تغییر هر مورد، دکمه مربوطه در زیر را فشرده و پیام جدید را ارسال کنید.`;
 
     bot!.sendMessage(chatId, msg, {
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [{ text: '🔗 تغییر آدرس پنل', callback_data: 'set_p_url' }, { text: '👤 تغییر نام کاربری', callback_data: 'set_p_user' }],
@@ -1154,15 +1161,15 @@ export async function initBot() {
   const sendTestSettingsMenu = (chatId: number) => {
     const state = db.getState();
     const statusText = state.freeTestEnabled !== false ? '✅ فعال' : '❌ غیرفعال';
-    const msg = `🎁 *تنظیمات اکانت تست رایگان و پاداش دعوت*:\n\n` +
-      `🔘 وضعیت تست رایگان: *${statusText}*\n` +
-      `📦 حجم تست رایگان: \`${state.freeTestVolumeGb} گیگابایت\`\n` +
-      `⏰ زمان تست رایگان: \`${state.freeTestDurationDays} روز\`\n` +
-      `🆔 اینباند اختصاصی تست: \`${state.freeTestInboundId || 'عمومی'}\`\n` +
-      `💰 هدیه زیرمجموعه‌گیری: \`${state.referralRewardToman || 0} تومان\``;
+    const msg = `🎁 <b>تنظیمات اکانت تست رایگان و پاداش دعوت</b>:\n\n` +
+      `🔘 وضعیت تست رایگان: <b>${statusText}</b>\n` +
+      `📦 حجم تست رایگان: <code>${state.freeTestVolumeGb} گیگابایت</code>\n` +
+      `⏰ زمان تست رایگان: <code>${state.freeTestDurationDays} روز</code>\n` +
+      `🆔 اینباند اختصاصی تست: <code>${escapeHtml(String(state.freeTestInboundId || 'عمومی'))}</code>\n` +
+      `💰 هدیه زیرمجموعه‌گیری: <code>${(state.referralRewardToman || 0).toLocaleString()} تومان</code>`;
 
     bot!.sendMessage(chatId, msg, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [{ text: '🔘 فعال/غیرفعال کردن تست', callback_data: 'toggle_test_enabled' }],
@@ -1177,13 +1184,13 @@ export async function initBot() {
 
   const sendProductsMenu = (chatId: number) => {
     const state = db.getState();
-    let msg = '📦 پکیج‌ها و محصولات فعال در ربات:\n\n';
+    let msg = '📦 <b>پکیج‌ها و محصولات فعال در ربات</b>:\n\n';
     if (state.products.length === 0) {
       msg += '❌ هیچ محصولی تعریف نشده است.';
     } else {
       state.products.forEach((p, idx) => {
         const inboundText = p.inboundId ? `🆔 اینباند اختصاصی: ${p.inboundId}` : '🆔 اینباند: عمومی (تعریف شده در تنظیمات)';
-        msg += `${idx + 1}- *${p.name}*\n💰 قیمت: ${p.price.toLocaleString()} تومان\n📦 حجم: ${p.volumeGb} GB\n⏳ زمان: ${p.durationDays} روز\n${inboundText}\n🗑 آیدی محصول: \`${p.id}\`\n----------------\n`;
+        msg += `${idx + 1}- <b>${escapeHtml(p.name)}</b>\n💰 قیمت: ${p.price.toLocaleString()} تومان\n📦 حجم: ${p.volumeGb} GB\n⏳ زمان: ${p.durationDays} روز\n${inboundText}\n🗑 آیدی محصول: <code>${escapeHtml(p.id)}</code>\n----------------\n`;
       });
     }
 
@@ -1195,7 +1202,7 @@ export async function initBot() {
     inline_keyboard.push([{ text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }]);
 
     bot!.sendMessage(chatId, msg, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard
       }
@@ -1205,14 +1212,13 @@ export async function initBot() {
   const sendUsersMenu = (chatId: number) => {
     const state = db.getState();
     const sellers = state.users.filter(u => u.isSeller);
-    const msg = `👥 مدیریت جامع کاربران و فروشنده‌ها:
-
-کل اعضای ربات: ${state.users.length} نفر
-تعداد همکاران فروشنده: ${sellers.length} نفر
-
-یکی از دستورات زیر را برای اعمال انتخاب کنید:`;
+    const msg = `👥 <b>مدیریت جامع کاربران و فروشنده‌ها</b>:\n\n` +
+      `▫️ کل اعضای ربات: <b>${state.users.length} نفر</b>\n` +
+      `▫️ تعداد همکاران فروشنده: <b>${sellers.length} نفر</b>\n\n` +
+      `یکی از دستورات زیر را برای اعمال انتخاب کنید:`;
 
     bot!.sendMessage(chatId, msg, {
+      parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [{ text: '🔍 جستجوی کاربر در سیستم', callback_data: 'admin_search_user' }, { text: '🔍 جستجوی کانفیگ', callback_data: 'admin_search_config' }],
@@ -1373,8 +1379,11 @@ export async function initBot() {
   bot.onText(/\/admin/, (msg) => {
     const chatId = msg.chat.id;
     const state = db.getState();
-    if (!state.adminIds.includes(chatId)) {
-      bot!.sendMessage(chatId, '❌ شما به این بخش دسترسی ندارید.');
+    if (!state.adminIds || state.adminIds.length === 0) {
+      db.updateState({ adminIds: [chatId] });
+    }
+    if (!isUserAdmin(chatId, db.getState())) {
+      bot!.sendMessage(chatId, '❌ شما به بخش مدیریت دسترسی ندارید.');
       return;
     }
     sendAdminMainMenu(chatId);
@@ -1386,7 +1395,10 @@ export async function initBot() {
     const text = msg.text || '';
 
     const state = db.getState();
-    const isAdmin = state.adminIds.includes(chatId);
+    if (!state.adminIds || state.adminIds.length === 0) {
+      db.updateState({ adminIds: [chatId] });
+    }
+    const isAdmin = isUserAdmin(chatId, db.getState());
 
     // Filter for force join
     if (!isAdmin && state.forceJoinEnabled && state.forceJoinChannels && state.forceJoinChannels.length > 0) {
@@ -2839,10 +2851,40 @@ export async function initBot() {
     // Restore Backup System if admin uploads the json document
     if (msg.document) {
       const state = db.getState();
-      if (state.adminIds.includes(chatId) && msg.document.file_name?.endsWith('.json')) {
-        adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
-        bot!.sendMessage(chatId, '📥 فایل پشتیبان دریافت شد.\n\n🔑 لطفا رمز عبور فایل بکاپ را ارسال کُنید تا رمزگشایی و بازیابی اطلاعات انجام شود:');
-        return;
+      if (isUserAdmin(chatId, state) && msg.document.file_name?.endsWith('.json')) {
+        bot!.sendMessage(chatId, '⏳ در حال بررسی و پردازش فایل پشتیبان...');
+        try {
+          const file = await bot!.getFile(msg.document.file_id);
+          const dUrl = `https://api.telegram.org/file/bot${state.botToken}/${file.file_path}`;
+          const res = await axios.get(dUrl, { responseType: 'text' });
+          let rawText = res.data;
+          if (typeof rawText === 'object') {
+            rawText = JSON.stringify(rawText);
+          }
+          
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(rawText);
+          } catch (e) {}
+
+          if (parsed && typeof parsed === 'object' && (parsed.panel || parsed.users || parsed.products)) {
+            // Direct restore
+            const dbPath = path.join(process.cwd(), 'db.json');
+            fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
+            db.updateState(parsed);
+            bot!.sendMessage(chatId, '✅ <b>بازیابی کامل اطلاعات با موفقیت انجام شد!</b>\nتمامی تنظیمات، محصولات، اطلاعات پنل و کاربران بدون معطلی بارگذاری و همگام شدند. 🎉', { parse_mode: 'HTML' });
+            setTimeout(() => { initBot(); }, 1500);
+            return;
+          }
+
+          // Encrypted backup
+          adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
+          bot!.sendMessage(chatId, '🔑 این فایل پشتیبان رمزگذاری شده است.\nلطفاً رمز عبور فایل بکاپ را جهت رمزگشایی ارسال فرمایید:');
+          return;
+        } catch (err: any) {
+          bot!.sendMessage(chatId, `❌ خطا در پردازش فایل: ${err.message}`);
+          return;
+        }
       }
     }
 
@@ -2891,9 +2933,11 @@ export async function initBot() {
       db.saveUser(user);
     }
 
-    const data = query.data;
     const state = db.getState();
-    const isAdmin = state.adminIds.includes(chatId);
+    if (!state.adminIds || state.adminIds.length === 0) {
+      db.updateState({ adminIds: [chatId] });
+    }
+    const isAdmin = isUserAdmin(chatId, db.getState());
 
     // Filter for force join with smart caching to ensure instant, snappy button responses
     let shouldCheckForceJoin = !isAdmin && state.forceJoinEnabled && state.forceJoinChannels && state.forceJoinChannels.length > 0;
@@ -3104,126 +3148,165 @@ export async function initBot() {
     }
 
     if (data === 'admin_card_menu') {
-      if (isAdmin) {
-        sendCardSettingsMenu(chatId);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      sendCardSettingsMenu(chatId);
       answerQuery();
       return;
     }
 
     if (data === 'set_card_num') {
-      if (isAdmin) {
-        adminSession.set(chatId, 'set_card_num');
-        bot!.sendMessage(chatId, '💳 لطفا شماره کارت ۱۶ رقمی جدید را بدون فاصله ارسال کنید:');
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      adminSession.set(chatId, 'set_card_num');
+      bot!.sendMessage(chatId, '💳 لطفا شماره کارت ۱۶ رقمی جدید را بدون فاصله ارسال کنید:');
       answerQuery();
       return;
     }
 
     if (data === 'set_card_name') {
-      if (isAdmin) {
-        adminSession.set(chatId, 'set_card_name');
-        bot!.sendMessage(chatId, '👤 لطفا نام دارنده کارت جدید را ارسال کنید:');
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      adminSession.set(chatId, 'set_card_name');
+      bot!.sendMessage(chatId, '👤 لطفا نام دارنده کارت جدید را ارسال کنید:');
       answerQuery();
       return;
     }
 
     if (data === 'admin_daily_report') {
-      if (isAdmin) {
-        bot!.sendMessage(chatId, getDailyReportText(), { parse_mode: 'HTML' });
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      bot!.sendMessage(chatId, getDailyReportText(), { parse_mode: 'HTML' });
       answerQuery();
       return;
     }
 
     if (data === 'admin_main') {
-      if (isAdmin) {
-        sendAdminMainMenu(chatId);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      sendAdminMainMenu(chatId);
       answerQuery();
       return;
     }
 
     if (data === 'admin_auto_backup_menu') {
-      if (isAdmin) {
-        adminSession.set(chatId, 'set_auto_backup_interval');
-        const interval = state.autoBackupIntervalHours || 0;
-        let txt = `⏳ *تنظیمات زمان‌بندی بکاپ خودکار*\n\nوضعیت فعلی: ${interval > 0 ? `فعال (هر ${interval} ساعت)` : 'غیرفعال'}\n\n`;
-        txt += `لطفاً برای تنظیم زمان‌بندی جدید، یک عدد بین 1 تا 24 را بفرستید که نشان‌دهنده تعداد ساعت فاصله‌ی بین هر بکاپ است.\n\nبرای غیرفعال کردن بکاپ خودکار عدد 0 را ارسال کنید.`;
-        bot!.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      adminSession.set(chatId, 'set_auto_backup_interval');
+      const interval = state.autoBackupIntervalHours || 0;
+      let txt = `⏳ <b>تنظیمات زمان‌بندی بکاپ خودکار</b>\n\nوضعیت فعلی: <b>${interval > 0 ? `فعال (هر ${interval} ساعت)` : 'غیرفعال'}</b>\n\n` +
+        `لطفاً برای تنظیم زمان‌بندی جدید، یک عدد بین 1 تا 24 را بفرستید که نشان‌دهنده تعداد ساعت فاصله‌ی بین هر بکاپ است.\n\nبرای غیرفعال کردن بکاپ خودکار عدد 0 را ارسال کنید.`;
+      bot!.sendMessage(chatId, txt, { parse_mode: 'HTML' });
       answerQuery();
       return;
     }
 
     if (data === 'admin_backup') {
-      if (isAdmin) {
-        adminSession.set(chatId, 'get_backup_password');
-        bot!.sendMessage(chatId, '🔑 لطفا یک رمز عبور دلخواه برای رمزگذاری و محافظت از فایل بکاپ خود وارد کنید:\n\n*(هنگام بازیابی این فایل، وارد کردن این رمز عبور الزامی است)*', { parse_mode: 'Markdown' });
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
-      answerQuery();
+      answerQuery({ text: '⏳ در حال ساخت و ارسال فایل بکاپ...' });
+      try {
+        const rawData = fs.readFileSync(path.join(process.cwd(), 'db.json'), 'utf8');
+        const backupFileName = `sanaei_backup_${Date.now()}.json`;
+        const backupPath = path.join(process.cwd(), backupFileName);
+        fs.writeFileSync(backupPath, rawData, 'utf8');
+        
+        await bot!.sendDocument(chatId, backupPath, {
+          caption: `📥 <b>فایل پشتیبان کامل دیتابیس ربات و تنظیمات</b>\n\n📅 تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}\n\n💡 جهت بازیابی در سرور دیگر یا همین ربات، کافیست این فایل <code>.json</code> را به همین چت ارسال نمایید.`,
+          parse_mode: 'HTML'
+        });
+
+        try { fs.unlinkSync(backupPath); } catch (e) {}
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در ایجاد فایل پشتیبان: ${err.message}`);
+      }
       return;
     }
 
     if (data === 'admin_restore_prompt') {
-      if (isAdmin) {
-        bot!.sendMessage(chatId, '📤 *راهنمای بازیابی فایل پشتیبان (ری‌استور)*:\n\nلطفاً فایل پشتیبان با پسوند `.json` را که قبلاً از این ربات یا از پنل وب ادمین دریافت کرده‌اید به همین چت فوروارد یا ارسال کُنید.\n\nپس از دریافت فایل، سیستم رمز عبور بکاپ را جهت رمزگشایی و اعمال نهایی از شما خواهد پرسید.', { parse_mode: 'Markdown' });
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      bot!.sendMessage(chatId, '📤 <b>راهنمای بازیابی فایل پشتیبان (ری‌استور)</b>:\n\nلطفاً فایل پشتیبان با پسوند <code>.json</code> را که قبلاً از این ربات یا از پنل وب ادمین دریافت کرده‌اید به همین چت فوروارد یا ارسال کُنید.\n\nپس از دریافت فایل، سیستم اطلاعات را به طور خودکار بازیابی و همگام‌سازی خواهد کرد.', { parse_mode: 'HTML' });
       answerQuery();
       return;
     }
 
     if (data === 'admin_panel_menu') {
-      if (isAdmin) {
-        sendSanaeiConnectionMenu(chatId);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      sendSanaeiConnectionMenu(chatId);
       answerQuery();
       return;
     }
 
     if (data === 'admin_fetch_inbounds') {
-      if (isAdmin) {
-        bot!.sendMessage(chatId, '⏳ در حال دریافت لیست اینباندهای پنل...');
-        try {
-          const list = await xui.getInbounds();
-          if (!list || list.length === 0) {
-            bot!.sendMessage(chatId, '❌ هیچ اینباندی یافت نشد یا اتصال با پنل برقرار نشد. لطفا مشخصات اتصال (آدرس کامل، توکن API یا اطلاعات کاربری ورود) را مجدداً بررسی فرمایید.');
-          } else {
-            let text = '⚡️ لیست اینباندهای یافت شده:\n\n';
-            list.forEach((inb: any) => {
-              text += `🆔 شناسه ID: \`${inb.id}\`\n💬 عنوان (Remark): ${inb.remark}\n🔌 پورت: ${inb.port}\n🌐 پروتکل: ${inb.protocol}\n------------------------\n`;
-            });
-            bot!.sendMessage(chatId, text, { parse_mode: 'Markdown' });
-          }
-        } catch(err: any) {
-           bot!.sendMessage(chatId, `❌ خطا در برقراری ارتباط با پنل سنایی: ${err.message}`);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال دریافت لیست اینباندهای پنل...');
+      try {
+        const list = await xui.getInbounds();
+        if (!list || list.length === 0) {
+          bot!.sendMessage(chatId, '❌ هیچ اینباندی یافت نشد یا اتصال با پنل برقرار نشد. لطفا مشخصات اتصال (آدرس کامل، توکن API یا اطلاعات کاربری ورود) را مجدداً بررسی فرمایید.');
+        } else {
+          let text = '⚡️ <b>لیست اینباندهای یافت شده:</b>\n\n';
+          list.forEach((inb: any) => {
+            text += `🆔 شناسه ID: <code>${escapeHtml(String(inb.id))}</code>\n💬 عنوان (Remark): <b>${escapeHtml(String(inb.remark || 'بدون نام'))}</b>\n🔌 پورت: <code>${inb.port}</code>\n🌐 پروتکل: <code>${escapeHtml(String(inb.protocol || 'نامشخص'))}</code>\n------------------------\n`;
+          });
+          bot!.sendMessage(chatId, text, { parse_mode: 'HTML' });
         }
+      } catch(err: any) {
+         bot!.sendMessage(chatId, `❌ خطا در برقراری ارتباط با پنل سنایی: ${err.message}`);
       }
       answerQuery();
       return;
     }
 
     if (data === 'admin_test_menu') {
-      if (isAdmin) {
-        sendTestSettingsMenu(chatId);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      sendTestSettingsMenu(chatId);
       answerQuery();
       return;
     }
 
     if (data === 'admin_products_menu') {
-      if (isAdmin) {
-        sendProductsMenu(chatId);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      sendProductsMenu(chatId);
       answerQuery();
       return;
     }
 
     if (data === 'admin_users_menu') {
-      if (isAdmin) {
-        sendUsersMenu(chatId);
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
       }
+      sendUsersMenu(chatId);
       answerQuery();
       return;
     }
