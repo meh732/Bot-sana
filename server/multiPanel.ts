@@ -120,6 +120,9 @@ export class MultiPanelService {
           volGb,
           durDays,
           rebeccaInbounds,
+          product.limitIp || 0,
+          String(user.chatId),
+          undefined,
           note
         );
         rebeccaSubUrl = rebeccaClient.subUrl || '';

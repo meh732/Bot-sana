@@ -308,11 +308,23 @@ export class RebeccaClient {
     username: string,
     volumeGb: number,
     durationDays: number,
-    inboundTags?: string[],
+    inboundTags?: string | number | (string | number)[],
+    limitIp?: number,
+    telegramId?: string,
+    group?: string,
     note?: string
   ): Promise<{ username: string; subUrl: string; links: string[]; raw?: any }> {
     const { baseURL, headers } = await this.getAuthHeaders();
     const state = db.getState();
+
+    let cleanTags: string[] | undefined = undefined;
+    if (inboundTags !== undefined && inboundTags !== null) {
+      if (Array.isArray(inboundTags)) {
+        cleanTags = inboundTags.map(t => String(t).trim()).filter(Boolean);
+      } else {
+        cleanTags = [String(inboundTags).trim()];
+      }
+    }
 
     // Clean username for Rebecca (must be alphanumeric, underscores, min 3 chars)
     let cleanUser = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -347,11 +359,11 @@ export class RebeccaClient {
     };
 
     let inboundsPayload: any = undefined;
-    if (inboundTags && inboundTags.length > 0) {
+    if (cleanTags && cleanTags.length > 0) {
       try {
         const activeInbounds = await this.getInbounds();
         inboundsPayload = {};
-        for (const tag of inboundTags) {
+        for (const tag of cleanTags) {
           const matched = activeInbounds.find(i => 
             i.tag.toLowerCase() === tag.toLowerCase() || 
             String(i.port) === tag
@@ -374,7 +386,7 @@ export class RebeccaClient {
         }
       } catch (e) {
         inboundsPayload = {};
-        for (const tag of inboundTags) {
+        for (const tag of cleanTags) {
           const lower = tag.toLowerCase();
           let proto = 'vless';
           if (lower.includes('vmess')) proto = 'vmess';
@@ -408,6 +420,7 @@ export class RebeccaClient {
       }
     }
 
+    const effectiveNote = note || (telegramId ? `Telegram: ${telegramId}` : '');
     const payload: any = {
       username: cleanUser,
       proxies,
@@ -415,7 +428,7 @@ export class RebeccaClient {
       expire: expireTimestamp || 0,
       data_limit_reset_strategy: 'no_reset',
       status: 'active',
-      note: note || ''
+      note: effectiveNote
     };
 
     if (inboundsPayload && Object.keys(inboundsPayload).length > 0) {
@@ -665,6 +678,10 @@ export class RebeccaClient {
       console.error(`[Rebecca] delClient error for ${username}:`, e.message);
       return false;
     }
+  }
+
+  public async delClientByEmail(email: string): Promise<boolean> {
+    return this.delClient(email);
   }
 
   public async getAllClientsWithTraffic(): Promise<Array<{

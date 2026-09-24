@@ -540,8 +540,9 @@ function getSellerReplyKeyboard(): any {
 
 export async function initBot() {
   const state = db.getState();
-  if (!state.botToken) {
-    console.log('[Bot] No Bot Token configured. Bot not started.');
+  const rawToken = state.botToken ? String(state.botToken).trim() : '';
+  if (!rawToken || !rawToken.includes(':') || rawToken.length < 20) {
+    console.log('[Bot] No valid Bot Token configured. Bot not started.');
     return;
   }
 
@@ -564,13 +565,47 @@ export async function initBot() {
   await new Promise(resolve => setTimeout(resolve, 1500));
 
   try {
-    console.log(`[Bot] Initializing Telegram Bot with token ending in ...${state.botToken.substring(state.botToken.length - 8 || 0)}`);
-    bot = new TelegramBot(state.botToken, { polling: true });
+    console.log(`[Bot] Verifying Telegram Bot token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
+    const tempBot = new TelegramBot(rawToken, { polling: false });
+
+    // Remove any lingering webhook so polling can receive updates smoothly
+    try {
+      await (tempBot as any).deleteWebHook();
+    } catch (e: any) {
+      // Ignore webhook deletion error if no webhook was set
+    }
+
+    try {
+      const me = await tempBot.getMe();
+      console.log(`[Bot] Verified Telegram Bot: @${me.username} (${me.first_name})`);
+    } catch (verr: any) {
+      console.error(`[Bot Error] Telegram Token is invalid or inaccessible: ${verr.message || verr}. Bot polling will not start.`);
+      return;
+    }
+
+    bot = new TelegramBot(rawToken, { 
+      polling: {
+        interval: 300,
+        autoStart: true,
+        params: {
+          timeout: 10
+        }
+      } 
+    });
     isPolling = true;
 
     // Attach crucial error listeners to avoid crashing or unhandled rejections
     bot.on('polling_error', (error: any) => {
-      console.error('[Bot Error] Polling error:', error.message || error);
+      const errMsg = error?.message || String(error);
+      if (errMsg.includes('404') || errMsg.includes('401') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
+        console.error('[Bot Error] Bot Token is invalid or revoked by Telegram. Stopping polling.');
+        if (bot && typeof bot.stopPolling === 'function') {
+          bot.stopPolling().catch(() => {});
+        }
+        isPolling = false;
+        return;
+      }
+      console.error('[Bot Error] Polling error:', errMsg);
     });
 
     bot.on('error', (error: any) => {

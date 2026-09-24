@@ -370,7 +370,7 @@ class XuiClient {
     try {
       const state = db.getState();
       if (state.panel?.panelType === 'rebecca') {
-        return await rebecca.delClient(inboundId, clientUuid);
+        return await rebecca.delClient(clientUuid);
       }
 
       const opts = await this.getAuthOptions();

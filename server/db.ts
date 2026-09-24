@@ -9,6 +9,7 @@ export interface PanelConfig {
   inboundIds?: (number | string)[];
   apiKey?: string;
   subUrlBase?: string;
+  panelType?: 'sanaei' | 'rebecca' | 'both' | string;
 }
 
 export interface RebeccaPanelConfig {
@@ -123,6 +124,7 @@ export interface PendingPayment {
 
 export interface AppState {
   botToken?: string;
+  activePanelMode?: 'xui' | 'rebecca' | 'both';
   panel: PanelConfig;
   rebeccaPanel?: RebeccaPanelConfig;
   categories?: Category[];
