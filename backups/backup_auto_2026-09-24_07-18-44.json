@@ -1,16 +1,24 @@
 {
   "botToken": "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ123456789",
   "panel": {
-    "url": "https://test-xui.com:2053",
-    "username": "admin",
-    "password": "password",
-    "inboundId": 1
+    "panelType": "xui",
+    "url": "http://enc.test:2053",
+    "username": "u",
+    "password": "p",
+    "apiKey": "",
+    "subUrlBase": "",
+    "inboundIds": [
+      2
+    ]
   },
   "rebeccaPanel": {
-    "url": "https://test-rebecca.com:8000",
-    "username": "reb_admin",
-    "password": "reb_password",
-    "apiKey": "api-123"
+    "panelType": "rebecca",
+    "url": "",
+    "username": "",
+    "password": "pass456",
+    "apiKey": "",
+    "subUrlBase": "",
+    "inboundIds": []
   },
   "products": [
     {
@@ -28,26 +36,7 @@
       "disabled": false
     }
   ],
-  "users": [
-    {
-      "chatId": 92218108,
-      "username": "mohammadeh7",
-      "testUsed": false,
-      "registeredAt": "2026-09-24T07:18:45.754Z",
-      "balance": 0,
-      "debt": 0,
-      "purchases": []
-    },
-    {
-      "chatId": 99999999,
-      "username": "testuser",
-      "testUsed": false,
-      "registeredAt": "2026-09-24T07:25:32.917Z",
-      "balance": 0,
-      "debt": 0,
-      "purchases": []
-    }
-  ],
+  "users": [],
   "freeTestVolumeGb": 1,
   "freeTestDurationDays": 3,
   "freeTestEnabled": true,

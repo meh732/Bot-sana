@@ -210,6 +210,15 @@ function getProductButtonText(user: any, p: any): string {
 
 let bot: TelegramBot | null = null;
 let isPolling = false;
+export function getBot(): TelegramBot | null { return bot; }
+
+let activeIntervals: NodeJS.Timeout[] = [];
+function clearAllActiveIntervals() {
+  for (const interval of activeIntervals) {
+    try { clearInterval(interval); } catch (e) {}
+  }
+  activeIntervals = [];
+}
 const adminSession = new Map<number, string>();
 const giftCodeDrafts = new Map<number, {
   code?: string;
@@ -504,7 +513,7 @@ async function sendServiceInfo(chatId: number, purchase: any) {
   }
 }
 
-function isUserAdmin(chatId: number | string | undefined, state?: any): boolean {
+export function isUserAdmin(chatId: number | string | undefined, state?: any): boolean {
   if (!chatId) return false;
   const s = state || db.getState();
   if (!s || !Array.isArray(s.adminIds) || s.adminIds.length === 0) return false;
@@ -547,6 +556,7 @@ function getSellerReplyKeyboard(): any {
 }
 
 export async function initBot() {
+  clearAllActiveIntervals();
   const state = db.getState();
   const rawToken = state.botToken ? String(state.botToken).trim() : '';
   if (!rawToken || !rawToken.includes(':') || rawToken.length < 20) {
@@ -576,9 +586,9 @@ export async function initBot() {
     console.log(`[Bot] Verifying Telegram Bot token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
     const tempBot = new TelegramBot(rawToken, { polling: false });
 
-    // Remove any lingering webhook so polling can receive updates smoothly
+    // Remove any lingering webhook and ensure no pending update restrictions linger
     try {
-      await (tempBot as any).deleteWebHook();
+      await (tempBot as any).deleteWebHook({ drop_pending_updates: false });
     } catch (e: any) {
       // Ignore webhook deletion error if no webhook was set
     }
@@ -596,7 +606,23 @@ export async function initBot() {
         interval: 300,
         autoStart: true,
         params: {
-          timeout: 10
+          timeout: 10,
+          allowed_updates: [
+            'message',
+            'edited_message',
+            'channel_post',
+            'edited_channel_post',
+            'inline_query',
+            'chosen_inline_result',
+            'callback_query',
+            'shipping_query',
+            'pre_checkout_query',
+            'poll',
+            'poll_answer',
+            'my_chat_member',
+            'chat_member',
+            'chat_join_request'
+          ]
         }
       } 
     });
@@ -1099,11 +1125,11 @@ export async function initBot() {
   }
 
   const sendAdminMainMenu = (chatId: number) => {
-    bot!.sendMessage(chatId, '🔧 <b>پنل مدیریت ربات سنایی (X-UI)</b>:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
+    bot!.sendMessage(chatId, '🔧 <b>پنل مدیریت ربات</b>:\nلطفاً یکی از بخش‌های مدیریتی زیر را انتخاب کنید:', {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔵 تنظیمات اتصال سنایی (X-UI)', callback_data: 'admin_panel_menu' }],
+          [{ text: '🔵 تنظیمات اتصال سنایی (X-UI)', callback_data: 'admin_panel_menu' }, { text: '🟣 تنظیمات اتصال ربکا (Rebecca)', callback_data: 'admin_rebecca_menu' }],
           [{ text: '🎁 هدیه/تست رایگان', callback_data: 'admin_test_menu' }, { text: '💳 شماره کارت پرداخت', callback_data: 'admin_card_menu' }],
           [{ text: '📦 مدیریت محصولات', callback_data: 'admin_products_menu' }, { text: '🎟 کدهای تخفیف', callback_data: 'admin_coupons_menu' }],
           [{ text: '👥 مدیریت جامع کاربران و همکاران', callback_data: 'admin_users_menu' }],
@@ -1136,12 +1162,13 @@ export async function initBot() {
 
   const sendSanaeiConnectionMenu = (chatId: number) => {
     const state = db.getState();
+    const panel = state.panel || {};
     const msg = `🖥 <b>اطلاعات اتصال به پنل سنایی (X-UI)</b>:\n\n` +
-      `🔗 آدرس: <code>${escapeHtml(state.panel.url || '❌ تنظیم نشده')}</code>\n` +
-      `👤 نام کاربری: <code>${escapeHtml(state.panel.username || '❌ تنظیم نشده')}</code>\n` +
-      `🔑 رمز عبور: <code>${state.panel.password ? '******' : '❌ تنظیم نشده'}</code>\n` +
-      `🔑 کلید API Key: <code>${state.panel.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}</code>\n` +
-      `🆔 اینباند (Inbound ID): <code>${escapeHtml(String(state.panel.inboundId || '❌ تنظیم نشده'))}</code>\n\n` +
+      `🔗 آدرس: <code>${escapeHtml(panel.url || '❌ تنظیم نشده')}</code>\n` +
+      `👤 نام کاربری: <code>${escapeHtml(panel.username || '❌ تنظیم نشده')}</code>\n` +
+      `🔑 رمز عبور: <code>${panel.password ? '******' : '❌ تنظیم نشده'}</code>\n` +
+      `🔑 کلید API Key: <code>${panel.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}</code>\n` +
+      `🆔 اینباند (Inbound ID): <code>${escapeHtml(String(panel.inboundId || '❌ تنظیم نشده'))}</code>\n\n` +
       `برای تغییر هر مورد، دکمه مربوطه در زیر را فشرده و پیام جدید را ارسال کنید.`;
 
     bot!.sendMessage(chatId, msg, {
@@ -1152,6 +1179,31 @@ export async function initBot() {
           [{ text: '🔑 تغییر رمز عبور', callback_data: 'set_p_pass' }, { text: '🔑 تغییر کلید API Key', callback_data: 'set_p_apikey' }],
           [{ text: '🆔 تغییر ID اینباند', callback_data: 'set_p_inbound' }],
           [{ text: '🔄 دریافت لیست اینباندهای پنل', callback_data: 'admin_fetch_inbounds' }],
+          [{ text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }]
+        ]
+      }
+    });
+  };
+
+  const sendRebeccaConnectionMenu = (chatId: number) => {
+    const state = db.getState();
+    const reb = state.rebeccaPanel || {};
+    const msg = `🟣 <b>اطلاعات اتصال به پنل ربکا (Rebecca)</b>:\n\n` +
+      `🔗 آدرس: <code>${escapeHtml(reb.url || '❌ تنظیم نشده')}</code>\n` +
+      `👤 نام کاربری: <code>${escapeHtml(reb.username || '❌ تنظیم نشده')}</code>\n` +
+      `🔑 رمز عبور: <code>${reb.password ? '******' : '❌ تنظیم نشده'}</code>\n` +
+      `🔑 کلید API Key: <code>${reb.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}</code>\n` +
+      `🌐 آدرس پایه ساب: <code>${escapeHtml(reb.subUrlBase || 'پیش‌فرض ربکا')}</code>\n\n` +
+      `برای تغییر هر مورد، دکمه مربوطه در زیر را فشرده و پیام جدید را ارسال کنید.`;
+
+    bot!.sendMessage(chatId, msg, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔗 تغییر آدرس ربکا', callback_data: 'set_reb_url' }, { text: '👤 نام کاربری ربکا', callback_data: 'set_reb_user' }],
+          [{ text: '🔑 تغییر رمز عبور ربکا', callback_data: 'set_reb_pass' }, { text: '🔑 کلید API ربکا', callback_data: 'set_reb_apikey' }],
+          [{ text: '🌐 تغییر دامنه ساب ربکا', callback_data: 'set_reb_suburl' }],
+          [{ text: '🔄 تست آنلاین اتصال ربکا', callback_data: 'admin_test_rebecca' }],
           [{ text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }]
         ]
       }
@@ -1778,13 +1830,15 @@ export async function initBot() {
       }
 
       if (sessionType === 'set_p_url') {
+        state.panel = state.panel || {};
         state.panel.url = text.trim();
         db.updateState({ panel: state.panel });
-        bot!.sendMessage(chatId, `✅ آدرس پنل به \`${text}\` تغییر یافت.`, { parse_mode: 'Markdown' });
+        bot!.sendMessage(chatId, `✅ آدرس پنل به <code>${escapeHtml(text)}</code> تغییر یافت.`, { parse_mode: 'HTML' });
         sendSanaeiConnectionMenu(chatId);
         return;
       }
       if (sessionType === 'set_p_user') {
+        state.panel = state.panel || {};
         state.panel.username = text.trim();
         db.updateState({ panel: state.panel });
         bot!.sendMessage(chatId, '✅ نام کاربری ورود به پنل با موفقیت ویرایش شد.');
@@ -1792,6 +1846,7 @@ export async function initBot() {
         return;
       }
       if (sessionType === 'set_p_pass') {
+        state.panel = state.panel || {};
         state.panel.password = text.trim();
         db.updateState({ panel: state.panel });
         bot!.sendMessage(chatId, '✅ رمز عبور ورود به پنل با موفقیت بروزرسانی شد.');
@@ -1799,10 +1854,52 @@ export async function initBot() {
         return;
       }
       if (sessionType === 'set_p_apikey') {
+        state.panel = state.panel || {};
         state.panel.apiKey = text.trim();
         db.updateState({ panel: state.panel });
         bot!.sendMessage(chatId, '✅ کلید API-Key پنل با موفقیت ذخیره و فعال شد.');
         sendSanaeiConnectionMenu(chatId);
+        return;
+      }
+
+      if (sessionType === 'set_reb_url') {
+        state.rebeccaPanel = state.rebeccaPanel || {};
+        state.rebeccaPanel.url = text.trim();
+        db.updateState({ rebeccaPanel: state.rebeccaPanel });
+        bot!.sendMessage(chatId, `✅ آدرس پنل ربکا با موفقیت به <code>${escapeHtml(text.trim())}</code> تغییر یافت.`, { parse_mode: 'HTML' });
+        sendRebeccaConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_reb_user') {
+        state.rebeccaPanel = state.rebeccaPanel || {};
+        state.rebeccaPanel.username = text.trim();
+        db.updateState({ rebeccaPanel: state.rebeccaPanel });
+        bot!.sendMessage(chatId, '✅ نام کاربری پنل ربکا با موفقیت ذخیره شد.');
+        sendRebeccaConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_reb_pass') {
+        state.rebeccaPanel = state.rebeccaPanel || {};
+        state.rebeccaPanel.password = text.trim();
+        db.updateState({ rebeccaPanel: state.rebeccaPanel });
+        bot!.sendMessage(chatId, '✅ رمز عبور پنل ربکا با موفقیت ذخیره شد.');
+        sendRebeccaConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_reb_apikey') {
+        state.rebeccaPanel = state.rebeccaPanel || {};
+        state.rebeccaPanel.apiKey = text.trim();
+        db.updateState({ rebeccaPanel: state.rebeccaPanel });
+        bot!.sendMessage(chatId, '✅ کلید API-Key پنل ربکا با موفقیت ذخیره شد.');
+        sendRebeccaConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_reb_suburl') {
+        state.rebeccaPanel = state.rebeccaPanel || {};
+        state.rebeccaPanel.subUrlBase = text.trim();
+        db.updateState({ rebeccaPanel: state.rebeccaPanel });
+        bot!.sendMessage(chatId, `✅ دامنه پایه ساب ربکا با موفقیت به <code>${escapeHtml(text.trim())}</code> تغییر یافت.`, { parse_mode: 'HTML' });
+        sendRebeccaConnectionMenu(chatId);
         return;
       }
       if (sessionType === 'set_p_inbound') {
@@ -2902,22 +2999,22 @@ export async function initBot() {
     const data = query.data;
     console.log(`[Bot Callback Query] Triggered. chatId: ${chatId}, data: ${data}`);
 
+    let queryAnswered = false;
+    const answerQuery = (options?: any): Promise<any> => {
+      if (!queryAnswered) {
+        queryAnswered = true;
+        return bot!.answerCallbackQuery(query.id, options).catch((err) => {
+          console.error(`[Bot Callback Query] Failed to acknowledge callback: ${err.message}`);
+        });
+      }
+      return Promise.resolve();
+    };
+
     try {
       if (!chatId) {
         console.log('[Bot Callback Query] Exit early: No chatId');
         return;
       }
-
-      let queryAnswered = false;
-      const answerQuery = (options?: any): Promise<any> => {
-        if (!queryAnswered) {
-          queryAnswered = true;
-          return bot!.answerCallbackQuery(query.id, options).catch((err) => {
-            console.error(`[Bot Callback Query] Failed to acknowledge callback: ${err.message}`);
-          });
-        }
-        return Promise.resolve();
-      };
     
     let user = db.getUser(chatId);
     if (!user) {
@@ -3110,7 +3207,7 @@ export async function initBot() {
 
     if (data === 'enter_gift_code') {
       userSession.set(chatId, { action: 'awaiting_gift_code' });
-      bot!.sendMessage(chatId, '🎁 *ثبت کد هدیه*\n\nلطفاً کد هدیه خود را ارسال نمایید:', { parse_mode: 'Markdown' });
+      bot!.sendMessage(chatId, '🎁 <b>ثبت کد هدیه</b>\n\nلطفاً کد هدیه خود را ارسال نمایید:', { parse_mode: 'HTML' });
       answerQuery();
       return;
     }
@@ -3119,7 +3216,7 @@ export async function initBot() {
       const prevSession = userSession.get(chatId);
       const pendingPurchase = prevSession && prevSession.action === 'payment_awaiting_deposit_choice' ? prevSession.pendingPurchase : undefined;
       userSession.set(chatId, { action: 'payment_awaiting_amount', pendingPurchase });
-      bot!.sendMessage(chatId, '💰 *شارژ حساب (کارت به کارت)*\n\nلطفاً مبلغ مد نظر جهت شارژ حساب خود را به *تومان* و به صورت عددی ارسال کنید:\n\nمثال: `50000` یا `120000`', { parse_mode: 'Markdown' });
+      bot!.sendMessage(chatId, '💰 <b>شارژ حساب (کارت به کارت)</b>\n\nلطفاً مبلغ مد نظر جهت شارژ حساب خود را به <b>تومان</b> و به صورت عددی ارسال کنید:\n\nمثال: <code>50000</code> یا <code>120000</code>', { parse_mode: 'HTML' });
       answerQuery();
       return;
     }
@@ -3134,14 +3231,14 @@ export async function initBot() {
         const cardNumber = state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
         const cardHolder = state.cardHolder || 'مدیریت حساب';
 
-        const paymentInstructions = `💳 *دستورالعمل جبران کسری موجودی*:\n\n` +
-          `لطفاً مبلغ *${amount.toLocaleString()}* تومان را به مشخصات بانکی زیر واریز نمایید:\n\n` +
-          `  💳 شماره کارت:\n  \`${cardNumber}\`\n\n` +
-          `  👤 به نام:\n  *${cardHolder}*\n\n` +
-          `⚠️ *توجه کُنید*:\n` +
-          `پس از انجام واریز، لطفا *عکس رسید پرداخت (فیش واریزی)* خود را به همین گفتگو بفرستید تا سریعاً توسط مدیریت تایید، حسابتان شارژ شده و خرید امکان پذیر شود.`;
+        const paymentInstructions = `💳 <b>دستورالعمل جبران کسری موجودی</b>:\n\n` +
+          `لطفاً مبلغ <b>${amount.toLocaleString()}</b> تومان را به مشخصات بانکی زیر واریز نمایید:\n\n` +
+          `  💳 شماره کارت:\n  <code>${escapeHtml(cardNumber)}</code>\n\n` +
+          `  👤 به نام:\n  <b>${escapeHtml(cardHolder)}</b>\n\n` +
+          `⚠️ <b>توجه کُنید</b>:\n` +
+          `پس از انجام واریز، لطفا <b>عکس رسید پرداخت (فیش واریزی)</b> خود را به همین گفتگو بفرستید تا سریعاً توسط مدیریت تایید، حسابتان شارژ شده و خرید امکان پذیر شود.`;
 
-        bot!.sendMessage(chatId, paymentInstructions, { parse_mode: 'Markdown' });
+        bot!.sendMessage(chatId, paymentInstructions, { parse_mode: 'HTML' });
       }
       answerQuery();
       return;
@@ -3276,6 +3373,91 @@ export async function initBot() {
         }
       } catch(err: any) {
          bot!.sendMessage(chatId, `❌ خطا در برقراری ارتباط با پنل سنایی: ${err.message}`);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_rebecca_menu') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      sendRebeccaConnectionMenu(chatId);
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_reb_url') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_reb_url');
+      bot!.sendMessage(chatId, '🔗 لطفاً آدرس کامل پنل ربکا را همراه با پورت ارسال فرمایید:\n\nمثال: <code>https://rebecca.example.com:8000</code>', { parse_mode: 'HTML' });
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_reb_user') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_reb_user');
+      bot!.sendMessage(chatId, '👤 لطفاً نام کاربری ورود به پنل ربکا را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_reb_pass') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_reb_pass');
+      bot!.sendMessage(chatId, '🔑 لطفاً کلمه عبور ورود به پنل ربکا را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_reb_apikey') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_reb_apikey');
+      bot!.sendMessage(chatId, '🔑 لطفاً کلید API Key پنل ربکا را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_reb_suburl') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_reb_suburl');
+      bot!.sendMessage(chatId, '🌐 لطفاً آدرس پایه ساب دامنه اختصاصی ربکا را ارسال کنید:\n\nمثال: <code>https://sub.rebeccasite.com/sub/</code>', { parse_mode: 'HTML' });
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_test_rebecca') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال تست آنلاین اتصال به پنل ربکا (Rebecca)...');
+      try {
+        const testRes = await rebecca.testConnection();
+        if (testRes.success) {
+          bot!.sendMessage(chatId, `✅ <b>اتصال به پنل ربکا موفقیت‌آمیز بود!</b>\n\n🔹 وضعیت: ${escapeHtml(testRes.message || 'پاسخ معتبر دریافت شد')}`, { parse_mode: 'HTML' });
+        } else {
+          bot!.sendMessage(chatId, `❌ <b>خطا در اتصال به پنل ربکا:</b>\n\n<code>${escapeHtml(testRes.message || 'عدم دریافت پاسخ')}</code>`, { parse_mode: 'HTML' });
+        }
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در بررسی اتصال به پنل ربکا: ${escapeHtml(err.message || String(err))}`);
       }
       answerQuery();
       return;
@@ -4367,9 +4549,12 @@ export async function initBot() {
 
     if (data === 'cancel_purchase') {
       bot!.sendMessage(chatId, '❌ فرآیند خرید لغو شد.');
-      bot!.answerCallbackQuery(query.id);
+      answerQuery();
       return;
     }
+
+    // Default acknowledgement if no branch specifically answered
+    answerQuery();
     } catch (err: any) {
       console.error('[Bot Callback Query Exception Ignored]', err?.stack || err?.message || err);
       try {
@@ -4379,12 +4564,16 @@ export async function initBot() {
       } catch (e) {
         console.error('[Callback Error Sender Failed]', e);
       }
-      try { await bot!.answerCallbackQuery(query.id, { text: '⚠️ خطا در اجرای عملیات.' }); } catch (e) {}
+      try { await answerQuery({ text: '⚠️ خطا در اجرای عملیات.' }); } catch (e) {}
+    } finally {
+      if (!queryAnswered) {
+        answerQuery().catch(() => {});
+      }
     }
   });
 
   // Start daily sales and user report worker
-  setInterval(async () => {
+  activeIntervals.push(setInterval(async () => {
     try {
       const state = db.getState();
       if (state.adminIds.length > 0) {
@@ -4407,10 +4596,10 @@ export async function initBot() {
     } catch (e: any) {
       console.error('[Daily Report Worker Error]', e.message);
     }
-  }, 30 * 60 * 1000); // Check every 30 minutes
+  }, 30 * 60 * 1000)); // Check every 30 minutes
 
   // Start auto-backup worker
-  setInterval(async () => {
+  activeIntervals.push(setInterval(async () => {
     try {
       const state = db.getState();
       const intervalHours = state.autoBackupIntervalHours || 0;
@@ -4454,10 +4643,10 @@ export async function initBot() {
     } catch (e: any) {
       console.error('[Backup Check Worker Error]', e.message);
     }
-  }, 10 * 60 * 1000); // Check every 10 minutes
+  }, 10 * 60 * 1000)); // Check every 10 minutes
 
   // Real-time limit check & PAYG billing worker (checks every 30 seconds)
-  setInterval(async () => {
+  activeIntervals.push(setInterval(async () => {
     try {
       const state = db.getState();
       const allClientsArray = await multiPanel.getAllClientsWithTraffic();
@@ -4670,7 +4859,7 @@ export async function initBot() {
     } catch (e: any) {
         console.error('[Limit Check Worker Error]', e.message);
     }
-  }, 30 * 1000); // Check every 30 seconds for near real-time PAYG billing & limits
+  }, 30 * 1000)); // Check every 30 seconds for near real-time PAYG billing & limits
 }
 
 export async function checkPaygReactivation(user: any) {

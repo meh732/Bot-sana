@@ -37,15 +37,6 @@
       "balance": 0,
       "debt": 0,
       "purchases": []
-    },
-    {
-      "chatId": 99999999,
-      "username": "testuser",
-      "testUsed": false,
-      "registeredAt": "2026-09-24T07:25:32.917Z",
-      "balance": 0,
-      "debt": 0,
-      "purchases": []
     }
   ],
   "freeTestVolumeGb": 1,
