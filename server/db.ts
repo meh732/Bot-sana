@@ -23,6 +23,16 @@ export interface RebeccaPanelConfig {
   enabled?: boolean;
 }
 
+export interface MrOceanPanelConfig {
+  url?: string;
+  username?: string;
+  password?: string;
+  apiKey?: string;
+  serviceId?: number | string;
+  subUrlBase?: string;
+  enabled?: boolean;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -36,7 +46,7 @@ export interface Product {
   volumeGb: number; // Gigabytes
   durationDays: number;
   categoryId?: string;
-  panelType?: 'sanaei' | 'rebecca' | 'both';
+  panelType?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
   inboundId?: number | string;
   inboundIds?: (number | string)[];
   rebeccaInboundTags?: string[];
@@ -60,7 +70,9 @@ export interface Purchase {
   subUrl: string;
   sanaeiSubUrl?: string;
   rebeccaSubUrl?: string;
-  panelType?: 'sanaei' | 'rebecca' | 'both';
+  mroceanSubUrl?: string;
+  mroceanPortalUrl?: string;
+  panelType?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
   volumeGb: number;
   durationDays: number;
   createdAt: string;
@@ -127,9 +139,10 @@ export interface PendingPayment {
 
 export interface AppState {
   botToken?: string;
-  activePanelMode?: 'xui' | 'rebecca' | 'both';
+  activePanelMode?: 'xui' | 'rebecca' | 'both' | 'mrocean';
   panel: PanelConfig;
   rebeccaPanel?: RebeccaPanelConfig;
+  mroceanPanel?: MrOceanPanelConfig;
   categories?: Category[];
   products: Product[];
   users: User[];
@@ -137,7 +150,7 @@ export interface AppState {
   freeTestVolumeGb: number;
   freeTestDurationDays: number;
   freeTestEnabled: boolean;
-  freeTestPanel?: 'sanaei' | 'rebecca' | 'both';
+  freeTestPanel?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
   freeTestInboundId?: number | string;
   freeTestInboundIds?: (number | string)[];
   freeTestRebeccaInbounds?: string[];
@@ -162,6 +175,14 @@ const defaultState: AppState = {
   botToken: '',
   panel: {},
   rebeccaPanel: {
+    enabled: true
+  },
+  mroceanPanel: {
+    url: 'https://panel.mrocean.ir',
+    username: 'mo_78_347_misieoig7k-6',
+    password: 'Mo!RgElMrGlPlNIKFIQX8xN9MopPeuIcVZ9',
+    apiKey: 'rk_-itJXBc5_vWntoQxC9QflcAQ8jRIF9H6zULsm3KHJpI',
+    serviceId: 347,
     enabled: true
   },
   products: [],

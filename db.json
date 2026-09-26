@@ -12,6 +12,14 @@
     "password": "reb_password",
     "apiKey": "api-123"
   },
+  "mroceanPanel": {
+    "url": "https://panel.mrocean.ir",
+    "username": "mo_78_347_misieoig7k-6",
+    "password": "Mo!RgElMrGlPlNIKFIQX8xN9MopPeuIcVZ9",
+    "apiKey": "rk_-itJXBc5_vWntoQxC9QflcAQ8jRIF9H6zULsm3KHJpI",
+    "serviceId": 347,
+    "enabled": true
+  },
   "products": [
     {
       "id": "p1",

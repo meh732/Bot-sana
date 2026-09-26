@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { db } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
+import { mrocean } from './mrocean.js';
 import { multiPanel } from './multiPanel.js';
 import { encryptData, decryptData } from './crypto.js';
 import fs from 'fs';
@@ -619,6 +620,12 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     } else if (purchase.panelType === 'rebecca') {
       linksText = `🟣 <b>لینک اختصاصی سرور ربکا:</b>\n` +
         `<code>${escapeHtml(purchase.rebeccaSubUrl || purchase.subUrl)}</code>\n\n`;
+    } else if (purchase.panelType === 'mrocean' || purchase.mroceanSubUrl || purchase.mroceanPortalUrl) {
+      const directSub = purchase.mroceanSubUrl || purchase.subUrl;
+      const portalLink = purchase.mroceanPortalUrl;
+      linksText = `🌊 <b>لینک سابسکریپشن مستقیم مستر اوشن:</b>\n` +
+        `<code>${escapeHtml(directSub)}</code>\n\n` +
+        (portalLink ? `🌐 <b>پرتال اشتراک وب و کانفیگ‌ها:</b>\n<code>${escapeHtml(portalLink)}</code>\n\n` : '');
     } else if (subUrl) {
       linksText = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n` +
         `<code>${escapeHtml(subUrl)}</code>\n\n`;
@@ -1044,6 +1051,8 @@ export async function initBot() {
         subUrl: clientResult.subUrl,
         sanaeiSubUrl: clientResult.sanaeiSubUrl,
         rebeccaSubUrl: clientResult.rebeccaSubUrl,
+        mroceanSubUrl: clientResult.mroceanSubUrl,
+        mroceanPortalUrl: clientResult.mroceanPortalUrl,
         panelType: clientResult.panelType,
         volumeGb: volGb,
         durationDays: durDays,
@@ -1368,20 +1377,27 @@ export async function initBot() {
 
   const sendAdminMainMenu = (chatId: number) => {
     const state = db.getState();
-    const modeLabel = state.activePanelMode === 'rebecca'
-      ? '🟣 فقط ربکا (Rebecca)'
-      : (state.activePanelMode === 'both' ? '🌐 هر دو همزمان (Dual Panel)' : '🔵 فقط سنایی (X-UI)');
+    const modeLabel = state.activePanelMode === 'mrocean'
+      ? '🌊 فقط مستر اوشن (MR OCEAN)'
+      : (state.activePanelMode === 'rebecca'
+        ? '🟣 فقط ربکا (Rebecca)'
+        : (state.activePanelMode === 'both' ? '🌐 هر دو همزمان (Dual Panel)' : '🔵 فقط سنایی (X-UI)'));
 
     bot!.sendMessage(chatId, `🔧 <b>پنل مدیریت ربات</b>:\n\n🔘 <b>حالت فعال ساخت کانفیگ:</b> <b>${modeLabel}</b>\nجهت تغییر سرور فعال ساخت کاربر، از دکمه‌های زیر استفاده نمایید:`, {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [
-            { text: `${state.activePanelMode === 'xui' || !state.activePanelMode ? '🔘' : '⚪️'} فقط سنایی`, callback_data: 'admin_set_mode_xui' },
-            { text: `${state.activePanelMode === 'rebecca' ? '🔘' : '⚪️'} فقط ربکا`, callback_data: 'admin_set_mode_rebecca' },
-            { text: `${state.activePanelMode === 'both' ? '🔘' : '⚪️'} هر دو پنل`, callback_data: 'admin_set_mode_both' }
+            { text: `${state.activePanelMode === 'xui' || !state.activePanelMode ? '🔘' : '⚪️'} سنایی`, callback_data: 'admin_set_mode_xui' },
+            { text: `${state.activePanelMode === 'rebecca' ? '🔘' : '⚪️'} ربکا`, callback_data: 'admin_set_mode_rebecca' },
+            { text: `${state.activePanelMode === 'mrocean' ? '🔘' : '⚪️'} مستر اوشن`, callback_data: 'admin_set_mode_mrocean' },
+            { text: `${state.activePanelMode === 'both' ? '🔘' : '⚪️'} هر دو`, callback_data: 'admin_set_mode_both' }
           ],
-          [{ text: '🔵 تنظیمات اتصال سنایی (X-UI)', callback_data: 'admin_panel_menu' }, { text: '🟣 تنظیمات اتصال ربکا (Rebecca)', callback_data: 'admin_rebecca_menu' }],
+          [
+            { text: '🔵 تنظیمات سنایی (X-UI)', callback_data: 'admin_panel_menu' },
+            { text: '🟣 تنظیمات ربکا (Rebecca)', callback_data: 'admin_rebecca_menu' },
+            { text: '🌊 تنظیمات مستر اوشن (MR OCEAN)', callback_data: 'admin_mrocean_menu' }
+          ],
           [{ text: '🎁 هدیه/تست رایگان', callback_data: 'admin_test_menu' }, { text: '💳 شماره کارت پرداخت', callback_data: 'admin_card_menu' }],
           [{ text: '📦 مدیریت محصولات', callback_data: 'admin_products_menu' }, { text: '🎟 کدهای تخفیف', callback_data: 'admin_coupons_menu' }],
           [{ text: '👥 مدیریت جامع کاربران و همکاران', callback_data: 'admin_users_menu' }],
@@ -1464,11 +1480,43 @@ export async function initBot() {
     });
   };
 
+  const sendMrOceanConnectionMenu = (chatId: number) => {
+    const state = db.getState();
+    const mo = state.mroceanPanel || {};
+    const serviceIdDisplay = mo.serviceId !== undefined ? String(mo.serviceId) : '347';
+    const msg = `🌊 <b>اطلاعات اتصال به پنل نمایندگی مستر اوشن (MR OCEAN)</b>:\n\n` +
+      `🔗 آدرس پنل: <code>${escapeHtml(mo.url || 'https://panel.mrocean.ir')}</code>\n` +
+      `👤 نام کاربری نمایندگی: <code>${escapeHtml(mo.username || '❌ تنظیم نشده')}</code>\n` +
+      `🔑 رمز عبور ورود: <code>${mo.password ? '******' : '❌ تنظیم نشده'}</code>\n` +
+      `🔑 کلید API / Reseller Key: <code>${mo.apiKey ? '✅ تنظیم شده (مخفی)' : '❌ تنظیم نشده'}</code>\n` +
+      `🏢 شناسه سرویس (Service ID): <code>${escapeHtml(serviceIdDisplay)}</code>\n\n` +
+      `برای تغییر هر مورد یا تست آنلاین، دکمه مربوطه در زیر را انتخاب فرمایید:`;
+
+    bot!.sendMessage(chatId, msg, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔗 تغییر آدرس پنل', callback_data: 'set_mo_url' }, { text: '👤 تغییر نام کاربری', callback_data: 'set_mo_user' }],
+          [{ text: '🔑 تغییر رمز عبور', callback_data: 'set_mo_pass' }, { text: '🔑 تغییر کلید API', callback_data: 'set_mo_apikey' }],
+          [{ text: '🏢 تغییر شناسه سرویس (Service ID)', callback_data: 'set_mo_serviceid' }],
+          [{ text: '🔄 تست آنلاین اتصال مستر اوشن', callback_data: 'admin_test_mrocean' }, { text: '📊 آمار زنده داشبورد', callback_data: 'admin_mo_dashboard' }],
+          [{ text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }]
+        ]
+      }
+    });
+  };
+
   const sendTestSettingsMenu = (chatId: number) => {
     const state = db.getState();
     const statusText = state.freeTestEnabled !== false ? '✅ فعال' : '❌ غیرفعال';
+    const testPanel = state.freeTestPanel || state.activePanelMode || 'sanaei';
+    const panelName = testPanel === 'mrocean'
+      ? '🌊 مستر اوشن (MR OCEAN)'
+      : (testPanel === 'rebecca' ? '🟣 ربکا (Rebecca)' : (testPanel === 'both' ? '🌐 هر دو همزمان' : '🔵 سنایی (X-UI)'));
+
     const msg = `🎁 <b>تنظیمات اکانت تست رایگان و پاداش دعوت</b>:\n\n` +
       `🔘 وضعیت تست رایگان: <b>${statusText}</b>\n` +
+      `🌐 <b>سرور/پنل فعال تست رایگان:</b> <b>${panelName}</b>\n` +
       `📦 حجم تست رایگان: <code>${state.freeTestVolumeGb} گیگابایت</code>\n` +
       `⏰ زمان تست رایگان: <code>${state.freeTestDurationDays} روز</code>\n` +
       `🆔 اینباند اختصاصی تست: <code>${escapeHtml(String(state.freeTestInboundId || 'عمومی'))}</code>\n` +
@@ -1479,6 +1527,11 @@ export async function initBot() {
       reply_markup: {
         inline_keyboard: [
           [{ text: '🔘 فعال/غیرفعال کردن تست', callback_data: 'toggle_test_enabled' }],
+          [
+            { text: `${testPanel === 'sanaei' ? '🔘' : '⚪️'} تست سنایی`, callback_data: 'admin_set_test_panel_xui' },
+            { text: `${testPanel === 'rebecca' ? '🔘' : '⚪️'} تست ربکا`, callback_data: 'admin_set_test_panel_rebecca' },
+            { text: `${testPanel === 'mrocean' ? '🔘' : '⚪️'} تست مستر اوشن`, callback_data: 'admin_set_test_panel_mrocean' }
+          ],
           [{ text: '📦 حجم تست رایگان', callback_data: 'set_t_volume' }, { text: '⏰ زمان تست رایگان', callback_data: 'set_t_days' }],
           [{ text: '🆔 اینباند اختصاصی تست', callback_data: 'set_t_inbound' }],
           [{ text: '💰 تغییر هدیه معرفی', callback_data: 'set_reward_toman' }],
@@ -2168,6 +2221,53 @@ export async function initBot() {
         db.updateState({ rebeccaPanel: state.rebeccaPanel });
         bot!.sendMessage(chatId, `✅ شناسه سرویس پیش‌فرض ربکا با موفقیت به <code>${val}</code> تنظیم شد.`, { parse_mode: 'HTML' });
         sendRebeccaConnectionMenu(chatId);
+        return;
+      }
+
+      if (sessionType === 'set_mo_url') {
+        state.mroceanPanel = state.mroceanPanel || {};
+        state.mroceanPanel.url = text.trim();
+        db.updateState({ mroceanPanel: state.mroceanPanel });
+        bot!.sendMessage(chatId, `✅ آدرس پنل نمایندگی مستر اوشن با موفقیت به <code>${escapeHtml(text.trim())}</code> تغییر یافت.`, { parse_mode: 'HTML' });
+        sendMrOceanConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_mo_user') {
+        state.mroceanPanel = state.mroceanPanel || {};
+        state.mroceanPanel.username = text.trim();
+        db.updateState({ mroceanPanel: state.mroceanPanel });
+        bot!.sendMessage(chatId, '✅ نام کاربری نمایندگی مستر اوشن با موفقیت ذخیره شد.');
+        sendMrOceanConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_mo_pass') {
+        state.mroceanPanel = state.mroceanPanel || {};
+        state.mroceanPanel.password = text.trim();
+        db.updateState({ mroceanPanel: state.mroceanPanel });
+        bot!.sendMessage(chatId, '✅ رمز عبور پنل مستر اوشن با موفقیت ذخیره شد.');
+        sendMrOceanConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_mo_apikey') {
+        state.mroceanPanel = state.mroceanPanel || {};
+        state.mroceanPanel.apiKey = text.trim();
+        db.updateState({ mroceanPanel: state.mroceanPanel });
+        bot!.sendMessage(chatId, '✅ کلید API / Reseller Key مستر اوشن با موفقیت ذخیره شد.');
+        sendMrOceanConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_mo_serviceid') {
+        const val = parseInt(text.trim());
+        if (isNaN(val)) {
+          bot!.sendMessage(chatId, '❌ مقدار وارد شده برای شناسه سرویس باید یک عدد صحیح باشد (مثلاً 347).');
+          sendMrOceanConnectionMenu(chatId);
+          return;
+        }
+        state.mroceanPanel = state.mroceanPanel || {};
+        state.mroceanPanel.serviceId = val;
+        db.updateState({ mroceanPanel: state.mroceanPanel });
+        bot!.sendMessage(chatId, `✅ شناسه سرویس (Service ID) مستر اوشن با موفقیت به <code>${val}</code> تنظیم شد.`, { parse_mode: 'HTML' });
+        sendMrOceanConnectionMenu(chatId);
         return;
       }
       if (sessionType === 'set_p_inbound') {
@@ -2930,6 +3030,8 @@ export async function initBot() {
           subUrl: clientResult.subUrl,
           sanaeiSubUrl: clientResult.sanaeiSubUrl,
           rebeccaSubUrl: clientResult.rebeccaSubUrl,
+          mroceanSubUrl: clientResult.mroceanSubUrl,
+          mroceanPortalUrl: clientResult.mroceanPortalUrl,
           panelType: clientResult.panelType,
           volumeGb: volGb,
           durationDays: durDays,
@@ -3805,6 +3907,133 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'admin_set_mode_mrocean') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'mrocean' });
+      answerQuery({ text: 'حالت پنل فعال به فقط مستر اوشن (MR OCEAN) تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_mrocean_menu') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      sendMrOceanConnectionMenu(chatId);
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_mo_url') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_mo_url');
+      bot!.sendMessage(chatId, '🔗 لطفاً آدرس کامل پنل نمایندگی مستر اوشن را ارسال فرمایید:\n\nمثال: <code>https://panel.mrocean.ir</code>', { parse_mode: 'HTML' });
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_mo_user') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_mo_user');
+      bot!.sendMessage(chatId, '👤 لطفاً نام کاربری نمایندگی ورود به مستر اوشن را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_mo_pass') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_mo_pass');
+      bot!.sendMessage(chatId, '🔑 لطفاً کلمه عبور ورود به پنل مستر اوشن را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_mo_apikey') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_mo_apikey');
+      bot!.sendMessage(chatId, '🔑 لطفاً کلید API Key / Reseller Key مستر اوشن را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_mo_serviceid') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_mo_serviceid');
+      bot!.sendMessage(chatId, '🏢 لطفاً شناسه سرویس عددی خود در مستر اوشن (مثلاً 347) را ارسال فرمایید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_test_mrocean') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال تست آنلاین اتصال و احراز هویت در پنل مستر اوشن...');
+      try {
+        const testRes = await mrocean.testConnection();
+        if (testRes.success) {
+          bot!.sendMessage(chatId, testRes.message, { parse_mode: 'HTML' });
+        } else {
+          bot!.sendMessage(chatId, `❌ <b>خطا در اتصال به پنل مستر اوشن:</b>\n\n<code>${escapeHtml(testRes.message || 'عدم دریافت پاسخ')}</code>`, { parse_mode: 'HTML' });
+        }
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در بررسی اتصال مستر اوشن: ${escapeHtml(err.message || String(err))}`);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_mo_dashboard') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال دریافت آمار زنده داشبورد مستر اوشن...');
+      try {
+        const dash = await mrocean.getDashboard();
+        const title = dash.title || `سرویس ${dash.serviceId}`;
+        const usersTotal = dash.usersTotal !== undefined ? dash.usersTotal : (dash.users?.length || 0);
+        const usersLimit = dash.usersLimit || 50;
+        const activeTotal = dash.activeTotal !== undefined ? dash.activeTotal : 0;
+        const onlineTotal = dash.onlineTotal !== undefined ? dash.onlineTotal : 0;
+        const usageGb = ((dash.usageTotal || 0) / (1024 * 1024 * 1024)).toFixed(2);
+        const maxGb = dash.maxUserDataGb ? `${dash.maxUserDataGb} گیگابایت` : 'نامحدود';
+
+        const msg = `📊 <b>آمار زنده داشبورد نمایندگی مستر اوشن:</b>\n\n` +
+          `🏢 <b>سرویس:</b> ${escapeHtml(title)} (شناسه: <code>${dash.serviceId}</code>)\n` +
+          `👥 <b>ظرفیت کاربران:</b> ${usersTotal} از ${usersLimit} کاربر (فعال: <b>${activeTotal}</b> | آنلاین: <b>${onlineTotal}</b>)\n` +
+          `📈 <b>کل مصرف ثبت‌شده:</b> ${usageGb} GB\n` +
+          `⚡ <b>سقف حجم هر کاربر:</b> ${maxGb}\n` +
+          `⏳ <b>انقضای سرویس:</b> ${dash.expiresAtText || 'فعال'}`;
+
+        bot!.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در دریافت آمار داشبورد: ${err.message}`);
+      }
+      answerQuery();
+      return;
+    }
+
     if (data === 'admin_test_menu') {
       if (!isAdmin) {
         answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
@@ -4047,6 +4276,39 @@ export async function initBot() {
         sendTestSettingsMenu(chatId);
       }
       answerQuery();
+      return;
+    }
+
+    if (data === 'admin_set_test_panel_xui') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ freeTestPanel: 'sanaei' });
+      answerQuery({ text: 'سرور تست رایگان به سنایی (X-UI) تنظیم شد' });
+      sendTestSettingsMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_test_panel_rebecca') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ freeTestPanel: 'rebecca' });
+      answerQuery({ text: 'سرور تست رایگان به ربکا (Rebecca) تنظیم شد' });
+      sendTestSettingsMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_test_panel_mrocean') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ freeTestPanel: 'mrocean' });
+      answerQuery({ text: 'سرور تست رایگان به مستر اوشن (MR OCEAN) تنظیم شد' });
+      sendTestSettingsMenu(chatId);
       return;
     }
 

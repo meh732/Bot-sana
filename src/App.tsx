@@ -175,11 +175,15 @@ function TabBtn({ active, onClick, children, icon, collapsed }: any) {
 function SettingsView() {
   const [state, setState] = useState<any>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<'sanaei' | 'rebecca' | 'general' | 'coupons' | 'backups'>('sanaei');
+  const [activeSection, setActiveSection] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'general' | 'coupons' | 'backups'>('sanaei');
   const [inbounds, setInbounds] = useState<any[]>([]);
   const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
   const [rebeccaTesting, setRebeccaTesting] = useState(false);
   const [rebeccaSaving, setRebeccaSaving] = useState(false);
+  const [mroceanTesting, setMroceanTesting] = useState(false);
+  const [mroceanSaving, setMroceanSaving] = useState(false);
+  const [mroceanDashboard, setMroceanDashboard] = useState<any>(null);
+  const [mroceanLoadingDash, setMroceanLoadingDash] = useState(false);
   const [adminIdsStr, setAdminIdsStr] = useState('');
 
   const [backupPassword, setBackupPassword] = useState('');
@@ -612,6 +616,68 @@ function SettingsView() {
     }
   };
 
+  const saveMrOceanPanel = async () => {
+    setMroceanSaving(true);
+    try {
+      const res = await fetch('/api/update-mrocean-panel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.mroceanPanel || {})
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ تنظیمات پنل نمایندگی مستر اوشن با موفقیت ذخیره شد.');
+        const updatedState = await fetch('/api/state').then(r => r.json());
+        setState(updatedState);
+      } else {
+        alert('❌ خطا در ذخیره پنل مستر اوشن: ' + data.message);
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    } finally {
+      setMroceanSaving(false);
+    }
+  };
+
+  const testMrOceanConnection = async () => {
+    setMroceanTesting(true);
+    try {
+      const res = await fetch('/api/test-mrocean-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.mroceanPanel || {})
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message);
+        loadMrOceanDashboard();
+      } else {
+        alert('❌ خطا: ' + data.message);
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    } finally {
+      setMroceanTesting(false);
+    }
+  };
+
+  const loadMrOceanDashboard = async () => {
+    setMroceanLoadingDash(true);
+    try {
+      const res = await fetch('/api/mrocean-dashboard');
+      const data = await res.json();
+      if (data.success) {
+        setMroceanDashboard(data.dashboard);
+      } else {
+        console.log('MrOcean dashboard fetch info:', data.message);
+      }
+    } catch (e) {
+      console.error('Error fetching Mr Ocean dashboard:', e);
+    } finally {
+      setMroceanLoadingDash(false);
+    }
+  };
+
   const handleDownloadBackup = async () => {
     if (!backupPassword) {
       alert('لطفا یک رمز عبور جهت رمزگذاری کانفیگ بکاپ تعیین کنید.');
@@ -695,6 +761,16 @@ function SettingsView() {
     enabled: true
   };
 
+  const mroceanData = state.mroceanPanel || {
+    url: 'https://panel.mrocean.ir',
+    username: '',
+    password: '',
+    apiKey: '',
+    serviceId: 347,
+    subUrlBase: '',
+    enabled: true
+  };
+
   return (
     <div className="space-y-6 max-w-4xl mx-auto" dir="rtl">
       {/* Settings Subtabs Bar */}
@@ -721,6 +797,21 @@ function SettingsView() {
         >
           <span className="w-2.5 h-2.5 rounded-full bg-purple-300"></span>
           🟣 پنل ربکا (Rebecca)
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveSection('mrocean');
+            if (!mroceanDashboard) loadMrOceanDashboard();
+          }}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'mrocean'
+              ? 'bg-gradient-to-r from-cyan-600 to-teal-700 text-white shadow-md shadow-cyan-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-cyan-300"></span>
+          🌊 مستر اوشن (MR OCEAN)
         </button>
 
         <button
@@ -1089,6 +1180,177 @@ function SettingsView() {
         </div>
       )}
 
+      {/* SECTION: Mr Ocean Reseller Panel */}
+      {activeSection === 'mrocean' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center justify-between border-b pb-4 border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-600 font-bold text-lg">
+                🌊
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">مشخصات و اتصال پنل نمایندگی مستر اوشن (MR OCEAN)</h2>
+                <p className="text-xs text-slate-500">پیکربندی آدرس، اکانت ریسلر و کلید API جهت ساخت و تمدید کاملاً خودکار اکانت‌ها و تحویل لینک ساب به مشتری</p>
+              </div>
+            </div>
+            <span className="bg-cyan-50 text-cyan-800 font-bold px-3 py-1 rounded-full text-xs border border-cyan-200">
+              Mr Ocean API Engine
+            </span>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">آدرس کامل پنل نمایندگی مستر اوشن (Panel Base URL)</label>
+              <input 
+                type="text" 
+                value={mroceanData.url || ''} 
+                onChange={e => setState({
+                  ...state, 
+                  mroceanPanel: { ...mroceanData, url: e.target.value }
+                })} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-cyan-500 text-left font-mono text-sm bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="https://panel.mrocean.ir" 
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">نام کاربری نمایندگی (Reseller Username)</label>
+                <input 
+                  type="text" 
+                  value={mroceanData.username || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    mroceanPanel: { ...mroceanData, username: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-cyan-500 font-mono text-sm text-left" 
+                  placeholder="mo_78_347_misieoig7k-6"
+                  dir="ltr"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">رمز عبور ورود به پنل نمایندگی</label>
+                <input 
+                  type="password" 
+                  value={mroceanData.password || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    mroceanPanel: { ...mroceanData, password: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-cyan-500 text-sm" 
+                  placeholder="Mo!RgElMrGlPlNIKFIQX8..."
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">کلید API Key یا Reseller Key مستر اوشن</label>
+                <input 
+                  type="text" 
+                  value={mroceanData.apiKey || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    mroceanPanel: { ...mroceanData, apiKey: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-cyan-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="rk_-itJXBc5_vWntoQxC9QflcAQ8jRIF9H6zULsm3KHJpI" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">شناسه سرویس نمایندگی (Service ID)</label>
+                <input 
+                  type="number" 
+                  value={mroceanData.serviceId !== undefined ? mroceanData.serviceId : 347} 
+                  onChange={e => setState({
+                    ...state, 
+                    mroceanPanel: { ...mroceanData, serviceId: parseInt(e.target.value) || 347 }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-cyan-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="347" 
+                />
+                <p className="text-[11px] text-slate-400 mt-1">شناسه سرویس عددی پنل نمایندگی شما در مستر اوشن (مثال: 347)</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button 
+                onClick={testMrOceanConnection} 
+                disabled={mroceanTesting}
+                className="flex-1 min-w-[180px] bg-slate-900 text-white px-4 py-2.5 rounded-xl hover:bg-slate-800 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <Zap className="w-4 h-4 ml-2 text-yellow-400" /> {mroceanTesting ? 'در حال تست...' : 'تست آنلاین اتصال و لاگین مستر اوشن'}
+              </button>
+              <button 
+                onClick={loadMrOceanDashboard} 
+                disabled={mroceanLoadingDash}
+                className="flex-1 min-w-[180px] bg-cyan-600 text-white px-4 py-2.5 rounded-xl hover:bg-cyan-700 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <RefreshCw className={`w-4 h-4 ml-2 ${mroceanLoadingDash ? 'animate-spin' : ''}`} /> واکشی آمار زنده داشبورد
+              </button>
+            </div>
+
+            {/* Live Dashboard Stats Card */}
+            {mroceanDashboard && (
+              <div className="p-4 bg-gradient-to-br from-cyan-50 to-teal-50 rounded-xl border border-cyan-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-cyan-950 flex items-center gap-2">
+                    <span>📊</span> آمار زنده داشبورد نمایندگی ({mroceanDashboard.title || `سرویس ${mroceanDashboard.serviceId}`})
+                  </h3>
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold border border-emerald-300">
+                    {mroceanDashboard.status || 'Active'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                  <div className="bg-white p-3 rounded-lg border border-cyan-100 shadow-xs">
+                    <p className="text-[11px] text-slate-500">کاربران ساخته شده</p>
+                    <p className="text-base font-bold text-cyan-800 font-mono mt-1">
+                      {mroceanDashboard.usersTotal || mroceanDashboard.users?.length || 0} / {mroceanDashboard.usersLimit || 50}
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-cyan-100 shadow-xs">
+                    <p className="text-[11px] text-slate-500">کاربران فعال</p>
+                    <p className="text-base font-bold text-emerald-600 font-mono mt-1">
+                      {mroceanDashboard.activeTotal !== undefined ? mroceanDashboard.activeTotal : 0}
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-cyan-100 shadow-xs">
+                    <p className="text-[11px] text-slate-500">آنلاین‌های اخیر</p>
+                    <p className="text-base font-bold text-blue-600 font-mono mt-1">
+                      {mroceanDashboard.onlineTotal !== undefined ? mroceanDashboard.onlineTotal : 0}
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-cyan-100 shadow-xs">
+                    <p className="text-[11px] text-slate-500">کل ترافیک مصرفی</p>
+                    <p className="text-base font-bold text-indigo-700 font-mono mt-1">
+                      {((mroceanDashboard.usageTotal || 0) / (1024 * 1024 * 1024)).toFixed(2)} GB
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 border-t flex justify-end">
+              <button 
+                onClick={saveMrOceanPanel} 
+                disabled={mroceanSaving} 
+                className="bg-cyan-700 hover:bg-cyan-800 text-white px-6 py-2.5 rounded-xl font-bold text-sm transition flex items-center shadow-md shadow-cyan-800/20"
+              >
+                <Save className="w-4 h-4 ml-2" /> ذخیره مشخصات پنل مستر اوشن
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SECTION 3: General & Telegram Bot Settings */}
       {activeSection === 'general' && (
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
@@ -1154,6 +1416,7 @@ function SettingsView() {
                   >
                     <option value="sanaei">🔵 فقط پنل سنایی (Sanaei)</option>
                     <option value="rebecca">🟣 فقط پنل ربکا (Rebecca)</option>
+                    <option value="mrocean">🌊 فقط پنل مستر اوشن (MR OCEAN)</option>
                     <option value="both">🚀 هر دو پنل به صورت همزمان (Both)</option>
                   </select>
                 </div>
@@ -1733,7 +1996,7 @@ function ProductsView() {
     price: 0,
     volumeGb: 10,
     durationDays: 30,
-    panelType: 'sanaei' as 'sanaei' | 'rebecca' | 'both',
+    panelType: 'sanaei' as 'sanaei' | 'rebecca' | 'mrocean' | 'both',
     inboundId: '',
     inboundIds: [] as number[],
     rebeccaInboundTags: [] as string[],
@@ -1746,7 +2009,7 @@ function ProductsView() {
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [bulkInboundIds, setBulkInboundIds] = useState<number[]>([]);
   const [bulkRebeccaTags, setBulkRebeccaTags] = useState<string[]>([]);
-  const [bulkPanelType, setBulkPanelType] = useState<'sanaei' | 'rebecca' | 'both' | ''>('');
+  const [bulkPanelType, setBulkPanelType] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'both' | ''>('');
 
   useEffect(() => {
     fetch('/api/state')
@@ -1941,7 +2204,7 @@ function ProductsView() {
            {/* Panel Selection Selector */}
            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
              <label className="block text-xs font-bold text-slate-800 mb-2">🌐 پنل ارائه‌دهنده سرویس (نوع سرور ساخت اکانت):</label>
-             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei' ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
                  <input 
                    type="radio" 
@@ -1967,6 +2230,20 @@ function ProductsView() {
                  <div className="text-xs">
                    <div className="font-bold flex items-center gap-1">🟣 پنل ربکا (Rebecca API)</div>
                    <div className="text-[11px] text-slate-500">ساخت اتوماتیک در پنل ربکا</div>
+                 </div>
+               </label>
+
+               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'mrocean' ? 'bg-cyan-50 border-cyan-500 text-cyan-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                 <input 
+                   type="radio" 
+                   name="panelType" 
+                   checked={form.panelType === 'mrocean'} 
+                   onChange={() => setForm({ ...form, panelType: 'mrocean' })} 
+                   className="text-cyan-600"
+                 />
+                 <div className="text-xs">
+                   <div className="font-bold flex items-center gap-1">🌊 پنل مستر اوشن</div>
+                   <div className="text-[11px] text-slate-500">ساخت در پنل نمایندگی</div>
                  </div>
                </label>
 
@@ -2193,6 +2470,7 @@ function ProductsView() {
                    <option value="">بدون تغییر پنل</option>
                    <option value="sanaei">🔵 پنل سنایی (X-UI)</option>
                    <option value="rebecca">🟣 پنل ربکا (Rebecca)</option>
+                   <option value="mrocean">🌊 پنل مستر اوشن (MR OCEAN)</option>
                    <option value="both">🌐 هر دو پنل همزمان (Dual)</option>
                  </select>
                </div>
@@ -2344,6 +2622,11 @@ function ProductsView() {
                        🟣 پنل ربکا
                      </span>
                    )}
+                   {panelType === 'mrocean' && (
+                     <span className="text-[11px] bg-cyan-100 text-cyan-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                       🌊 پنل مستر اوشن
+                     </span>
+                   )}
                    {panelType === 'sanaei' && (
                      <span className="text-[11px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
                        🔵 پنل سنایی
@@ -2370,6 +2653,14 @@ function ProductsView() {
                          {p.inboundIds && p.inboundIds.length > 0 
                            ? p.inboundIds.map((id: number) => `ID ${id}`).join(', ') 
                            : (p.inboundId ? `ID ${p.inboundId}` : 'پیشفرض')}
+                       </span>
+                     </div>
+                   )}
+                   {panelType === 'mrocean' && (
+                     <div className="flex justify-between pb-1 border-b">
+                       <span>پنل سازنده:</span>
+                       <span className="font-bold text-cyan-700 bg-cyan-50 px-2 py-0.5 rounded text-[11px]">
+                         نمایندگی مستر اوشن (MR OCEAN)
                        </span>
                      </div>
                    )}

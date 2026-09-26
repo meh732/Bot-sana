@@ -9,6 +9,7 @@ import { db } from "./server/db.js";
 import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit } from "./server/bot.js";
 import { xui } from "./server/xui.js";
 import { rebecca } from "./server/rebecca.js";
+import { mrocean } from "./server/mrocean.js";
 import { multiPanel } from "./server/multiPanel.js";
 import { encryptData, decryptData } from "./server/crypto.js";
 
@@ -74,6 +75,10 @@ async function startServer() {
       rebeccaPanel: state.rebeccaPanel ? {
         ...state.rebeccaPanel,
         password: state.rebeccaPanel.password ? '********' : ''
+      } : undefined,
+      mroceanPanel: state.mroceanPanel ? {
+        ...state.mroceanPanel,
+        password: state.mroceanPanel.password ? '********' : ''
       } : undefined
     };
     res.json(safeState);
@@ -201,6 +206,65 @@ async function startServer() {
       res.json(result);
     } catch (e: any) {
       res.json({ success: false, message: e.message });
+    }
+  });
+
+  api.post("/update-mrocean-panel", async (req, res) => {
+    const { url, username, password, apiKey, serviceId, subUrlBase, enabled } = req.body;
+    const currentState = db.getState();
+    
+    const newMrOcean = { ...(currentState.mroceanPanel || {}) };
+    if (url !== undefined) newMrOcean.url = url;
+    if (username !== undefined) newMrOcean.username = username;
+    if (password && password !== '********') newMrOcean.password = password;
+    if (apiKey !== undefined) newMrOcean.apiKey = apiKey;
+    if (serviceId !== undefined) newMrOcean.serviceId = serviceId;
+    if (subUrlBase !== undefined) newMrOcean.subUrlBase = subUrlBase;
+    if (enabled !== undefined) newMrOcean.enabled = Boolean(enabled);
+
+    db.updateState({ mroceanPanel: newMrOcean });
+    res.json({ success: true });
+  });
+
+  api.post("/test-mrocean-connection", async (req, res) => {
+    try {
+      const { url, username, password, apiKey, serviceId } = req.body;
+      let result;
+      if (url && username) {
+        result = await mrocean.testConnection({ url, username, password, apiKey, serviceId });
+      } else {
+        result = await mrocean.testConnection();
+      }
+      res.json(result);
+    } catch (e: any) {
+      res.json({ success: false, message: e.message });
+    }
+  });
+
+  api.get("/mrocean-dashboard", async (req, res) => {
+    try {
+      const dash = await mrocean.getDashboard();
+      res.json({ success: true, dashboard: dash });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message });
+    }
+  });
+
+  api.get("/mrocean-services", async (req, res) => {
+    try {
+      const services = await mrocean.getServices();
+      res.json({ success: true, services });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message, services: [] });
+    }
+  });
+
+  api.get("/mrocean-inbounds", async (req, res) => {
+    try {
+      const inbounds = await mrocean.getInbounds();
+      res.json({ success: true, inbounds });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message, inbounds: [] });
     }
   });
 

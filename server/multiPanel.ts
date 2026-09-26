@@ -1,16 +1,20 @@
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
+import { mrocean } from './mrocean.js';
 import { db, Product, User, Purchase } from './db.js';
 
 export interface UnifiedClientCreationResult {
-  panelType: 'sanaei' | 'rebecca' | 'both';
+  panelType: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
   clientEmail: string;
   subId?: string;
   subUrl: string;
   sanaeiSubUrl?: string;
   rebeccaSubUrl?: string;
+  mroceanSubUrl?: string;
+  mroceanPortalUrl?: string;
   sanaeiDetails?: any;
   rebeccaDetails?: any;
+  mroceanDetails?: any;
 }
 
 export interface UnifiedTrafficClient {
@@ -20,18 +24,19 @@ export interface UnifiedTrafficClient {
   subId?: string;
   token?: string;
   subUrl?: string;
+  portalUrl?: string;
   up: number;
   down: number;
   totalUsed: number;
   total: number;
   expiryTime: number;
   enable: boolean;
-  panel: 'sanaei' | 'rebecca';
+  panel: 'sanaei' | 'rebecca' | 'mrocean';
 }
 
 export class MultiPanelService {
   /**
-   * Creates client config on Sanaei, Rebecca, or Both simultaneously
+   * Creates client config on Sanaei, Rebecca, Mr Ocean, or Both simultaneously
    */
   public async createClientConfig(params: {
     user: User;
@@ -41,7 +46,7 @@ export class MultiPanelService {
       volumeGb: number;
       durationDays: number;
       isPayAsYouGo?: boolean;
-      panelType?: 'sanaei' | 'rebecca' | 'both';
+      panelType?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
       inboundId?: number | string;
       inboundIds?: (number | string)[];
       rebeccaInboundTags?: string[];
@@ -53,12 +58,16 @@ export class MultiPanelService {
     const state = db.getState();
 
     // Determine target panel
-    let panelType: 'sanaei' | 'rebecca' | 'both' = product.panelType || 'sanaei';
+    let panelType: 'sanaei' | 'rebecca' | 'both' | 'mrocean' = product.panelType || 'sanaei';
     if (!product.panelType) {
-      if (state.activePanelMode === 'rebecca') {
+      if (state.activePanelMode === 'mrocean') {
+        panelType = 'mrocean';
+      } else if (state.activePanelMode === 'rebecca') {
         panelType = 'rebecca';
       } else if (state.activePanelMode === 'both') {
         panelType = 'both';
+      } else if (state.mroceanPanel?.url && state.mroceanPanel?.username && (!state.panel?.url || state.panel?.panelType === 'mrocean')) {
+        panelType = 'mrocean';
       } else if (state.rebeccaPanel?.url && (!state.panel?.url || state.panel?.panelType === 'rebecca')) {
         panelType = 'rebecca';
       }
@@ -97,11 +106,15 @@ export class MultiPanelService {
 
     let sanaeiSubUrl = '';
     let rebeccaSubUrl = '';
+    let mroceanSubUrl = '';
+    let mroceanPortalUrl = '';
     let sanaeiDetails: any = null;
     let rebeccaDetails: any = null;
+    let mroceanDetails: any = null;
 
     let sanaeiErr: string | null = null;
     let rebeccaErr: string | null = null;
+    let mroceanErr: string | null = null;
 
     // 1. Sanaei Panel Creation
     if (panelType === 'sanaei' || panelType === 'both') {
@@ -153,6 +166,27 @@ export class MultiPanelService {
       }
     }
 
+    // 3. Mr Ocean Reseller Panel Creation
+    if (panelType === 'mrocean') {
+      try {
+        const note = `ChatID: ${user.chatId} | ${user.username ? '@' + user.username : 'NoUser'} | Product: ${product.name || 'Custom'}`;
+        const mroceanClient = await mrocean.addClient(
+          clientEmail,
+          volGb,
+          durDays,
+          note
+        );
+        mroceanSubUrl = mroceanClient.subUrl || '';
+        mroceanPortalUrl = mroceanClient.portalUrl || '';
+        mroceanDetails = mroceanClient;
+        console.log(`[MultiPanel] Created Mr Ocean client: ${clientEmail}`);
+      } catch (err: any) {
+        mroceanErr = err.message || 'خطا در اتصال به پنل مستر اوشن';
+        console.error(`[MultiPanel Error] Mr Ocean creation failed for ${clientEmail}:`, mroceanErr);
+        throw new Error(`خطا در ایجاد سرویس در پنل نمایندگی مستر اوشن: ${mroceanErr}`);
+      }
+    }
+
     if (panelType === 'both') {
       if (!sanaeiSubUrl && !rebeccaSubUrl) {
         throw new Error(`خطا در ساخت اکانت روی هر دو پنل:\n• سنایی: ${sanaeiErr}\n• ربکا: ${rebeccaErr}`);
@@ -171,6 +205,8 @@ export class MultiPanelService {
       primarySubUrl = sanaeiSubUrl || rebeccaSubUrl;
     } else if (panelType === 'rebecca') {
       primarySubUrl = rebeccaSubUrl;
+    } else if (panelType === 'mrocean') {
+      primarySubUrl = mroceanSubUrl || mroceanPortalUrl;
     } else {
       primarySubUrl = sanaeiSubUrl;
     }
@@ -181,7 +217,8 @@ export class MultiPanelService {
 
     const sanaeiSubId = sanaeiDetails?.subId || '';
     const rebeccaSubId = rebeccaDetails?.subId || rebeccaDetails?.token || (rebeccaDetails?.subUrl ? rebecca.extractSubToken(rebeccaDetails.subUrl) : '');
-    const primarySubId = sanaeiSubId || rebeccaSubId || '';
+    const mroceanSubId = clientEmail;
+    const primarySubId = sanaeiSubId || rebeccaSubId || mroceanSubId || '';
 
     return {
       panelType,
@@ -190,8 +227,11 @@ export class MultiPanelService {
       subUrl: primarySubUrl,
       sanaeiSubUrl: sanaeiSubUrl || undefined,
       rebeccaSubUrl: rebeccaSubUrl || undefined,
+      mroceanSubUrl: mroceanSubUrl || undefined,
+      mroceanPortalUrl: mroceanPortalUrl || undefined,
       sanaeiDetails,
-      rebeccaDetails
+      rebeccaDetails,
+      mroceanDetails
     };
   }
 
@@ -249,11 +289,36 @@ export class MultiPanelService {
       console.error('[MultiPanel] Failed fetching Rebecca clients traffic:', e.message);
     }
 
+    // Mr Ocean clients
+    try {
+      const mroceanClients = await mrocean.getAllClientsWithTraffic().catch(() => []);
+      for (const cl of mroceanClients) {
+        results.push({
+          id: cl.id,
+          email: cl.email,
+          username: cl.username,
+          subId: cl.username,
+          token: cl.username,
+          subUrl: cl.subUrl,
+          portalUrl: cl.portalUrl,
+          up: cl.up || 0,
+          down: cl.down || 0,
+          totalUsed: cl.totalUsed || 0,
+          total: cl.total || 0,
+          expiryTime: cl.expiryTime || 0,
+          enable: cl.enable !== false,
+          panel: 'mrocean'
+        });
+      }
+    } catch (e: any) {
+      console.error('[MultiPanel] Failed fetching Mr Ocean clients traffic:', e.message);
+    }
+
     return results;
   }
 
   /**
-   * Enables or disables a client on Sanaei and/or Rebecca
+   * Enables or disables a client on Sanaei, Rebecca, or Mr Ocean
    */
   public async updateClientEnable(purchase: Purchase, enable: boolean): Promise<void> {
     const pType = purchase.panelType || 'sanaei';
@@ -272,6 +337,14 @@ export class MultiPanelService {
         await rebecca.updateClientEnable(email, enable);
       } catch (e: any) {
         console.error(`[MultiPanel] updateClientEnable error Rebecca for ${email}:`, e.message);
+      }
+    }
+
+    if (pType === 'mrocean') {
+      try {
+        await mrocean.updateClientEnable(email, enable);
+      } catch (e: any) {
+        console.error(`[MultiPanel] updateClientEnable error Mr Ocean for ${email}:`, e.message);
       }
     }
   }
@@ -301,6 +374,16 @@ export class MultiPanelService {
       } catch (e: any) {
         console.error(`[MultiPanel] renewClient error Rebecca for ${email}:`, e.message);
         if (pType === 'rebecca') throw e;
+      }
+    }
+
+    if (pType === 'mrocean') {
+      try {
+        await mrocean.renewClient(email, volumeGb, durationDays);
+        anySuccess = true;
+      } catch (e: any) {
+        console.error(`[MultiPanel] renewClient error Mr Ocean for ${email}:`, e.message);
+        throw e;
       }
     }
 
@@ -346,7 +429,16 @@ export class MultiPanelService {
         console.error(`[MultiPanel] delClient error Rebecca for ${email}:`, e.message);
       }
     }
+
+    if (pType === 'mrocean') {
+      try {
+        await mrocean.delClient(email);
+      } catch (e: any) {
+        console.error(`[MultiPanel] delClient error Mr Ocean for ${email}:`, e.message);
+      }
+    }
   }
 }
 
 export const multiPanel = new MultiPanelService();
+
