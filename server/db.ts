@@ -31,6 +31,11 @@ export interface MrOceanPanelConfig {
   serviceId?: number | string;
   subUrlBase?: string;
   enabled?: boolean;
+  _sessionCookie?: string;
+  _csrfToken?: string;
+  _sessionExpiryTime?: number;
+  _serviceId?: string | number;
+  _apiBase?: string;
 }
 
 export interface Category {
@@ -39,6 +44,16 @@ export interface Category {
   disabled?: boolean;
 }
 
+export type PanelType = 
+  | 'sanaei' 
+  | 'rebecca' 
+  | 'mrocean' 
+  | 'sanaei_rebecca' 
+  | 'sanaei_mrocean' 
+  | 'rebecca_mrocean' 
+  | 'all' 
+  | 'both';
+
 export interface Product {
   id: string;
   name: string;
@@ -46,7 +61,7 @@ export interface Product {
   volumeGb: number; // Gigabytes
   durationDays: number;
   categoryId?: string;
-  panelType?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
+  panelType?: PanelType;
   inboundId?: number | string;
   inboundIds?: (number | string)[];
   rebeccaInboundTags?: string[];
@@ -72,7 +87,7 @@ export interface Purchase {
   rebeccaSubUrl?: string;
   mroceanSubUrl?: string;
   mroceanPortalUrl?: string;
-  panelType?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
+  panelType?: PanelType | string;
   volumeGb: number;
   durationDays: number;
   createdAt: string;
@@ -139,7 +154,7 @@ export interface PendingPayment {
 
 export interface AppState {
   botToken?: string;
-  activePanelMode?: 'xui' | 'rebecca' | 'both' | 'mrocean';
+  activePanelMode?: PanelType | 'xui';
   panel: PanelConfig;
   rebeccaPanel?: RebeccaPanelConfig;
   mroceanPanel?: MrOceanPanelConfig;
@@ -150,7 +165,7 @@ export interface AppState {
   freeTestVolumeGb: number;
   freeTestDurationDays: number;
   freeTestEnabled: boolean;
-  freeTestPanel?: 'sanaei' | 'rebecca' | 'both' | 'mrocean';
+  freeTestPanel?: PanelType | string;
   freeTestInboundId?: number | string;
   freeTestInboundIds?: (number | string)[];
   freeTestRebeccaInbounds?: string[];

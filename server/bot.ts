@@ -1,5 +1,5 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { db } from './db.js';
+import { db, PanelType } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
 import { mrocean } from './mrocean.js';
@@ -188,7 +188,11 @@ function getProductButtonText(user: any, p: any): string {
     const isPayG = !!p.isPayAsYouGo;
     const unit = isPayG ? 'تومان/گیگ' : 'تومان';
     let badge = '';
-    if (p.panelType === 'both') badge = '🌐 ';
+    if (p.panelType === 'all') badge = '🚀 ';
+    else if (p.panelType === 'both' || p.panelType === 'sanaei_rebecca') badge = '⚡️ ';
+    else if (p.panelType === 'sanaei_mrocean') badge = '⚡️ ';
+    else if (p.panelType === 'rebecca_mrocean') badge = '⚡️ ';
+    else if (p.panelType === 'mrocean') badge = '🌊 ';
     else if (p.panelType === 'rebecca') badge = '🟣 ';
     else if (p.panelType === 'sanaei') badge = '🔵 ';
     
@@ -609,27 +613,23 @@ async function sendServiceInfo(chatId: number, purchase: any) {
 
     // 4. Multi-panel links display
     let linksText = '';
-    if (purchase.panelType === 'both' || (purchase.sanaeiSubUrl && purchase.rebeccaSubUrl)) {
-      const sanaeiLink = purchase.sanaeiSubUrl || purchase.subUrl;
-      const rebeccaLink = purchase.rebeccaSubUrl;
-      linksText = `🔵 <b>لینک سابسکریپشن سرور سنایی:</b>\n` +
-        `<code>${escapeHtml(sanaeiLink)}</code>\n\n` +
-        (rebeccaLink 
-          ? `🟣 <b>لینک سابسکریپشن سرور ربکا:</b>\n<code>${escapeHtml(rebeccaLink)}</code>\n\n`
-          : `⚠️ <b>لینک سرور ربکا:</b> (مشخصات پنل ربکا در مدیریت تنظیم نشده است)\n\n`);
-    } else if (purchase.panelType === 'rebecca') {
-      linksText = `🟣 <b>لینک اختصاصی سرور ربکا:</b>\n` +
-        `<code>${escapeHtml(purchase.rebeccaSubUrl || purchase.subUrl)}</code>\n\n`;
-    } else if (purchase.panelType === 'mrocean' || purchase.mroceanSubUrl || purchase.mroceanPortalUrl) {
-      const directSub = purchase.mroceanSubUrl || purchase.subUrl;
-      const portalLink = purchase.mroceanPortalUrl;
-      linksText = `🌊 <b>لینک سابسکریپشن مستقیم مستر اوشن:</b>\n` +
-        `<code>${escapeHtml(directSub)}</code>\n\n` +
-        (portalLink ? `🌐 <b>پرتال اشتراک وب و کانفیگ‌ها:</b>\n<code>${escapeHtml(portalLink)}</code>\n\n` : '');
-    } else if (subUrl) {
-      linksText = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n` +
-        `<code>${escapeHtml(subUrl)}</code>\n\n`;
-    } else {
+    const hasSanaei = !!(purchase.sanaeiSubUrl || (purchase.panelType === 'sanaei' && purchase.subUrl));
+    const hasRebecca = !!purchase.rebeccaSubUrl;
+    const hasMrOcean = !!purchase.mroceanSubUrl;
+
+    if (purchase.sanaeiSubUrl) {
+      linksText += `🔵 <b>لینک سابسکریپشن سرور سنایی:</b>\n<code>${escapeHtml(purchase.sanaeiSubUrl)}</code>\n\n`;
+    }
+    if (purchase.rebeccaSubUrl) {
+      linksText += `🟣 <b>لینک سابسکریپشن سرور ربکا:</b>\n<code>${escapeHtml(purchase.rebeccaSubUrl)}</code>\n\n`;
+    }
+    if (purchase.mroceanSubUrl) {
+      linksText += `🌊 <b>لینک سابسکریپشن مستر اوشن:</b>\n<code>${escapeHtml(purchase.mroceanSubUrl)}</code>\n\n`;
+    }
+
+    if (!linksText && subUrl) {
+      linksText = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n<code>${escapeHtml(subUrl)}</code>\n\n`;
+    } else if (!linksText) {
       linksText = `⚠️ <i>لینک سابسکریپشن در حال حاضر در دسترس نیست.</i>\n\n`;
     }
 
@@ -1375,23 +1375,41 @@ export async function initBot() {
     }
   }
 
+  const getPanelModeLabel = (mode?: string): string => {
+    switch (mode) {
+      case 'sanaei': return '🔵 فقط سنایی (X-UI)';
+      case 'rebecca': return '🟣 فقط ربکا (Rebecca)';
+      case 'mrocean': return '🌊 فقط مستر اوشن (MR OCEAN)';
+      case 'sanaei_rebecca':
+      case 'both': return '🌐 سنایی + ربکا (دوگانه)';
+      case 'sanaei_mrocean': return '🌐 سنایی + مستر اوشن';
+      case 'rebecca_mrocean': return '🌐 ربکا + مستر اوشن';
+      case 'all': return '🚀 همه ۳ پنل همزمان (سنایی + ربکا + مستر اوشن)';
+      default: return '🔵 فقط سنایی (X-UI)';
+    }
+  };
+
   const sendAdminMainMenu = (chatId: number) => {
     const state = db.getState();
-    const modeLabel = state.activePanelMode === 'mrocean'
-      ? '🌊 فقط مستر اوشن (MR OCEAN)'
-      : (state.activePanelMode === 'rebecca'
-        ? '🟣 فقط ربکا (Rebecca)'
-        : (state.activePanelMode === 'both' ? '🌐 هر دو همزمان (Dual Panel)' : '🔵 فقط سنایی (X-UI)'));
+    const currentMode = state.activePanelMode || 'sanaei';
+    const modeLabel = getPanelModeLabel(currentMode);
 
     bot!.sendMessage(chatId, `🔧 <b>پنل مدیریت ربات</b>:\n\n🔘 <b>حالت فعال ساخت کانفیگ:</b> <b>${modeLabel}</b>\nجهت تغییر سرور فعال ساخت کاربر، از دکمه‌های زیر استفاده نمایید:`, {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [
-            { text: `${state.activePanelMode === 'xui' || !state.activePanelMode ? '🔘' : '⚪️'} سنایی`, callback_data: 'admin_set_mode_xui' },
-            { text: `${state.activePanelMode === 'rebecca' ? '🔘' : '⚪️'} ربکا`, callback_data: 'admin_set_mode_rebecca' },
-            { text: `${state.activePanelMode === 'mrocean' ? '🔘' : '⚪️'} مستر اوشن`, callback_data: 'admin_set_mode_mrocean' },
-            { text: `${state.activePanelMode === 'both' ? '🔘' : '⚪️'} هر دو`, callback_data: 'admin_set_mode_both' }
+            { text: `${currentMode === 'sanaei' ? '🔘' : '⚪️'} فقط سنایی`, callback_data: 'admin_set_mode_xui' },
+            { text: `${currentMode === 'rebecca' ? '🔘' : '⚪️'} فقط ربکا`, callback_data: 'admin_set_mode_rebecca' },
+            { text: `${currentMode === 'mrocean' ? '🔘' : '⚪️'} فقط مستر اوشن`, callback_data: 'admin_set_mode_mrocean' }
+          ],
+          [
+            { text: `${currentMode === 'sanaei_rebecca' || currentMode === 'both' ? '🔘' : '⚪️'} سنایی + ربکا`, callback_data: 'admin_set_mode_sanaei_rebecca' },
+            { text: `${currentMode === 'sanaei_mrocean' ? '🔘' : '⚪️'} سنایی + اوشن`, callback_data: 'admin_set_mode_sanaei_mrocean' },
+            { text: `${currentMode === 'rebecca_mrocean' ? '🔘' : '⚪️'} ربکا + اوشن`, callback_data: 'admin_set_mode_rebecca_mrocean' }
+          ],
+          [
+            { text: `${currentMode === 'all' ? '🔘' : '⚪️'} 🚀 همه ۳ پنل به صورت همزمان (All Panels)`, callback_data: 'admin_set_mode_all' }
           ],
           [
             { text: '🔵 تنظیمات سنایی (X-UI)', callback_data: 'admin_panel_menu' },
@@ -1510,9 +1528,7 @@ export async function initBot() {
     const state = db.getState();
     const statusText = state.freeTestEnabled !== false ? '✅ فعال' : '❌ غیرفعال';
     const testPanel = state.freeTestPanel || state.activePanelMode || 'sanaei';
-    const panelName = testPanel === 'mrocean'
-      ? '🌊 مستر اوشن (MR OCEAN)'
-      : (testPanel === 'rebecca' ? '🟣 ربکا (Rebecca)' : (testPanel === 'both' ? '🌐 هر دو همزمان' : '🔵 سنایی (X-UI)'));
+    const panelName = getPanelModeLabel(testPanel);
 
     const msg = `🎁 <b>تنظیمات اکانت تست رایگان و پاداش دعوت</b>:\n\n` +
       `🔘 وضعیت تست رایگان: <b>${statusText}</b>\n` +
@@ -1528,9 +1544,17 @@ export async function initBot() {
         inline_keyboard: [
           [{ text: '🔘 فعال/غیرفعال کردن تست', callback_data: 'toggle_test_enabled' }],
           [
-            { text: `${testPanel === 'sanaei' ? '🔘' : '⚪️'} تست سنایی`, callback_data: 'admin_set_test_panel_xui' },
-            { text: `${testPanel === 'rebecca' ? '🔘' : '⚪️'} تست ربکا`, callback_data: 'admin_set_test_panel_rebecca' },
-            { text: `${testPanel === 'mrocean' ? '🔘' : '⚪️'} تست مستر اوشن`, callback_data: 'admin_set_test_panel_mrocean' }
+            { text: `${testPanel === 'sanaei' ? '🔘' : '⚪️'} فقط سنایی`, callback_data: 'admin_set_test_panel_xui' },
+            { text: `${testPanel === 'rebecca' ? '🔘' : '⚪️'} فقط ربکا`, callback_data: 'admin_set_test_panel_rebecca' },
+            { text: `${testPanel === 'mrocean' ? '🔘' : '⚪️'} فقط مستر اوشن`, callback_data: 'admin_set_test_panel_mrocean' }
+          ],
+          [
+            { text: `${testPanel === 'sanaei_rebecca' || testPanel === 'both' ? '🔘' : '⚪️'} سنایی + ربکا`, callback_data: 'admin_set_test_panel_sanaei_rebecca' },
+            { text: `${testPanel === 'sanaei_mrocean' ? '🔘' : '⚪️'} سنایی + اوشن`, callback_data: 'admin_set_test_panel_sanaei_mrocean' },
+            { text: `${testPanel === 'rebecca_mrocean' ? '🔘' : '⚪️'} ربکا + اوشن`, callback_data: 'admin_set_test_panel_rebecca_mrocean' }
+          ],
+          [
+            { text: `${testPanel === 'all' ? '🔘' : '⚪️'} 🚀 همه ۳ پنل همزمان (All Panels)`, callback_data: 'admin_set_test_panel_all' }
           ],
           [{ text: '📦 حجم تست رایگان', callback_data: 'set_t_volume' }, { text: '⏰ زمان تست رایگان', callback_data: 'set_t_days' }],
           [{ text: '🆔 اینباند اختصاصی تست', callback_data: 'set_t_inbound' }],
@@ -1676,6 +1700,8 @@ export async function initBot() {
 
   bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
     const chatId = msg.chat.id;
+    userSession.delete(chatId);
+    adminSession.delete(chatId);
     const refCode = match ? match[1] : undefined;
     
     let user = db.getUser(chatId);
@@ -1737,6 +1763,8 @@ export async function initBot() {
 
   bot.onText(/\/admin/, (msg) => {
     const chatId = msg.chat.id;
+    userSession.delete(chatId);
+    adminSession.delete(chatId);
     const state = db.getState();
     if (!state.adminIds || state.adminIds.length === 0) {
       db.updateState({ adminIds: [chatId] });
@@ -1746,6 +1774,18 @@ export async function initBot() {
       return;
     }
     sendAdminMainMenu(chatId);
+  });
+
+  bot.onText(/\/cancel/, (msg) => {
+    const chatId = msg.chat.id;
+    userSession.delete(chatId);
+    adminSession.delete(chatId);
+    const user = db.getUser(chatId);
+    const state = db.getState();
+    const isAdmin = isUserAdmin(chatId, state);
+    bot!.sendMessage(chatId, '❌ عملیات لغو شد و به منوی اصلی بازگشتید.', {
+      reply_markup: (user && user.isSeller) ? getSellerReplyKeyboard() : getUserReplyKeyboard(user, state, isAdmin)
+    });
   });
 
   bot.on('message', async (msg) => {
@@ -1899,6 +1939,42 @@ export async function initBot() {
       }
     }
 
+    // Helper to strip any emojis from the message for robust Persian matching
+    const cleanText = text.replace(/[\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]/g, '').trim();
+
+    // Global cancellation handler for text commands / buttons
+    const isCancelText = [
+      '/cancel', 'cancel', 'لغو', 'انصراف', '❌ انصراف', 'لغو خرید', 'انصراف از خرید', 
+      'بازگشت', 'منوی اصلی', 'بازگشت به منوی اصلی', '🔙 بازگشت به منوی اصلی', 'خروج', '/menu'
+    ].includes(text.trim()) || [
+      'لغو', 'انصراف', 'انصراف از خرید', 'لغو خرید', 'بازگشت به منوی اصلی', 'منوی اصلی'
+    ].includes(cleanText);
+
+    if (isCancelText) {
+      userSession.delete(chatId);
+      adminSession.delete(chatId);
+      const user = db.getUser(chatId);
+      bot!.sendMessage(chatId, '❌ عملیات لغو شد و به منوی اصلی بازگشتید.', {
+        reply_markup: (user && user.isSeller) ? getSellerReplyKeyboard() : getUserReplyKeyboard(user, state, isAdmin)
+      });
+      return;
+    }
+
+    // If user tapped a standard persistent menu button while having an active session, reset session & proceed to menu
+    const isStandardMenuText = [
+      'خرید سرویس', 'خرید سرویس همکار', 'تست رایگان', 'اکانت تست',
+      'پروفایل و موجودی', 'پروفایل', 'موجودی', 'شارژ حساب', 'افزایش موجودی',
+      'لیست خریدهای من', 'خریدهای من', 'سرویس‌های من', 'لیست خریدهای من',
+      'زیرمجموعه‌گیری', 'معرفی به دوستان', 'پشتیبانی',
+      'پنل همکار (فروشنده)', 'پنل همکار', 'پنل مدیریت',
+      'وضعیت بدهی و اعتبار همکار', 'بدهی و سقف اعتبار همکار', 'لیست فروش‌های من',
+      'گزارش دقیق فروش و مصرف', 'بازگشت به منوی اصلی'
+    ].some(m => cleanText === m || cleanText.includes(m) || text.trim() === m);
+
+    if (isStandardMenuText) {
+      userSession.delete(chatId);
+    }
+
     // Process awaiting payment amount input FIRST
     const userSg = userSession.get(chatId);
     if (userSg && userSg.action === 'payment_awaiting_amount' && text && !text.startsWith('/')) {
@@ -1907,7 +1983,13 @@ export async function initBot() {
         .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632));
       const amount = parseInt(englishDigits.replace(/[^0-9]/g, ''));
       if (isNaN(amount) || amount <= 0) {
-        bot!.sendMessage(chatId, '❌ مبلغ وارد شده نامعتبر است. لطفاً فقط عدد انگلیسی یا فارسی (مثلاً ۵۰۰۰۰) وارد کنید:');
+        bot!.sendMessage(chatId, '❌ مبلغ وارد شده نامعتبر است. لطفاً فقط عدد انگلیسی یا فارسی (مثلاً ۵۰۰۰۰) وارد کنید (یا دستور /cancel را جهت لغو ارسال کنید):', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            ]
+          }
+        });
         return;
       }
 
@@ -1922,7 +2004,14 @@ export async function initBot() {
         `⚠️ *توجه کُنید*:\n` +
         `پس از انجام واریز کارت به کارت، لطفا *عکس رسید پرداخت (فیش واریزی)* خود را به صورت عکس به همین گفتگو بفرستید تا سریعاً توسط مدیریت تایید و حسابتان شارژ شود.`;
 
-      bot!.sendMessage(chatId, paymentInstructions, { parse_mode: 'Markdown' });
+      bot!.sendMessage(chatId, paymentInstructions, { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '❌ انصراف از شارژ', callback_data: 'cancel_purchase' }]
+          ]
+        }
+      });
       return;
     }
 
@@ -1932,19 +2021,27 @@ export async function initBot() {
       const matchCoupon = couponsList.find((c: any) => c.code === inputCode && c.giftAmount !== undefined && c.giftAmount > 0);
 
       if (!matchCoupon) {
-        bot!.sendMessage(chatId, '❌ کد هدیه وارد شده نامعتبر، منقضی شده یا اشتباه است. لطفاً مجدداً بررسی کنید.');
+        bot!.sendMessage(chatId, '❌ کد هدیه وارد شده نامعتبر، منقضی شده یا اشتباه است. لطفاً مجدداً بررسی کنید (یا برای انصراف دکمه زیر را بزنید):', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]
+            ]
+          }
+        });
         return;
       }
 
       // Check Expiration
       if (matchCoupon.expirationDate && new Date(matchCoupon.expirationDate) < new Date()) {
         bot!.sendMessage(chatId, '❌ متاسفانه مهلت استفاده از این کد هدیه به پایان رسیده است.');
+        userSession.delete(chatId);
         return;
       }
 
       // Check Max Usage (total)
       if (matchCoupon.maxUsage && matchCoupon.usedCount !== undefined && matchCoupon.usedCount >= matchCoupon.maxUsage) {
         bot!.sendMessage(chatId, '❌ متاسفانه ظرفیت این کد هدیه تکمیل شده است.');
+        userSession.delete(chatId);
         return;
       }
 
@@ -1955,6 +2052,7 @@ export async function initBot() {
 
       if (userUsage >= maxUsagePerUser) {
         bot!.sendMessage(chatId, '❌ شما قبلاً از این کد هدیه استفاده کرده‌اید.');
+        userSession.delete(chatId);
         return;
       }
 
@@ -1993,7 +2091,13 @@ export async function initBot() {
       
       const customName = text.trim();
       if (!/^[a-zA-Z0-9_-]+$/.test(customName)) {
-        bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً فقط از حروف انگلیسی، اعداد، خط تیره (-) و زیرخط (_) استفاده کنید و فاصله نگذارید:');
+        bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً فقط از حروف انگلیسی، اعداد، خط تیره (-) و زیرخط (_) استفاده کنید و فاصله نگذارید (یا برای انصراف دکمه زیر را بزنید):', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+            ]
+          }
+        });
         return; 
       }
 
@@ -2007,7 +2111,13 @@ export async function initBot() {
       }
       
       if (isDuplicate) {
-        bot!.sendMessage(chatId, '❌ هشدار: این نام تکراری است و قبلاً ثبت شده است! لطفاً یک نام دیگر انتخاب کنید:');
+        bot!.sendMessage(chatId, '❌ هشدار: این نام تکراری است و قبلاً ثبت شده است! لطفاً یک نام دیگر انتخاب کنید:', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
+            ]
+          }
+        });
         return; 
       }
 
@@ -2978,9 +3088,6 @@ export async function initBot() {
 
     if (!text || text.startsWith('/start') || text === '/admin') return;
 
-    // Helper to strip any emojis from the message for robust Persian matching
-    const cleanText = text.replace(/[\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]/g, '').trim();
-
     if (cleanText === 'تست رایگان' || cleanText === 'اکانت تست' || text.includes('تست رایگان')) {
       const user = db.getUser(chatId);
       if (!user) return;
@@ -3004,7 +3111,7 @@ export async function initBot() {
         const uniqueSuffix = Date.now().toString().slice(-4);
         const clientEmail = `${emailPrefix}_test_${uniqueSuffix}`;
 
-        const panelType = state.freeTestPanel || 'sanaei';
+        const panelType: PanelType = (state.freeTestPanel as PanelType) || 'sanaei';
         const clientResult = await multiPanel.createClientConfig({
           user,
           product: {
@@ -3879,7 +3986,7 @@ export async function initBot() {
         answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
         return;
       }
-      db.updateState({ activePanelMode: 'xui' });
+      db.updateState({ activePanelMode: 'sanaei' });
       answerQuery({ text: 'حالت پنل فعال به فقط سنایی تغییر یافت' });
       sendAdminMainMenu(chatId);
       return;
@@ -3896,17 +4003,6 @@ export async function initBot() {
       return;
     }
 
-    if (data === 'admin_set_mode_both') {
-      if (!isAdmin) {
-        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
-        return;
-      }
-      db.updateState({ activePanelMode: 'both' });
-      answerQuery({ text: 'حالت پنل فعال به هر دو همزمان (Dual Panel) تغییر یافت' });
-      sendAdminMainMenu(chatId);
-      return;
-    }
-
     if (data === 'admin_set_mode_mrocean') {
       if (!isAdmin) {
         answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
@@ -3914,6 +4010,50 @@ export async function initBot() {
       }
       db.updateState({ activePanelMode: 'mrocean' });
       answerQuery({ text: 'حالت پنل فعال به فقط مستر اوشن (MR OCEAN) تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_both' || data === 'admin_set_mode_sanaei_rebecca') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'sanaei_rebecca' });
+      answerQuery({ text: 'حالت پنل فعال به سنایی + ربکا تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_sanaei_mrocean') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'sanaei_mrocean' });
+      answerQuery({ text: 'حالت پنل فعال به سنایی + مستر اوشن تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_rebecca_mrocean') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'rebecca_mrocean' });
+      answerQuery({ text: 'حالت پنل فعال به ربکا + مستر اوشن تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_all') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'all' });
+      answerQuery({ text: 'حالت پنل فعال به همه ۳ پنل همزمان تغییر یافت' });
       sendAdminMainMenu(chatId);
       return;
     }
@@ -5172,6 +5312,8 @@ export async function initBot() {
     }
 
     if (data === 'cancel_purchase') {
+      userSession.delete(chatId);
+      adminSession.delete(chatId);
       bot!.sendMessage(chatId, '❌ فرآیند خرید لغو شد.');
       answerQuery();
       return;

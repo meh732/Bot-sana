@@ -158,7 +158,7 @@ class XuiClient {
     };
   }
 
-  public getActiveMode(): 'xui' | 'rebecca' | 'both' {
+  public getActiveMode(): string {
     const state = db.getState();
     if (state.activePanelMode) return state.activePanelMode;
     const hasXui = !!(state.panel?.url && state.panel?.panelType !== 'rebecca');
@@ -1518,6 +1518,33 @@ class XuiClient {
       console.error('XUI AddClient Final Error:', e.message);
       this.cookie = '';
       throw e;
+    }
+  }
+
+  public async updateClient(inboundId: number | string, clientId: string, clientObj: any) {
+    try {
+      const opts = await this.getAuthOptions();
+      const workingPrefix = this.workingApiPrefix || '/panel/api';
+      const paths = [
+        `${workingPrefix}/inbounds/updateClient/${clientId}`,
+        `/panel/api/inbounds/updateClient/${clientId}`,
+        `/api/inbounds/updateClient/${clientId}`,
+        `/xui/api/inbounds/updateClient/${clientId}`
+      ];
+      for (const p of paths) {
+        try {
+          const res = await this.client.post(`${opts.baseURL}${p}`, {
+            id: Number(inboundId),
+            settings: JSON.stringify({ clients: [clientObj] })
+          }, {
+            headers: { ...opts.headers, 'Content-Type': 'application/json' },
+            validateStatus: () => true
+          });
+          if (res?.data?.success) return res.data;
+        } catch {}
+      }
+    } catch (e: any) {
+      console.error('[X-UI] updateClient error:', e.message);
     }
   }
 }

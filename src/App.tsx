@@ -1996,7 +1996,7 @@ function ProductsView() {
     price: 0,
     volumeGb: 10,
     durationDays: 30,
-    panelType: 'sanaei' as 'sanaei' | 'rebecca' | 'mrocean' | 'both',
+    panelType: 'sanaei' as 'sanaei' | 'rebecca' | 'mrocean' | 'sanaei_rebecca' | 'sanaei_mrocean' | 'rebecca_mrocean' | 'all' | 'both',
     inboundId: '',
     inboundIds: [] as number[],
     rebeccaInboundTags: [] as string[],
@@ -2009,7 +2009,7 @@ function ProductsView() {
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [bulkInboundIds, setBulkInboundIds] = useState<number[]>([]);
   const [bulkRebeccaTags, setBulkRebeccaTags] = useState<string[]>([]);
-  const [bulkPanelType, setBulkPanelType] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'both' | ''>('');
+  const [bulkPanelType, setBulkPanelType] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'sanaei_rebecca' | 'sanaei_mrocean' | 'rebecca_mrocean' | 'all' | 'both' | ''>('');
 
   useEffect(() => {
     fetch('/api/state')
@@ -2202,68 +2202,110 @@ function ProductsView() {
          
          <div className="space-y-4">
            {/* Panel Selection Selector */}
-           <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-             <label className="block text-xs font-bold text-slate-800 mb-2">🌐 پنل ارائه‌دهنده سرویس (نوع سرور ساخت اکانت):</label>
-             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei' ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
-                 <input 
-                   type="radio" 
-                   name="panelType" 
-                   checked={form.panelType === 'sanaei'} 
-                   onChange={() => setForm({ ...form, panelType: 'sanaei' })} 
-                   className="text-blue-600"
-                 />
-                 <div className="text-xs">
-                   <div className="font-bold flex items-center gap-1">🔵 پنل سنایی (X-UI)</div>
-                   <div className="text-[11px] text-slate-500">ساخت اتوماتیک در پنل سنایی</div>
-                 </div>
-               </label>
+            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+              <label className="block text-xs font-bold text-slate-800 mb-2">🌐 پنل یا ترکیب پنل‌های ارائه‌دهنده سرویس (نوع سرور ساخت اکانت):</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei' ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'sanaei'} 
+                    onChange={() => setForm({ ...form, panelType: 'sanaei' })} 
+                    className="text-blue-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">🔵 فقط پنل سنایی (X-UI)</div>
+                    <div className="text-[11px] text-slate-500">ساخت اتوماتیک روی سرور سنایی</div>
+                  </div>
+                </label>
 
-               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'rebecca' ? 'bg-purple-50 border-purple-500 text-purple-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
-                 <input 
-                   type="radio" 
-                   name="panelType" 
-                   checked={form.panelType === 'rebecca'} 
-                   onChange={() => setForm({ ...form, panelType: 'rebecca' })} 
-                   className="text-purple-600"
-                 />
-                 <div className="text-xs">
-                   <div className="font-bold flex items-center gap-1">🟣 پنل ربکا (Rebecca API)</div>
-                   <div className="text-[11px] text-slate-500">ساخت اتوماتیک در پنل ربکا</div>
-                 </div>
-               </label>
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'rebecca' ? 'bg-purple-50 border-purple-500 text-purple-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'rebecca'} 
+                    onChange={() => setForm({ ...form, panelType: 'rebecca' })} 
+                    className="text-purple-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">🟣 فقط پنل ربکا (Rebecca)</div>
+                    <div className="text-[11px] text-slate-500">ساخت اتوماتیک روی سرور ربکا</div>
+                  </div>
+                </label>
 
-               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'mrocean' ? 'bg-cyan-50 border-cyan-500 text-cyan-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
-                 <input 
-                   type="radio" 
-                   name="panelType" 
-                   checked={form.panelType === 'mrocean'} 
-                   onChange={() => setForm({ ...form, panelType: 'mrocean' })} 
-                   className="text-cyan-600"
-                 />
-                 <div className="text-xs">
-                   <div className="font-bold flex items-center gap-1">🌊 پنل مستر اوشن</div>
-                   <div className="text-[11px] text-slate-500">ساخت در پنل نمایندگی</div>
-                 </div>
-               </label>
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'mrocean' ? 'bg-cyan-50 border-cyan-500 text-cyan-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'mrocean'} 
+                    onChange={() => setForm({ ...form, panelType: 'mrocean' })} 
+                    className="text-cyan-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">🌊 فقط پنل مستر اوشن</div>
+                    <div className="text-[11px] text-slate-500">ساخت روی نمایندگی Mr Ocean</div>
+                  </div>
+                </label>
 
-               <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'both' ? 'bg-emerald-50 border-emerald-500 text-emerald-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
-                 <input 
-                   type="radio" 
-                   name="panelType" 
-                   checked={form.panelType === 'both'} 
-                   onChange={() => setForm({ ...form, panelType: 'both' })} 
-                   className="text-emerald-600"
-                 />
-                 <div className="text-xs">
-                   <div className="font-bold flex items-center gap-1">🌐 هر دو پنل (Dual Config)</div>
-                   <div className="text-[11px] text-slate-500">تولید همزمان کانفیگ در هر دو سرور</div>
-                 </div>
-               </label>
-             </div>
-           </div>
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei_rebecca' || form.panelType === 'both' ? 'bg-indigo-50 border-indigo-500 text-indigo-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'sanaei_rebecca' || form.panelType === 'both'} 
+                    onChange={() => setForm({ ...form, panelType: 'sanaei_rebecca' })} 
+                    className="text-indigo-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">⚡️ سنایی + ربکا (Dual)</div>
+                    <div className="text-[11px] text-slate-500">تولید همزمان سنایی و ربکا</div>
+                  </div>
+                </label>
 
-           {/* Row 1 fields */}
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei_mrocean' ? 'bg-teal-50 border-teal-500 text-teal-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'sanaei_mrocean'} 
+                    onChange={() => setForm({ ...form, panelType: 'sanaei_mrocean' })} 
+                    className="text-teal-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">⚡️ سنایی + مستر اوشن</div>
+                    <div className="text-[11px] text-slate-500">تولید همزمان سنایی و اوشن</div>
+                  </div>
+                </label>
+
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'rebecca_mrocean' ? 'bg-fuchsia-50 border-fuchsia-500 text-fuchsia-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'rebecca_mrocean'} 
+                    onChange={() => setForm({ ...form, panelType: 'rebecca_mrocean' })} 
+                    className="text-fuchsia-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">⚡️ ربکا + مستر اوشن</div>
+                    <div className="text-[11px] text-slate-500">تولید همزمان ربکا و اوشن</div>
+                  </div>
+                </label>
+
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition md:col-span-2 lg:col-span-2 ${form.panelType === 'all' ? 'bg-emerald-50 border-emerald-500 text-emerald-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'all'} 
+                    onChange={() => setForm({ ...form, panelType: 'all' })} 
+                    className="text-emerald-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">🚀 همه ۳ پنل همزمان (All Panels)</div>
+                    <div className="text-[11px] text-slate-500">سنایی + ربکا + مستر اوشن به صورت تجمیعی</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Row 1 fields */}
            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
              <div className="md:col-span-2">
                <label className="block text-xs font-semibold text-slate-700 mb-1">گروه محصول</label>
@@ -2304,7 +2346,7 @@ function ProductsView() {
            </div>
 
            {/* Sanaei Inbounds Section */}
-           {(form.panelType === 'sanaei' || form.panelType === 'both') && (
+           {['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'all'].includes(form.panelType) && (
              <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-200">
                <label className="block text-xs font-bold text-blue-900 mb-1.5">🔵 اینباندهای پنل سنایی (X-UI) برای این پکیج:</label>
                {inbounds.length > 0 ? (
@@ -2364,7 +2406,7 @@ function ProductsView() {
            )}
 
            {/* Rebecca Inbounds Section */}
-           {(form.panelType === 'rebecca' || form.panelType === 'both') && (
+           {['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'all'].includes(form.panelType) && (
              <div className="p-3 bg-purple-50/50 rounded-lg border border-purple-200">
                <label className="block text-xs font-bold text-purple-900 mb-1.5">🟣 اینباندهای پنل ربکا (Rebecca Inbounds):</label>
                {rebeccaInbounds.length > 0 ? (
@@ -2622,7 +2664,7 @@ function ProductsView() {
                        🟣 پنل ربکا
                      </span>
                    )}
-                   {panelType === 'mrocean' && (
+                   {['mrocean', 'sanaei_mrocean', 'rebecca_mrocean', 'all'].includes(panelType) && (
                      <span className="text-[11px] bg-cyan-100 text-cyan-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
                        🌊 پنل مستر اوشن
                      </span>
@@ -2646,7 +2688,7 @@ function ProductsView() {
                    <div className="flex justify-between border-b pb-1"><span>میزان حجم:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود (PAYG)' : p.volumeGb === 0 ? 'نامحدود' : `${p.volumeGb} GB`}</span></div>
                    <div className="flex justify-between border-b pb-1"><span>مدت زمان:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود' : p.durationDays === 0 ? 'نامحدود' : `${p.durationDays} روز`}</span></div>
                    <div className="flex justify-between border-b pb-1"><span>محدودیت IP:</span><span className="font-bold text-slate-800">{p.limitIp || 0}</span></div>
-                   {(panelType === 'sanaei' || panelType === 'both') && (
+                   {['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'all'].includes(panelType) && (
                      <div className="flex justify-between pb-1 border-b">
                        <span>اینباندهای سنایی:</span>
                        <span className="font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
@@ -2664,7 +2706,7 @@ function ProductsView() {
                        </span>
                      </div>
                    )}
-                   {(panelType === 'rebecca' || panelType === 'both') && (
+                   {['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'all'].includes(panelType) && (
                      <div className="flex justify-between pb-1">
                        <span>اینباندهای ربکا:</span>
                        <span className="font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded text-[11px]">
