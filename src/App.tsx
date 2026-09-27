@@ -250,6 +250,99 @@ function SettingsView() {
     }
   };
 
+  const handleDownloadEncryptedBackup = async () => {
+    if (!backupPassword || backupPassword.trim() === '') {
+      alert('لطفاً ابتدا رمز عبور مد نظر برای رمزگذاری فایل بکاپ را وارد کنید.');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const res = await fetch('/api/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: backupPassword.trim() })
+      });
+      const data = await res.json();
+      if (data.success && data.payload) {
+        const blob = new Blob([JSON.stringify(data.payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `backup_secured_${Date.now()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        alert('خطا در ایجاد بکاپ: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRestoreBackup = async () => {
+    if (!selectedFile) {
+      alert('لطفاً ابتدا فایل پشتیبان (.json) را انتخاب کنید.');
+      return;
+    }
+    if (!confirm('⚠️ آیا از بازگردانی کل دیتابیس با این فایل مطمئن هستید؟ تمام اطلاعات فعلی با اطلاعات فایل جایگزین خواهد شد.')) {
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const fileText = await selectedFile.text();
+      let payload: any;
+      try {
+        payload = JSON.parse(fileText);
+      } catch (e) {
+        payload = fileText;
+      }
+      const res = await fetch('/api/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload, password: restorePassword.trim() })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ دیتابیس با موفقیت بازگردانی شد.');
+        await refreshAppState();
+      } else {
+        alert('❌ خطا در بازگردانی دیتابیس: ' + data.message);
+      }
+    } catch (e: any) {
+      alert('خطای پردازش فایل یا شبکه: ' + e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const saveAutoBackupSettings = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/update-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          autoBackupIntervalHours: state.autoBackupIntervalHours !== undefined ? Number(state.autoBackupIntervalHours) : 0,
+          autoBackupPassword: state.autoBackupPassword || ''
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ تنظیمات بکاپ خودکار تلگرام با موفقیت ذخیره شد.');
+      } else {
+        alert('خطا در ذخیره تنظیمات: ' + data.message);
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleRestoreLocalBackup = async (filename: string) => {
     if (!confirm(`⚠️ هشدار بسیار مهم:\nآیا مطمئن هستید که می‌خواهید کل اطلاعات دیتابیس ربات (مشتری‌ها، نمایندگان، کدهای تخفیف، تراکنش‌ها و...) را به تاریخچه فایل "${filename}" برگردانید؟ تمامی اطلاعات بعد از این تاریخ از بین خواهد رفت.`)) {
       return;
@@ -675,79 +768,6 @@ function SettingsView() {
       console.error('Error fetching Mr Ocean dashboard:', e);
     } finally {
       setMroceanLoadingDash(false);
-    }
-  };
-
-  const handleDownloadBackup = async () => {
-    if (!backupPassword) {
-      alert('لطفا یک رمز عبور جهت رمزگذاری کانفیگ بکاپ تعیین کنید.');
-      return;
-    }
-    setActionLoading(true);
-    try {
-      const res = await fetch('/api/backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: backupPassword })
-      });
-      const data = await res.json();
-      if (data.success) {
-        const blob = new Blob([data.payload], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `sanaei_bot_backup_${Date.now()}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      } else {
-        alert('خطا در ایجاد پشتیبان: ' + data.message);
-      }
-    } catch (e: any) {
-      alert('خطای اتصال به سرور: ' + e.message);
-    }
-    setActionLoading(false);
-  };
-
-  const handleRestoreBackup = async () => {
-    if (!selectedFile) {
-      alert('لطفا ابتدا فایل بکاپ (.json) را انتخاب نمایید.');
-      return;
-    }
-    
-    setActionLoading(true);
-    try {
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const fileContent = event.target?.result as string;
-        try {
-          const res = await fetch('/api/restore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              payload: fileContent,
-              password: restorePassword || undefined
-            })
-          });
-          const data = await res.json();
-          if (data.success) {
-            alert('✅ بازیابی کامل اطلاعات ربات و دیتابیس با موفقیت انجام شد!');
-            setRestorePassword('');
-            setSelectedFile(null);
-            await refreshAppState();
-          } else {
-            alert('پشتیبان بازیابی نشد: ' + data.message);
-          }
-        } catch (e: any) {
-          alert('خطا در ارتباط با سرور: ' + e.message);
-        }
-        setActionLoading(false);
-      };
-      reader.readAsText(selectedFile);
-    } catch (e: any) {
-      alert('خطا در خواندن فایل: ' + e.message);
-      setActionLoading(false);
     }
   };
 
@@ -1879,6 +1899,126 @@ function SettingsView() {
           </div>
 
           <div className="space-y-6">
+            {/* Auto Backup to Telegram Settings */}
+            <div className="bg-slate-50 p-5 rounded-xl border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 border-slate-200">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <Send className="w-4 h-4 text-indigo-600" /> زمان‌بندی و رمز بکاپ خودکار به تلگرام
+                  </h3>
+                  <p className="text-xs text-slate-500">ارسال خودکار فایل بکاپ رمزگذاری شده به چت اولین ادمین در تلگرام</p>
+                </div>
+                <button 
+                  onClick={saveAutoBackupSettings} 
+                  disabled={saving} 
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                >
+                  <Save className="w-3.5 h-3.5" /> ذخیره تنظیمات بکاپ خودکار
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">⏱ دوره ارسال خودکار بکاپ</label>
+                  <select 
+                    value={state.autoBackupIntervalHours !== undefined ? state.autoBackupIntervalHours : 0} 
+                    onChange={e => setState({ ...state, autoBackupIntervalHours: parseInt(e.target.value) || 0 })} 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold bg-white"
+                  >
+                    <option value="0">❌ غیرفعال (بدون ارسال خودکار)</option>
+                    <option value="6">⏰ هر ۶ ساعت یک‌بار</option>
+                    <option value="12">⏰ هر ۱۲ ساعت یک‌بار</option>
+                    <option value="24">⏰ هر ۲۴ ساعت (روزانه)</option>
+                    <option value="48">⏰ هر ۴۸ ساعت (دو روز یک‌بار)</option>
+                    <option value="168">⏰ هر هفته یک‌بار</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">🔑 رمز عبور رمزگذاری بکاپ خودکار</label>
+                  <input 
+                    type="password" 
+                    value={state.autoBackupPassword || ''} 
+                    onChange={e => setState({ ...state, autoBackupPassword: e.target.value })} 
+                    placeholder="رمز عبور فایل بکاپ خودکار تلگرام (پیشنهادی)" 
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs bg-white font-mono" 
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">در صورت خالی بودن، بکاپ به صورت خام و بدون رمز ارسال خواهد شد.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Manual Export & Import */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-4 bg-slate-50 p-5 rounded-xl border border-slate-200">
+                <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <Download className="w-4 h-4 text-slate-700" /> ذخیره و دانلود فایل پشتیبان
+                </h4>
+                
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">🔑 تعیین رمز عبور برای قفل و رمزگذاری فایل بکاپ:</label>
+                  <input 
+                    type="password" 
+                    value={backupPassword}
+                    onChange={e => setBackupPassword(e.target.value)}
+                    placeholder="رمز عبور دلخواه برای رمزگذاری فایل بکاپ"
+                    className="w-full text-xs px-3 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white font-mono"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">این رمز برای بازگردانی فایل بکاپ الزامی خواهد بود.</p>
+                </div>
+
+                <div className="flex flex-col gap-2 pt-1">
+                  <button 
+                    onClick={handleDownloadEncryptedBackup} 
+                    disabled={actionLoading}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <Lock className="w-4 h-4" /> دانلود فایل بکاپ رمزگذاری شده (.json)
+                  </button>
+                  <a 
+                    href="/api/backup/plain-download" 
+                    download 
+                    className="w-full bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2 border border-slate-300"
+                  >
+                    <Download className="w-4 h-4" /> دانلود JSON خام (بدون رمز)
+                  </a>
+                </div>
+              </div>
+
+              <div className="space-y-4 bg-slate-50 p-5 rounded-xl border border-slate-200">
+                <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <Upload className="w-4 h-4 text-emerald-600" /> بازگردانی دیتابیس از فایل JSON
+                </h4>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">🔑 رمز عبور فایل بکاپ (در صورت رمزگذاری بودن):</label>
+                  <input 
+                    type="password" 
+                    value={restorePassword}
+                    onChange={e => setRestorePassword(e.target.value)}
+                    placeholder="رمز عبور پشتیبان (در صورت رمزدار بودن)"
+                    className="w-full text-xs px-3 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">📁 انتخاب فایل پشتیبان (.json):</label>
+                  <input 
+                    type="file" 
+                    accept=".json" 
+                    onChange={e => setSelectedFile(e.target.files?.[0] || null)} 
+                    className="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" 
+                  />
+                </div>
+                <button 
+                  onClick={handleRestoreBackup} 
+                  disabled={actionLoading}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-sm"
+                >
+                  <Upload className="w-4 h-4" /> بازگردانی دیتابیس
+                </button>
+              </div>
+            </div>
+
+            {/* Local Snapshots */}
             <div className="flex justify-between items-center bg-slate-50 p-4 rounded-xl border border-slate-200">
               <div>
                 <h4 className="text-sm font-bold text-slate-800">ایجاد نقطه بازیابی دستی (Snapshot)</h4>
@@ -1935,50 +2075,6 @@ function SettingsView() {
                   )}
                 </tbody>
               </table>
-            </div>
-
-            {/* Manual Export & Import */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-200">
-              <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <h4 className="text-xs font-bold text-slate-800">📥 دانلود فایل پشتیبان دیتابیس</h4>
-                <a 
-                  href="/api/backup/plain-download" 
-                  download 
-                  className="w-full bg-slate-800 hover:bg-slate-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
-                >
-                  <Download className="w-4 h-4" /> دانلود JSON خام
-                </a>
-              </div>
-
-              <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <h4 className="text-xs font-bold text-slate-800">📤 بازگردانی از فایل JSON</h4>
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-700 mb-1">🔑 رمز عبور فایل بکاپ (در صورت رمزگذاری بودن):</label>
-                  <input 
-                    type="password" 
-                    value={restorePassword}
-                    onChange={e => setRestorePassword(e.target.value)}
-                    placeholder="رمز عبور پشتیبان (اختیاری برای فایل خام)"
-                    className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-700 mb-1">📁 انتخاب فایل پشتیبان (.json):</label>
-                  <input 
-                    type="file" 
-                    accept=".json" 
-                    onChange={e => setSelectedFile(e.target.files?.[0] || null)} 
-                    className="w-full text-xs text-slate-600" 
-                  />
-                </div>
-                <button 
-                  onClick={handleRestoreBackup} 
-                  disabled={actionLoading}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
-                >
-                  <Upload className="w-4 h-4" /> بازگردانی دیتابیس
-                </button>
-              </div>
             </div>
           </div>
         </div>

@@ -107,6 +107,19 @@ export interface Purchase {
   isDeleted?: boolean;
 }
 
+export interface UserTransaction {
+  id: string;
+  type: 'purchase' | 'payment' | 'deposit' | 'settlement' | 'manual_credit' | 'manual_debit' | 'gift' | 'refund';
+  amount: number;
+  direction: 'debit' | 'credit'; // 'debit' = بدهکاری/خرید, 'credit' = بستانکاری/واریز
+  balanceAfter?: number;
+  debtAfter?: number;
+  description: string;
+  configName?: string;
+  volumeGb?: number;
+  createdAt: string;
+}
+
 export interface User {
   chatId: number;
   username?: string;
@@ -126,6 +139,7 @@ export interface User {
   totalSales?: number;
   totalPayments?: number;
   purchases?: Purchase[];
+  transactions?: UserTransaction[];
 }
 
 export interface Coupon {
@@ -425,6 +439,37 @@ class Database {
     const cleanUsername = username.replace('@', '').toLowerCase();
     return this.state.users.find(u => u.username?.toLowerCase() === cleanUsername);
   }
+}
+
+export function recordUserTransaction(
+  user: User,
+  tx: {
+    type: UserTransaction['type'];
+    amount: number;
+    direction: 'debit' | 'credit';
+    description: string;
+    configName?: string;
+    volumeGb?: number;
+    balanceAfter?: number;
+    debtAfter?: number;
+    createdAt?: string;
+  }
+): UserTransaction {
+  user.transactions = user.transactions || [];
+  const newTx: UserTransaction = {
+    id: `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    type: tx.type,
+    amount: tx.amount,
+    direction: tx.direction,
+    description: tx.description,
+    configName: tx.configName,
+    volumeGb: tx.volumeGb,
+    balanceAfter: tx.balanceAfter !== undefined ? tx.balanceAfter : user.balance,
+    debtAfter: tx.debtAfter !== undefined ? tx.debtAfter : user.debt,
+    createdAt: tx.createdAt || new Date().toISOString()
+  };
+  user.transactions.push(newTx);
+  return newTx;
 }
 
 export const db = new Database();

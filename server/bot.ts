@@ -1,5 +1,5 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { db, PanelType } from './db.js';
+import { db, PanelType, recordUserTransaction } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
 import { mrocean } from './mrocean.js';
@@ -734,8 +734,9 @@ function getSellerReplyKeyboard(): any {
   return {
     keyboard: [
       [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
-      [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '📊 گزارش دقیق فروش و مصرف', style: 'primary' }],
-      [{ text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
+      [{ text: '📅 فروش امروز با جزئیات', style: 'primary' }, { text: '🗓 گزارش فروش ماهانه', style: 'primary' }],
+      [{ text: '🧾 صورتحساب حسابداری', style: 'primary' }, { text: '📊 گزارش دقیق عملکرد', style: 'primary' }],
+      [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
     ],
     resize_keyboard: true
   };
@@ -1073,6 +1074,18 @@ export async function initBot() {
       user.purchases = user.purchases || [];
       user.purchases.push(newPurchase);
 
+      recordUserTransaction(user, {
+        type: 'purchase',
+        amount: isPAYG ? 0 : finalPrice,
+        direction: 'debit',
+        description: isPAYG ? `سرویس مصرف آزاد PAYG (${newPurchase.name})` : `خرید ${newPurchase.name} (${volGb} GB / ${durDays} روز)`,
+        configName: newPurchase.name,
+        volumeGb: volGb,
+        balanceAfter: user.balance,
+        debtAfter: user.debt,
+        createdAt: newPurchase.createdAt
+      });
+
       db.saveUser(user);
 
       // Increment coupon usages if one was applied
@@ -1129,65 +1142,100 @@ export async function initBot() {
 
     let totalSalesTodayCount = 0;
     let totalSalesTodayAmount = 0;
+    let totalSalesTodayGb = 0;
     let sellerSalesTodayCount = 0;
     let sellerSalesTodayAmount = 0;
     let regularSalesTodayCount = 0;
     let regularSalesTodayAmount = 0;
 
+    let todaySalesList: string[] = [];
+
     state.users.forEach(u => {
       if (!u.purchases) return;
       u.purchases.forEach(p => {
-        if (!p.createdAt) return;
+        if (!p.createdAt || p.isDeleted) return;
         const purchaseTime = new Date(p.createdAt).getTime();
         if ((now - purchaseTime) < MS_PER_DAY) {
           totalSalesTodayCount++;
-          totalSalesTodayAmount += (p.price || 0);
+          const price = p.price || 0;
+          const vol = p.volumeGb || 0;
+          totalSalesTodayAmount += price;
+          totalSalesTodayGb += vol;
+
+          const buyerName = u.nickname || (u.username ? '@' + u.username : `کاربر ${u.chatId}`);
+          const pName = p.name || 'سرویس';
+          const pTime = new Date(p.createdAt).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+          todaySalesList.push(`▫️ <b>${escapeHtml(pName)}</b> (${vol} GB | ${price.toLocaleString()} ت) - ${buyerName} [${pTime}]`);
+
           if (u.isSeller) {
             sellerSalesTodayCount++;
-            sellerSalesTodayAmount += (p.price || 0);
+            sellerSalesTodayAmount += price;
           } else {
             regularSalesTodayCount++;
-            regularSalesTodayAmount += (p.price || 0);
+            regularSalesTodayAmount += price;
           }
         }
       });
     });
 
-    return `📊 <b>گزارش فروش و کاربران (۲۴ ساعت گذشته)</b>\n\n` +
+    let msg = `📊 <b>گزارش جامع فروش و کاربران سیستم (۲۴ ساعت گذشته)</b>\n\n` +
            `👥 <b>آمار کاربران:</b>\n` +
-           `• کل کاربران ربات: <b>${totalUsers.toLocaleString()}</b> کاربر\n` +
+           `• کل کاربران ثبت‌نامی: <b>${totalUsers.toLocaleString()}</b> کاربر\n` +
            `• کاربران جدید امروز: <b>${newUsersToday.toLocaleString()}</b> کاربر جدید\n\n` +
-           `💰 <b>آمار فروش امروز (۲۴ ساعت گذشته):</b>\n` +
-           `• کل فروش امروز: <b>${totalSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${totalSalesTodayCount})\n` +
-           `• فروش به کاربران عادی: <b>${regularSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${regularSalesTodayCount})\n` +
-           `• فروش به همکاران (سرویس‌دهندگان): <b>${sellerSalesTodayAmount.toLocaleString()}</b> تومان (تعداد: ${sellerSalesTodayCount})\n\n` +
-           `📅 گزارش در تاریخ: <code>${new Date().toLocaleDateString('fa-IR')}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code> تهیه شده است.`;
+           `💰 <b>آمار و ارقام مالی امروز:</b>\n` +
+           `• کل فروش امروز: <b>${totalSalesTodayAmount.toLocaleString()}</b> تومان\n` +
+           `• تعداد کل کانفیگ‌های فروخته شده: <b>${totalSalesTodayCount}</b> عدد\n` +
+           `• مجموع حجم واگذار شده امروز: <b>${totalSalesTodayGb.toFixed(2)}</b> گیگابایت\n` +
+           `• سهم فروش به همکاران: <b>${sellerSalesTodayAmount.toLocaleString()}</b> تومان (${sellerSalesTodayCount} عدد)\n` +
+           `• سهم فروش به مشتریان عادی: <b>${regularSalesTodayAmount.toLocaleString()}</b> تومان (${regularSalesTodayCount} عدد)\n\n`;
+
+    if (todaySalesList.length > 0) {
+      msg += `📋 <b>ریز کانفیگ‌های فروخته شده امروز:</b>\n` +
+             todaySalesList.slice(0, 15).join('\n') +
+             (todaySalesList.length > 15 ? `\n<i>... و ${todaySalesList.length - 15} مورد دیگر</i>\n\n` : '\n\n');
+    }
+
+    msg += `📅 گزارش در تاریخ: <code>${new Date().toLocaleDateString('fa-IR')}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code>`;
+    return msg;
   };
 
-  async function sendDetailedSellerReport(chatId: number, sellerChatId: number, isAdminContext: boolean = false) {
-    const seller = db.getUser(sellerChatId);
-    if (!seller || !seller.isSeller) {
-      bot!.sendMessage(chatId, '❌ همکار مورد نظر یافت نشد یا نقش همکار ندارد.');
+  async function sendUserDetailedReport(
+    chatId: number,
+    targetChatId: number,
+    viewMode: 'overview' | 'daily' | 'monthly' | 'statement' = 'daily',
+    isAdminContext: boolean = false,
+    editMessageId?: number
+  ) {
+    const targetUser = db.getUser(targetChatId);
+    if (!targetUser) {
+      if (editMessageId) {
+        await bot!.editMessageText('❌ کاربر مورد نظر در سیستم یافت نشد.', { chat_id: chatId, message_id: editMessageId });
+      } else {
+        bot!.sendMessage(chatId, '❌ کاربر مورد نظر در سیستم یافت نشد.');
+      }
       return;
     }
 
-    const loadingMsg = await bot!.sendMessage(chatId, '⏳ در حال محاسبات مالی و دریافت آخرین اطلاعات مصرف از سرور، لطفاً شکیبا باشید...');
+    let loadingMsgId = editMessageId;
+    if (!loadingMsgId) {
+      const lm = await bot!.sendMessage(chatId, '⏳ در حال محاسبه تراز حسابداری و آماده‌سازی گزارش...');
+      loadingMsgId = lm.message_id;
+    }
 
     try {
       const allClientsArray = await xui.getAllClientsWithTraffic().catch(() => [] as any[]);
+      const purchases = (targetUser.purchases || []).filter((p: any) => !p.isDeleted);
+      let userChanged = false;
 
-      const purchases = seller.purchases || [];
-      let sellerChanged = false;
-      
-      // Auto-credit any pending balance of the seller towards their debt/payments!
-      if ((seller.balance || 0) > 0) {
-        seller.totalPayments = (seller.totalPayments || 0) + seller.balance;
-        seller.debt = Math.max(0, (seller.debt || 0) - seller.balance);
-        seller.balance = 0;
-        sellerChanged = true;
+      // Auto-credit positive balance towards seller debt if seller
+      if (targetUser.isSeller && (targetUser.balance || 0) > 0) {
+        targetUser.totalPayments = (targetUser.totalPayments || 0) + targetUser.balance;
+        targetUser.debt = Math.max(0, (targetUser.debt || 0) - targetUser.balance);
+        targetUser.balance = 0;
+        userChanged = true;
       }
 
-      // Calculate volumes and financials
+      // Calculations across all purchases
       let totalAllocatedGb = 0;
       let totalUsedBytes = 0;
       let totalOriginalPrice = 0;
@@ -1196,25 +1244,47 @@ export async function initBot() {
       let totalPaygActiveDebt = 0;
       let totalPaygSettledFin = 0;
       let totalFixedFin = 0;
-      let hasPayg = false;
       let paygDetailsList: string[] = [];
 
+      // Time filters
+      const now = Date.now();
+      const todayFa = new Date().toLocaleDateString('fa-IR');
+      const MS_PER_DAY = 24 * 60 * 60 * 1000;
+      const MS_PER_MONTH = 30 * 24 * 60 * 60 * 1000;
+
+      interface EnrichedPurchase {
+        raw: any;
+        orig: number;
+        fin: number;
+        discount: number;
+        volumeGb: number;
+        isPAYG: boolean;
+        dateStr: string;
+        timeStr: string;
+        isToday: boolean;
+        isMonth: boolean;
+        createdTime: number;
+      }
+
+      const enrichedPurchases: EnrichedPurchase[] = [];
+
       purchases.forEach((p: any) => {
-        totalAllocatedGb += p.volumeGb || 0;
-        
-        // Find in XUI clients
-        const clientObj = allClientsArray.find(cl => 
+        const pVol = p.volumeGb || 0;
+        totalAllocatedGb += pVol;
+
+        const clientObj = allClientsArray.find(cl =>
           (cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase()) ||
           (cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase()) ||
           (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
         );
+
         let currentUsed = 0;
         if (clientObj) {
           currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
           totalUsedBytes += currentUsed;
           if (currentUsed > (p.lastUsedBytes || 0)) {
             p.lastUsedBytes = currentUsed;
-            sellerChanged = true;
+            userChanged = true;
           }
         } else {
           currentUsed = (p.lastUsedBytes || 0);
@@ -1225,7 +1295,6 @@ export async function initBot() {
         let fin = 0;
 
         if (p.isPayAsYouGo) {
-          hasPayg = true;
           const baseSettled = p.baseSettledBytes || 0;
           const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
           const billableBytes = Math.max(0, currentUsed - effectiveBase);
@@ -1233,7 +1302,7 @@ export async function initBot() {
           const settledGb = effectiveBase / (1024 * 1024 * 1024);
 
           const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
-          const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(seller, p);
+          const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(targetUser, p);
           const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
 
           const settledOrig = Math.ceil(settledGb * rawPricePerGb);
@@ -1249,7 +1318,7 @@ export async function initBot() {
           totalPaygSettledFin += settledFin;
 
           const configName = p.name || p.id || 'سرویس مصرف آزاد';
-          paygDetailsList.push(`▫️ *${configName}*:\n   کل مصرف: ${((currentUsed)/(1024*1024*1024)).toFixed(2)} GB | تسویه شده: ${(settledGb).toFixed(2)} GB | محاسبه جدید: *${(billableGb).toFixed(2)} GB* (*${currentFin.toLocaleString()}* ت)`);
+          paygDetailsList.push(`▫️ <b>${escapeHtml(configName)}</b>:\n   کل مصرف: ${((currentUsed)/(1024*1024*1024)).toFixed(2)} GB | تسویه شده: ${(settledGb).toFixed(2)} GB | محاسبه جدید: <b>${(billableGb).toFixed(2)} GB</b> (<b>${currentFin.toLocaleString()}</b> ت)`);
         } else {
           orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
           fin = p.price !== undefined ? p.price : 0;
@@ -1263,95 +1332,357 @@ export async function initBot() {
 
         totalOriginalPrice += orig;
         totalFinalPrice += fin;
-        totalDiscounts += Math.max(0, orig - fin);
+        const discount = Math.max(0, orig - fin);
+        totalDiscounts += discount;
+
+        const pDate = p.createdAt ? new Date(p.createdAt) : new Date();
+        const createdTime = pDate.getTime();
+        const dateStr = pDate.toLocaleDateString('fa-IR');
+        const timeStr = pDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const isToday = (dateStr === todayFa) || (now - createdTime < MS_PER_DAY);
+        const isMonth = (now - createdTime <= MS_PER_MONTH);
+
+        enrichedPurchases.push({
+          raw: p,
+          orig,
+          fin,
+          discount,
+          volumeGb: pVol,
+          isPAYG: !!p.isPayAsYouGo,
+          dateStr,
+          timeStr,
+          isToday,
+          isMonth,
+          createdTime
+        });
       });
 
-      // Total net purchases with discount applied is the seller's true total sales obligation
-      if (seller.totalSales !== totalFinalPrice) {
-        seller.totalSales = totalFinalPrice;
-        sellerChanged = true;
+      // Sort newest first
+      enrichedPurchases.sort((a, b) => b.createdTime - a.createdTime);
+
+      if (targetUser.isSeller) {
+        if (targetUser.totalSales !== totalFinalPrice) {
+          targetUser.totalSales = totalFinalPrice;
+          userChanged = true;
+        }
+
+        const recordedPayments = targetUser.totalPayments || 0;
+        const paymentsForFixed = Math.max(0, recordedPayments - totalPaygSettledFin);
+        const activeFixedDebt = Math.max(0, totalFixedFin - paymentsForFixed);
+        const trueActiveDebt = activeFixedDebt + totalPaygActiveDebt;
+
+        let debtVal = trueActiveDebt;
+        if (purchases.length === 0) {
+          debtVal = targetUser.debt || 0;
+        }
+
+        if (targetUser.debt !== debtVal) {
+          targetUser.debt = debtVal;
+          userChanged = true;
+        }
+
+        const totalPayments = Math.max(recordedPayments, totalFinalPrice - debtVal);
+        if (targetUser.totalPayments !== totalPayments) {
+          targetUser.totalPayments = totalPayments;
+          userChanged = true;
+        }
       }
 
-      // Reconcile current debt:
-      // 1. Unsettled active PAYG traffic is ALWAYS active debt of the current billing cycle.
-      // 2. Fixed packages: totalFixedFin is the sum of fixed package prices.
-      // 3. Recorded payments: seller.totalPayments is total money paid/settled by the seller.
-      // 4. Settled PAYG accounts for totalPaygSettledFin of the recorded payments.
-      // 5. Any payments beyond settled PAYG cover fixed packages.
-      const recordedPayments = seller.totalPayments || 0;
-      const paymentsForFixed = Math.max(0, recordedPayments - totalPaygSettledFin);
-      const activeFixedDebt = Math.max(0, totalFixedFin - paymentsForFixed);
-      const trueActiveDebt = activeFixedDebt + totalPaygActiveDebt;
-
-      let debtVal = trueActiveDebt;
-      if (purchases.length === 0) {
-        debtVal = seller.debt || 0;
-      }
-
-      if (seller.debt !== debtVal) {
-        seller.debt = debtVal;
-        sellerChanged = true;
-      }
-
-      // Total payments is at least recordedPayments or totalFinalPrice - debtVal
-      const totalPayments = Math.max(recordedPayments, totalFinalPrice - debtVal);
-      if (seller.totalPayments !== totalPayments) {
-        seller.totalPayments = totalPayments;
-        sellerChanged = true;
-      }
-
-      if (sellerChanged) {
-        db.saveUser(seller);
+      if (userChanged) {
+        db.saveUser(targetUser);
       }
 
       const totalUsedGb = totalUsedBytes / (1024 * 1024 * 1024);
-      const isUnlimited = isSellerUnlimitedLimit(seller);
-      const limit = seller.debtLimit !== undefined && seller.debtLimit > 0 ? seller.debtLimit : 1000000;
+      const isUnlimited = isSellerUnlimitedLimit(targetUser);
+      const limit = targetUser.debtLimit !== undefined && targetUser.debtLimit > 0 ? targetUser.debtLimit : 1000000;
+      const debtVal = targetUser.debt || 0;
       const remains = isUnlimited ? null : Math.max(0, limit - debtVal);
-      const limitStr = isUnlimited ? '*سقف آزاد (نامحدود)*' : `*${limit.toLocaleString()}* تومان`;
-      const remainsStr = isUnlimited ? '*نامحدود (سقف آزاد)*' : `*${(remains || 0).toLocaleString()}* تومان`;
+      const limitStr = isUnlimited ? '<b>سقف آزاد (نامحدود)</b>' : `<b>${limit.toLocaleString()}</b> تومان`;
+      const remainsStr = isUnlimited ? '<b>نامحدود (سقف آزاد)</b>' : `<b>${(remains || 0).toLocaleString()}</b> تومان`;
 
-      const usernameStr = seller.username ? `@${seller.username}` : 'بدون یوزرنیم';
-      const nicknameStr = seller.nickname || 'نامشخص';
+      const usernameStr = targetUser.username ? `@${targetUser.username}` : 'بدون یوزرنیم';
+      const nicknameStr = targetUser.nickname || 'نامشخص';
+      const targetDisplayName = targetUser.nickname || (targetUser.username ? `@${targetUser.username}` : `کاربر ${targetUser.chatId}`);
+      const userRole = targetUser.isSeller ? 'همکار فروشنده' : 'کاربر عادی';
 
-      const reportText = `📊 *گزارش دقیق عملکرد و حساب همکار* \n\n` +
-        `👤 *مشخصات همکار:*\n` +
-        `▫️ نام/نیک‌نیم: *${nicknameStr}*\n` +
-        `▫️ یوزرنیم تلگرام: *${usernameStr}*\n` +
-        `▫️ شناسه تلگرام: \`${seller.chatId}\`\n\n` +
-        `📈 *آمار فروش و ترافیک:*\n` +
-        `▫️ تعداد کل کانفیگ‌های ثبت شده: *${purchases.length}* عدد\n` +
-        `▫️ مجموع حجم فروخته شده (Allocated): *${totalAllocatedGb.toFixed(2)}* گیگابایت\n` +
-        `▫️ مجموع مصرف واقعی کل (Real Usage): *${totalUsedGb.toFixed(2)}* گیگابایت\n\n` +
-        `💰 *آمار مالی و تراز حساب همکار (تومان):*\n` +
-        `▫️ ارزش اصلی سرویس‌ها (بدون تخفیف): *${totalOriginalPrice.toLocaleString()}* تومان\n` +
-        `▫️ جمع کل تخفیفات همکار: *${totalDiscounts.toLocaleString()}* تومان\n` +
-        `▫️ فاکتور کل خرید همکار (با کسر تخفیف): *${totalFinalPrice.toLocaleString()}* تومان\n` +
-        `▫️ مجموع کل واریزی‌ها و تسویه‌ها: *${totalPayments.toLocaleString()}* تومان\n` +
-        `▫️ بدهی قطعی و باقیمانده فعلی: *${debtVal.toLocaleString()}* تومان\n\n` +
-        `💳 *وضعیت سقف اعتبار خرید:*\n` +
-        `▫️ سقف بدهی مجاز: ${limitStr}\n` +
-        `▫️ اعتبار خرید باقیمانده: ${remainsStr}\n\n` +
-        (paygDetailsList.length > 0 ? `⚡ *وضعیت کانفیگ‌های مصرف آزاد (PAYG):*\n${paygDetailsList.join('\n\n')}\n\n` : '');
+      let reportText = '';
 
-      const inline_keyboard: any[] = [];
+      // 1. DAILY REPORT
+      if (viewMode === 'daily') {
+        const todayPurchases = enrichedPurchases.filter(p => p.isToday);
+        let todayVol = 0;
+        let todayOrig = 0;
+        let todayFin = 0;
+        let todayDisc = 0;
+
+        let itemsText = '';
+        if (todayPurchases.length === 0) {
+          itemsText = '<i>⚠️ امروز هیچ فروش یا خریدی برای این کاربر ثبت نشده است.</i>\n\n';
+        } else {
+          itemsText = `📋 <b>ریز تراکنش‌های فروش امروز (${todayPurchases.length} مورد):</b>\n\n`;
+          todayPurchases.forEach((ep, idx) => {
+            const p = ep.raw;
+            todayVol += ep.volumeGb;
+            todayOrig += ep.orig;
+            todayFin += ep.fin;
+            todayDisc += ep.discount;
+
+            const volStr = ep.isPAYG ? 'مصرف آزاد (PAYG)' : `${ep.volumeGb} GB | ${p.durationDays || 30} روز`;
+            const panelName = p.panelType === 'rebecca' ? 'ربکا' : (p.panelType === 'mrocean' ? 'مستر اوشن' : 'سنایی X-UI');
+            const discountInfo = ep.discount > 0 ? ` (تخفیف: <b>${ep.discount.toLocaleString()}</b> ت)` : '';
+
+            itemsText += `💎 <b>کانفیگ ${idx + 1}: ${escapeHtml(p.name || 'سرویس')}</b>\n` +
+              `▫️ نام/کلاینت: <code>${escapeHtml(p.name || p.id)}</code>\n` +
+              `▫️ حجم و مدت: <b>${volStr}</b>\n` +
+              `▫️ مبلغ فاکتور: <b>${ep.fin.toLocaleString()}</b> تومان${discountInfo}\n` +
+              `▫️ زمان ثبت: <code>${ep.timeStr}</code> | سرور: ${panelName}\n` +
+              `----------------------------------\n`;
+          });
+        }
+
+        reportText = `📅 <b>گزارش فروش روزانه با جزئیات</b>\n` +
+          `📆 <b>تاریخ امروز:</b> <code>${todayFa}</code>\n\n` +
+          `👤 <b>مشخصات شخص:</b>\n` +
+          `▫️ نام/نیک‌نیم: <b>${escapeHtml(nicknameStr)}</b>\n` +
+          `▫️ یوزرنیم: <b>${usernameStr}</b> | آیدی: <code>${targetUser.chatId}</code>\n` +
+          `▫️ نقش حساب: <b>${userRole}</b>\n\n` +
+          `📊 <b>سرجمع کل فروش امروز (${todayFa}):</b>\n` +
+          `▫️ تعداد کانفیگ‌های فروخته شده امروز: <b>${todayPurchases.length}</b> عدد\n` +
+          `▫️ مجموع حجم واگذار شده امروز: <b>${todayVol.toFixed(2)}</b> گیگابایت\n` +
+          `▫️ مجموع ارزش ناخالص: <b>${todayOrig.toLocaleString()}</b> تومان\n` +
+          `▫️ مجموع تخفیفات اختصاصی امروز: <b>${todayDisc.toLocaleString()}</b> تومان\n` +
+          `▫️ مجموع فاکتور خالص امروز: <b>${todayFin.toLocaleString()}</b> تومان\n\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          itemsText +
+          `💰 <b>وضعیت بدهی فعلی همکار:</b> <b>${debtVal.toLocaleString()}</b> تومان\n` +
+          `💳 <b>اعتبار باقیمانده خرید:</b> ${remainsStr}`;
+      }
+
+      // 2. MONTHLY REPORT
+      else if (viewMode === 'monthly') {
+        const monthPurchases = enrichedPurchases.filter(p => p.isMonth);
+        let monthVol = 0;
+        let monthOrig = 0;
+        let monthFin = 0;
+        let monthDisc = 0;
+
+        const dateGroups: Record<string, { count: number; vol: number; amount: number }> = {};
+
+        monthPurchases.forEach(ep => {
+          monthVol += ep.volumeGb;
+          monthOrig += ep.orig;
+          monthFin += ep.fin;
+          monthDisc += ep.discount;
+
+          if (!dateGroups[ep.dateStr]) {
+            dateGroups[ep.dateStr] = { count: 0, vol: 0, amount: 0 };
+          }
+          dateGroups[ep.dateStr].count++;
+          dateGroups[ep.dateStr].vol += ep.volumeGb;
+          dateGroups[ep.dateStr].amount += ep.fin;
+        });
+
+        const activeDaysCount = Object.keys(dateGroups).length || 1;
+        const avgDailySales = Math.round(monthFin / activeDaysCount);
+
+        let itemsText = '';
+        if (monthPurchases.length === 0) {
+          itemsText = '<i>⚠️ در ۳۰ روز اخیر هیچ فروش یا خریدی ثبت نشده است.</i>\n\n';
+        } else {
+          itemsText = `📋 <b>ریز کانفیگ‌های فروخته شده در ماه اخیر (${monthPurchases.length} مورد):</b>\n\n`;
+          monthPurchases.slice(0, 20).forEach((ep, idx) => {
+            const p = ep.raw;
+            const volStr = ep.isPAYG ? 'PAYG' : `${ep.volumeGb}GB`;
+            itemsText += `${idx + 1}- <b>${escapeHtml(p.name || 'سرویس')}</b> | <code>${ep.dateStr} ${ep.timeStr}</code> | حجم: <b>${volStr}</b> | مبلغ: <b>${ep.fin.toLocaleString()}</b> ت\n`;
+          });
+          if (monthPurchases.length > 20) {
+            itemsText += `\n<i>... و ${monthPurchases.length - 20} کانفیگ دیگر</i>\n`;
+          }
+        }
+
+        reportText = `🗓 <b>گزارش فروش ماهانه (۳۰ روز اخیر)</b>\n\n` +
+          `👤 <b>مشخصات شخص:</b>\n` +
+          `▫️ نام/نیک‌نیم: <b>${escapeHtml(nicknameStr)}</b>\n` +
+          `▫️ یوزرنیم: <b>${usernameStr}</b> | آیدی: <code>${targetUser.chatId}</code>\n` +
+          `▫️ نقش حساب: <b>${userRole}</b>\n\n` +
+          `📊 <b>سرجمع کل فروش در ۳۰ روز اخیر:</b>\n` +
+          `▫️ تعداد کل کانفیگ‌های فروخته شده: <b>${monthPurchases.length}</b> عدد\n` +
+          `▫️ مجموع حجم واگذار شده: <b>${monthVol.toFixed(2)}</b> گیگابایت\n` +
+          `▫️ ارزش ناخالص کل: <b>${monthOrig.toLocaleString()}</b> تومان\n` +
+          `▫️ مجموع تخفیفات ماه: <b>${monthDisc.toLocaleString()}</b> تومان\n` +
+          `▫️ فاکتور خالص دریافتی ماه: <b>${monthFin.toLocaleString()}</b> تومان\n` +
+          `▫️ میانگین فروش در روزهای فعال: <b>${avgDailySales.toLocaleString()}</b> تومان/روز\n\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          itemsText +
+          `\n━━━━━━━━━━━━━━━━━━━━━\n` +
+          `💰 <b>میزان بدهی فعلی:</b> <b>${debtVal.toLocaleString()}</b> تومان\n` +
+          `💳 <b>سقف اعتبار مجاز:</b> ${limitStr}`;
+      }
+
+      // 3. ACCOUNTING STATEMENT
+      else if (viewMode === 'statement') {
+        const totalPayments = targetUser.totalPayments || (targetUser.balance > 0 ? targetUser.balance : 0);
+        let balanceStatus = '';
+        if (targetUser.isSeller) {
+          if (debtVal > 0) {
+            balanceStatus = `🔴 <b>بدهکار به سیستم:</b> <b>${debtVal.toLocaleString()}</b> تومان`;
+          } else if ((targetUser.balance || 0) > 0) {
+            balanceStatus = `🟢 <b>بستانکار از سیستم (موجودی):</b> <b>${(targetUser.balance || 0).toLocaleString()}</b> تومان`;
+          } else {
+            balanceStatus = `⚪ <b>حساب کاملاً تراز و تسویه است (۰ تومان)</b>`;
+          }
+        } else {
+          balanceStatus = `💰 <b>موجودی کیف پول:</b> <b>${(targetUser.balance || 0).toLocaleString()}</b> تومان`;
+        }
+
+        // Build Chronological Accounting Journal Ledger
+        interface LedgerRow {
+          id: string;
+          dateStr: string;
+          timeStr: string;
+          timestamp: number;
+          desc: string;
+          debit: number;  // بدهکار (خرید کانفیگ، هزینه)
+          credit: number; // بستانکار (واریز، پرداخت، هدیه)
+        }
+
+        const ledger: LedgerRow[] = [];
+
+        // Add purchases as debit rows
+        purchases.forEach((p: any) => {
+          const pDate = p.createdAt ? new Date(p.createdAt) : new Date();
+          const finPrice = p.price !== undefined ? p.price : 0;
+          ledger.push({
+            id: p.id || String(pDate.getTime()),
+            dateStr: pDate.toLocaleDateString('fa-IR'),
+            timeStr: pDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+            timestamp: pDate.getTime(),
+            desc: `خرید سرویس: ${p.name || 'کانفیگ'} (${p.volumeGb || 0} GB)`,
+            debit: finPrice,
+            credit: 0
+          });
+        });
+
+        // Add user explicit transactions if recorded
+        if (targetUser.transactions && targetUser.transactions.length > 0) {
+          targetUser.transactions.forEach((tx) => {
+            // Avoid duplicate purchases if already in purchases array
+            if (tx.type === 'purchase') return;
+            const tDate = tx.createdAt ? new Date(tx.createdAt) : new Date();
+            ledger.push({
+              id: tx.id,
+              dateStr: tDate.toLocaleDateString('fa-IR'),
+              timeStr: tDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+              timestamp: tDate.getTime(),
+              desc: tx.description || 'تراکنش مالی',
+              debit: tx.direction === 'debit' ? tx.amount : 0,
+              credit: tx.direction === 'credit' ? tx.amount : 0
+            });
+          });
+        }
+
+        // Sort ascending to calculate running balance, then reverse for display
+        ledger.sort((a, b) => a.timestamp - b.timestamp);
+
+        let runningBal = 0;
+        const enrichedLedger = ledger.map((row, idx) => {
+          runningBal = runningBal + row.debit - row.credit;
+          return {
+            ...row,
+            idx: idx + 1,
+            balanceAfter: runningBal
+          };
+        });
+
+        // Display newest 15 entries
+        const displayLedger = [...enrichedLedger].reverse().slice(0, 15);
+
+        let ledgerText = '';
+        if (displayLedger.length === 0) {
+          ledgerText = '<i>⚠️ هنوز هیچ سند یا تراکنش مالی برای این شخص ثبت نگردیده است.</i>\n';
+        } else {
+          ledgerText = `📑 <b>ریز آخرین اسناد دفتر مالی و صورتحساب:</b>\n\n`;
+          displayLedger.forEach(row => {
+            const debStr = row.debit > 0 ? `📤 بدهکار: <b>${row.debit.toLocaleString()}</b> ت` : '';
+            const credStr = row.credit > 0 ? `📥 بستانکار: <b>${row.credit.toLocaleString()}</b> ت` : '';
+            ledgerText += `🔹 <b>سند ${row.idx}:</b> <code>${row.dateStr} ${row.timeStr}</code>\n` +
+              `▫️ شرح: <b>${escapeHtml(row.desc)}</b>\n` +
+              `▫️ ${debStr} ${credStr}\n` +
+              `▫️ ⚖️ مانده بدهی: <b>${Math.max(0, row.balanceAfter).toLocaleString()}</b> تومان\n` +
+              `----------------------------------\n`;
+          });
+        }
+
+        reportText = `🧾 <b>صورتحساب رسمی حسابداری و تراز مالی</b>\n` +
+          `📅 تاریخ صدور صورتحساب: <code>${todayFa}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code>\n\n` +
+          `👤 <b>طرف حساب:</b>\n` +
+          `▫️ نام/نیک‌نیم: <b>${escapeHtml(nicknameStr)}</b>\n` +
+          `▫️ یوزرنیم: <b>${usernameStr}</b> | شناسه عددی: <code>${targetUser.chatId}</code>\n` +
+          `▫️ نقش: <b>${userRole}</b>\n\n` +
+          `⚖️ <b>خلاصه تراز مالی صورتحساب:</b>\n` +
+          `▫️ 📥 مجموع بستانکار (کل واریزی‌ها و دریافتی‌ها): <b>${totalPayments.toLocaleString()}</b> تومان\n` +
+          `▫️ 📤 مجموع بدهکار (کل فاکتورهای خرید و مصرف): <b>${totalFinalPrice.toLocaleString()}</b> تومان\n` +
+          `▫️ ${balanceStatus}\n` +
+          (targetUser.isSeller ? `▫️ 💳 سقف اعتبار مجاز: ${limitStr}\n▫️ 🔋 اعتبار باقیمانده برای خرید: ${remainsStr}\n` : '') +
+          `\n━━━━━━━━━━━━━━━━━━━━━\n` +
+          ledgerText;
+      }
+
+      // 4. OVERVIEW REPORT
+      else {
+        reportText = `📊 <b>گزارش دقیق عملکرد و حساب همکار</b>\n\n` +
+          `👤 <b>مشخصات همکار:</b>\n` +
+          `▫️ نام/نیک‌نیم: <b>${escapeHtml(nicknameStr)}</b>\n` +
+          `▫️ یوزرنیم تلگرام: <b>${usernameStr}</b>\n` +
+          `▫️ شناسه تلگرام: <code>${targetUser.chatId}</code>\n\n` +
+          `📈 <b>آمار فروش و ترافیک:</b>\n` +
+          `▫️ تعداد کل کانفیگ‌های ثبت شده: <b>${purchases.length}</b> عدد\n` +
+          `▫️ مجموع حجم فروخته شده (Allocated): <b>${totalAllocatedGb.toFixed(2)}</b> گیگابایت\n` +
+          `▫️ مجموع مصرف واقعی کل (Real Usage): <b>${totalUsedGb.toFixed(2)}</b> گیگابایت\n\n` +
+          `💰 <b>آمار مالی و تراز حساب (تومان):</b>\n` +
+          `▫️ ارزش اصلی سرویس‌ها (بدون تخفیف): <b>${totalOriginalPrice.toLocaleString()}</b> تومان\n` +
+          `▫️ جمع کل تخفیفات همکار: <b>${totalDiscounts.toLocaleString()}</b> تومان\n` +
+          `▫️ فاکتور کل خرید همکار (با کسر تخفیف): <b>${totalFinalPrice.toLocaleString()}</b> تومان\n` +
+          `▫️ مجموع کل واریزی‌ها و تسویه‌ها: <b>${(targetUser.totalPayments || 0).toLocaleString()}</b> تومان\n` +
+          `▫️ بدهی قطعی و باقیمانده فعلی: <b>${debtVal.toLocaleString()}</b> تومان\n\n` +
+          `💳 <b>وضعیت سقف اعتبار خرید:</b>\n` +
+          `▫️ سقف بدهی مجاز: ${limitStr}\n` +
+          `▫️ اعتبار خرید باقیمانده: ${remainsStr}\n\n` +
+          (paygDetailsList.length > 0 ? `⚡ <b>وضعیت کانفیگ‌های مصرف آزاد (PAYG):</b>\n${paygDetailsList.join('\n\n')}\n\n` : '');
+      }
+
+      // Build Navigation Keyboard
+      const inline_keyboard: any[] = [
+        [
+          { text: `${viewMode === 'daily' ? '🔘' : '📅'} فروش امروز (جزئیات)`, callback_data: `user_rep_daily_${targetChatId}` },
+          { text: `${viewMode === 'monthly' ? '🔘' : '🗓'} فروش ماهانه (۳۰ روز)`, callback_data: `user_rep_monthly_${targetChatId}` }
+        ],
+        [
+          { text: `${viewMode === 'statement' ? '🔘' : '🧾'} صورتحساب حسابداری`, callback_data: `user_rep_statement_${targetChatId}` },
+          { text: `${viewMode === 'overview' ? '🔘' : '📊'} خلاصه عملکرد`, callback_data: `user_rep_overview_${targetChatId}` }
+        ],
+        [
+          { text: '🔄 به‌روزرسانی آمار و استعلام زنده', callback_data: `user_rep_${viewMode}_${targetChatId}` }
+        ]
+      ];
+
       if (isAdminContext) {
         inline_keyboard.push([
-          { text: '💵 تسویه حساب این همکار', callback_data: `admin_settle_specific_${seller.chatId}` },
-          { text: '🔄 اصلاح و همگام‌سازی تراز', callback_data: `admin_recalc_seller_${seller.chatId}` }
+          { text: '💵 تسویه حساب این همکار', callback_data: `admin_settle_specific_${targetUser.chatId}` },
+          { text: '🔄 اصلاح و همگام‌سازی تراز', callback_data: `admin_recalc_seller_${targetUser.chatId}` }
         ]);
         if (paygDetailsList.length > 0) {
           inline_keyboard.push([
-            { text: '⚡ تسویه مصرف لحظه‌ای تا حجم فعلی', callback_data: `admin_settle_payg_${seller.chatId}` }
+            { text: '⚡ تسویه مصرف لحظه‌ای تا حجم فعلی', callback_data: `admin_settle_payg_${targetUser.chatId}` }
           ]);
         }
         inline_keyboard.push([
-          { text: isUnlimited ? '🔒 تبدیل به سقف محدود عددی' : '⚡ تبدیل به سقف آزاد (نامحدود)', callback_data: `toggle_unlimited_seller_${seller.chatId}` },
-          { text: '⚙️ تنظیم سقف اعتبار عددی', callback_data: `set_seller_limit_${seller.chatId}` }
+          { text: isUnlimited ? '🔒 تبدیل به سقف محدود عددی' : '⚡ تبدیل به سقف آزاد (نامحدود)', callback_data: `toggle_unlimited_seller_${targetUser.chatId}` },
+          { text: '⚙️ تنظیم سقف اعتبار عددی', callback_data: `set_seller_limit_${targetUser.chatId}` }
         ]);
         inline_keyboard.push([
-          { text: '➕ ثبت واریزی / پرداخت همکار', callback_data: `add_bal_${seller.chatId}` },
-          { text: '➖ کسر پرداختی', callback_data: `sub_bal_${seller.chatId}` }
+          { text: '➕ ثبت واریزی / پرداخت همکار', callback_data: `add_bal_${targetUser.chatId}` },
+          { text: '➖ کسر پرداختی', callback_data: `sub_bal_${targetUser.chatId}` }
         ]);
         inline_keyboard.push([
           { text: '🔙 بازگشت به لیست همکاران', callback_data: 'list_sellers_only' }
@@ -1362,17 +1693,24 @@ export async function initBot() {
 
       await bot!.editMessageText(reportText, {
         chat_id: chatId,
-        message_id: loadingMsg.message_id,
-        parse_mode: 'Markdown',
+        message_id: loadingMsgId,
+        parse_mode: 'HTML',
         reply_markup: { inline_keyboard }
       });
+
     } catch (err: any) {
-      console.error('Error calculating seller report:', err);
-      await bot!.editMessageText(`❌ خطایی در محاسبات گزارش رخ داد: ${err.message}`, {
-        chat_id: chatId,
-        message_id: loadingMsg.message_id
-      });
+      console.error('Error in sendUserDetailedReport:', err);
+      if (loadingMsgId) {
+        await bot!.editMessageText(`❌ خطایی در محاسبات گزارش رخ داد: ${err.message}`, {
+          chat_id: chatId,
+          message_id: loadingMsgId
+        });
+      }
     }
+  }
+
+  async function sendDetailedSellerReport(chatId: number, sellerChatId: number, isAdminContext: boolean = false) {
+    await sendUserDetailedReport(chatId, sellerChatId, 'daily', isAdminContext);
   }
 
   const getPanelModeLabel = (mode?: string): string => {
@@ -2568,7 +2906,15 @@ export async function initBot() {
 
             const inlineKeyboard = [
               [
-                { text: '🟢 افزایش موجودی', callback_data: `add_bal_${u.chatId}` },
+                { text: '📅 فروش روزانه (امروز)', callback_data: `user_rep_daily_${u.chatId}` },
+                { text: '🗓 فروش ماهانه', callback_data: `user_rep_monthly_${u.chatId}` }
+              ],
+              [
+                { text: '🧾 صورتحساب حسابداری', callback_data: `user_rep_statement_${u.chatId}` },
+                { text: '📊 گزارش کامل عملکرد', callback_data: `user_rep_overview_${u.chatId}` }
+              ],
+              [
+                { text: '🟢 افزایش موجودی/واریزی', callback_data: `add_bal_${u.chatId}` },
                 { text: '🔴 کاهش موجودی', callback_data: `sub_bal_${u.chatId}` }
               ],
               [
@@ -3308,10 +3654,31 @@ export async function initBot() {
       return;
     }
 
-    if (cleanText === '📊 گزارش دقیق فروش و مصرف' || text.includes('گزارش دقیق فروش و مصرف') || text.includes('گزارش دقیق عملکرد')) {
+    if (cleanText === '📅 فروش امروز با جزئیات' || cleanText === 'فروش امروز' || text.includes('فروش امروز')) {
       const userObj = db.getUser(chatId);
       if (!userObj || !userObj.isSeller) return;
-      await sendDetailedSellerReport(chatId, chatId, false);
+      await sendUserDetailedReport(chatId, chatId, 'daily', false);
+      return;
+    }
+
+    if (cleanText === '🗓 گزارش فروش ماهانه' || cleanText === 'فروش ماهانه' || text.includes('فروش ماهانه') || text.includes('گزارش ماهانه')) {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) return;
+      await sendUserDetailedReport(chatId, chatId, 'monthly', false);
+      return;
+    }
+
+    if (cleanText === '🧾 صورتحساب حسابداری' || cleanText === 'صورتحساب مالی' || cleanText === 'صورت حساب' || text.includes('صورتحساب')) {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) return;
+      await sendUserDetailedReport(chatId, chatId, 'statement', false);
+      return;
+    }
+
+    if (cleanText === '📊 گزارش دقیق فروش و مصرف' || cleanText === '📊 گزارش دقیق عملکرد' || text.includes('گزارش دقیق فروش و مصرف') || text.includes('گزارش دقیق عملکرد')) {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) return;
+      await sendUserDetailedReport(chatId, chatId, 'overview', false);
       return;
     }
 
@@ -4255,10 +4622,29 @@ export async function initBot() {
       return;
     }
 
+    if (data && data.startsWith('user_rep_')) {
+      const parts = data.replace('user_rep_', '').split('_');
+      const mode = (parts[0] as 'daily' | 'monthly' | 'statement' | 'overview') || 'daily';
+      const targetChatId = parseInt(parts[1] || String(chatId), 10);
+      const isAdminCtx = isAdmin || (targetChatId !== chatId);
+      await sendUserDetailedReport(chatId, targetChatId, mode, isAdminCtx, query.message?.message_id);
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_daily_report') {
+      if (isAdmin) {
+        const rep = getDailyReportText();
+        bot!.sendMessage(chatId, rep, { parse_mode: 'HTML' });
+      }
+      answerQuery();
+      return;
+    }
+
     if (data === 'seller_detailed_report') {
       const userObj = db.getUser(chatId);
       if (userObj && userObj.isSeller) {
-        await sendDetailedSellerReport(chatId, chatId, false);
+        await sendUserDetailedReport(chatId, chatId, 'daily', false);
       }
       answerQuery();
       return;
@@ -4267,16 +4653,23 @@ export async function initBot() {
     if (data === 'seller_panel_inline') {
       const userObj = db.getUser(chatId);
       if (userObj && userObj.isSeller) {
-        const textResponse = `📊 *به پنل اختصاصی همکار خوش آمدید*\n\n` +
-          `جهت ثبت فروش و مشاهده وضعیت اعتبار و بدهی‌های خود، از منوی زیر استفاده کنید:\n\n` +
-          `💰 مجموع کل فروش شما: *${(userObj.totalSales || 0).toLocaleString()}* تومان\n` +
-          `📉 میزان بدهی فعلی: *${(userObj.debt || 0).toLocaleString()}* تومان`;
+        const textResponse = `📊 <b>به پنل اختصاصی همکار خوش آمدید</b>\n\n` +
+          `جهت بررسی صورتحساب مالی، گزارش فروش روزانه و ماهانه و خرید سرویس، از دکمه‌های زیر استفاده فرمایید:\n\n` +
+          `💰 مجموع کل فروش شما: <b>${(userObj.totalSales || 0).toLocaleString()}</b> تومان\n` +
+          `📉 میزان بدهی فعلی: <b>${(userObj.debt || 0).toLocaleString()}</b> تومان`;
         
         bot!.sendMessage(chatId, textResponse, {
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '📊 گزارش دقیق فروش و مصرف', callback_data: 'seller_detailed_report' }]
+              [
+                { text: '📅 گزارش فروش امروز (با جزئیات)', callback_data: `user_rep_daily_${chatId}` },
+                { text: '🗓 گزارش فروش ماهانه', callback_data: `user_rep_monthly_${chatId}` }
+              ],
+              [
+                { text: '🧾 صورتحساب مالی و حسابداری', callback_data: `user_rep_statement_${chatId}` },
+                { text: '📊 خلاصه تراز و وضعیت', callback_data: `user_rep_overview_${chatId}` }
+              ]
             ]
           } as any
         });
@@ -4288,7 +4681,7 @@ export async function initBot() {
     if (data && data.startsWith('admin_seller_rep_')) {
       if (isAdmin) {
         const targetChatId = parseInt(data.replace('admin_seller_rep_', ''));
-        await sendDetailedSellerReport(chatId, targetChatId, true);
+        await sendUserDetailedReport(chatId, targetChatId, 'daily', true);
       }
       answerQuery();
       return;
