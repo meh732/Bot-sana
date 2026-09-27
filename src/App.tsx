@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package, Menu, PanelLeftClose, PanelLeftOpen, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package, Menu, PanelLeftClose, PanelLeftOpen, ChevronRight, ChevronLeft, Lock } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'settings' | 'products' | 'users' | 'sellers'>('settings');
