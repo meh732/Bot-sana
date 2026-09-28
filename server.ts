@@ -773,6 +773,8 @@ async function startServer() {
     }
     if (sellerDiscount !== undefined) user.sellerDiscount = Number(sellerDiscount) || 0;
     if (sellerDiscounts !== undefined) user.sellerDiscounts = sellerDiscounts;
+    if (req.body.portalUsername !== undefined) user.portalUsername = String(req.body.portalUsername).trim();
+    if (req.body.portalPassword !== undefined) user.portalPassword = String(req.body.portalPassword).trim();
     
     db.saveUser(user);
     await syncAllUsersAndSellersFinancials();
@@ -782,7 +784,7 @@ async function startServer() {
   });
 
   api.post("/users/add-seller", async (req, res) => {
-    const { chatId, username, debtLimit, isUnlimitedLimit } = req.body;
+    const { chatId, username, debtLimit, isUnlimitedLimit, portalUsername, portalPassword } = req.body;
     if (!chatId) {
       return res.status(400).json({ success: false, message: 'شناسه عددی کاربری الزاماً باید فرستاده شود.' });
     }
@@ -800,6 +802,8 @@ async function startServer() {
       user = {
         chatId: numChatId,
         username: username || '',
+        portalUsername: portalUsername || username || `seller_${numChatId}`,
+        portalPassword: portalPassword || Math.floor(100000 + Math.random() * 900000).toString(),
         balance: 0,
         testUsed: false,
         registeredAt: new Date().toISOString(),
@@ -817,6 +821,9 @@ async function startServer() {
     } else {
       user.isSeller = true;
       if (username) user.username = username;
+      if (portalUsername) user.portalUsername = portalUsername;
+      if (portalPassword) user.portalPassword = portalPassword;
+      else if (!user.portalPassword) user.portalPassword = Math.floor(100000 + Math.random() * 900000).toString();
       user.debtLimit = finalLimit;
       user.isUnlimitedLimit = unlim;
     }
@@ -825,6 +832,23 @@ async function startServer() {
     const updated = db.getUser(numChatId) || user;
     await checkPaygReactivation(updated).catch(console.error);
     res.json({ success: true, user: updated, users: db.getState().users });
+  });
+
+  api.post("/users/:chatId/portal-credentials", (req, res) => {
+    const { portalUsername, portalPassword } = req.body;
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user) return res.status(404).json({ success: false, message: 'همکار یافت نشد' });
+
+    if (portalUsername !== undefined) user.portalUsername = String(portalUsername).trim();
+    if (portalPassword !== undefined) user.portalPassword = String(portalPassword).trim();
+
+    db.saveUser(user);
+    res.json({
+      success: true,
+      portalUsername: user.portalUsername,
+      portalPassword: user.portalPassword,
+      users: db.getState().users
+    });
   });
 
   api.post("/users/:chatId/settle", (req, res) => {

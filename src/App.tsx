@@ -3122,6 +3122,37 @@ function SellersView() {
     }
   };
 
+  const editPortalCredentials = async (user: any) => {
+    const currentUsername = user.portalUsername || user.username || `seller_${user.chatId}`;
+    const currentPassword = user.portalPassword || '123456';
+
+    const newUsername = prompt(`نام کاربری ورود همکار به پورتال وب بی‌نام:`, currentUsername);
+    if (newUsername === null) return;
+
+    const newPassword = prompt(`کلمه عبور ورود همکار به پورتال وب بی‌نام:`, currentPassword);
+    if (newPassword === null) return;
+
+    try {
+      const res = await fetch(`/api/users/${user.chatId}/portal-credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          portalUsername: newUsername.trim(),
+          portalPassword: newPassword.trim()
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ مشخصات ورود به پورتال وب بی‌نام همکار با موفقیت بروزرسانی شد.');
+        fetchUsers();
+      } else {
+        alert(data.message || 'خطا در ثبت مشخصات');
+      }
+    } catch (e) {
+      alert('خطا در ارتباط با سرور.');
+    }
+  };
+
   const paySellerDebtCustomAmount = async (chatId: number, currentDebt: number) => {
     const input = prompt(
       `میزان مبلغ پرداختی همکار را به تومان وارد کنید (مثلاً 50000 یا 500000 یا ۵۰ هزار | بدهی فعلی: ${(currentDebt || 0).toLocaleString()} تومان):`
@@ -3671,6 +3702,11 @@ function SellersView() {
                     <div className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded inline-block mt-1">
                       گروه: {u.username ? u.username : `Seller_${u.chatId}`}
                     </div>
+                    <div className="text-[11px] text-teal-800 bg-teal-50 px-2 py-1 rounded border border-teal-200 mt-1.5 flex flex-col gap-0.5 text-right">
+                      <div className="font-semibold text-teal-900">🌐 پورتال بی‌نام وب:</div>
+                      <div dir="ltr">یوزر: <span className="font-mono font-bold text-teal-950">{u.portalUsername || u.username || `seller_${u.chatId}`}</span></div>
+                      <div dir="ltr">رمز: <span className="font-mono font-bold text-teal-950">{u.portalPassword || '123456'}</span></div>
+                    </div>
                   </td>
                   <td className="px-6 py-4">
                     <div className="text-sm font-bold text-red-650">
@@ -3751,6 +3787,13 @@ function SellersView() {
                       className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition"
                     >
                       ویرایش سقف و بدهی
+                    </button>
+                    <button
+                      onClick={() => editPortalCredentials(u)}
+                      className="px-2.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md font-medium text-xs transition shadow-xs flex items-center gap-1"
+                      title="تنظیم و ویرایش نام کاربری و کلمه عبور پورتال وب بی‌نام همکار"
+                    >
+                      🔑 تنظیم یوزر/رمز پورتال
                     </button>
                     <button
                       onClick={() => paySellerDebtCustomAmount(u.chatId, u.debt || 0)}
