@@ -3676,7 +3676,7 @@ export async function initBot() {
         try {
           const file = await bot!.getFile(fileId);
           const dUrl = `https://api.telegram.org/file/bot${state.botToken}/${file.file_path}`;
-          const res = await axios.get(dUrl);
+          const res = await axios.get(dUrl, { responseType: 'text' });
           
           let fileData = res.data;
           if (typeof fileData === 'object') {
@@ -3686,15 +3686,36 @@ export async function initBot() {
           const decryptedData = decryptData(fileData, backupPassword);
           const parsed = JSON.parse(decryptedData);
           
-          if (!parsed.panel || !parsed.users) {
+          if (!parsed || typeof parsed !== 'object') {
             throw new Error('محتوای فایل معتبر نمی‌باشد.');
+          }
+
+          if (!parsed.users) parsed.users = [];
+          if (!parsed.products) parsed.products = [];
+
+          const currentDbState = db.getState();
+          if ((!parsed.botToken || parsed.botToken.trim() === '') && currentDbState.botToken) {
+            parsed.botToken = currentDbState.botToken;
+          }
+          if ((!parsed.adminIds || parsed.adminIds.length === 0) && currentDbState.adminIds && currentDbState.adminIds.length > 0) {
+            parsed.adminIds = currentDbState.adminIds;
+          }
+          if ((!parsed.panel || !parsed.panel.url) && currentDbState.panel && currentDbState.panel.url) {
+            parsed.panel = { ...currentDbState.panel, ...parsed.panel };
+          }
+          if ((!parsed.rebeccaPanel || !parsed.rebeccaPanel.url) && currentDbState.rebeccaPanel && currentDbState.rebeccaPanel.url) {
+            parsed.rebeccaPanel = { ...currentDbState.rebeccaPanel, ...parsed.rebeccaPanel };
+          }
+          if ((!parsed.mroceanPanel || !parsed.mroceanPanel.url) && currentDbState.mroceanPanel && currentDbState.mroceanPanel.url) {
+            parsed.mroceanPanel = { ...currentDbState.mroceanPanel, ...parsed.mroceanPanel };
           }
           
           const dbPath = path.join(process.cwd(), 'db.json');
           fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
           db.updateState(parsed);
+          adminSession.delete(chatId);
           
-          bot!.sendMessage(chatId, '✅ بازیابی کامل اطلاعات با موفقیت انجام شد! تمامی کاربران، محصولات، تراکنش‌ها، کانکشن پنل سنایی و تنظیمات ربات با موفقیت جایگذاری و دیتابیس همگام شد. 🎉');
+          bot!.sendMessage(chatId, '✅ <b>بازیابی کامل اطلاعات با موفقیت انجام شد!</b>\nتمامی کاربران، محصولات، تراکنش‌ها، کانکشن پنل‌ها و تنظیمات ربات با موفقیت جایگذاری و دیتابیس همگام شد. 🎉', { parse_mode: 'HTML' });
           
           setTimeout(() => {
             initBot();
@@ -4064,10 +4085,18 @@ export async function initBot() {
       return;
     }
 
-    // Restore Backup System if admin uploads the json document
+    // Restore Backup System if admin uploads the json/backup document
     if (msg.document) {
       const state = db.getState();
-      if (isUserAdmin(chatId, state) && msg.document.file_name?.endsWith('.json')) {
+      const fileName = msg.document.file_name || '';
+      const isBackupFile = fileName.toLowerCase().endsWith('.json') || 
+                           fileName.toLowerCase().endsWith('.bak') || 
+                           fileName.toLowerCase().endsWith('.txt') || 
+                           fileName.toLowerCase().endsWith('.db') || 
+                           msg.document.mime_type?.includes('json') || 
+                           msg.document.mime_type?.includes('text');
+
+      if (isUserAdmin(chatId, state) && (isBackupFile || fileName !== '')) {
         bot!.sendMessage(chatId, '⏳ در حال بررسی و پردازش فایل پشتیبان...');
         try {
           const file = await bot!.getFile(msg.document.file_id);
@@ -4081,10 +4110,40 @@ export async function initBot() {
           let parsed: any = null;
           try {
             parsed = JSON.parse(rawText);
+            if (typeof parsed === 'string') {
+              parsed = JSON.parse(parsed);
+            }
           } catch (e) {}
 
-          if (parsed && typeof parsed === 'object' && (parsed.panel || parsed.users || parsed.products)) {
-            // Direct restore
+          // Check if encrypted
+          if (parsed && typeof parsed === 'object' && parsed.type === 'sanaei_bot_secured_backup') {
+            adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
+            bot!.sendMessage(chatId, '🔑 این فایل پشتیبان با رمز عبور قفل شده است.\n\nلطفاً رمز عبور فایل بکاپ را جهت رمزگشایی و بارگذاری دیتابیس ارسال فرمایید:');
+            return;
+          }
+
+          // If standard JSON database state
+          if (parsed && typeof parsed === 'object' && (parsed.panel || parsed.users || parsed.products || parsed.botToken || parsed.adminIds)) {
+            if (!parsed.users) parsed.users = [];
+            if (!parsed.products) parsed.products = [];
+
+            const currentDbState = db.getState();
+            if ((!parsed.botToken || parsed.botToken.trim() === '') && currentDbState.botToken) {
+              parsed.botToken = currentDbState.botToken;
+            }
+            if ((!parsed.adminIds || parsed.adminIds.length === 0) && currentDbState.adminIds && currentDbState.adminIds.length > 0) {
+              parsed.adminIds = currentDbState.adminIds;
+            }
+            if ((!parsed.panel || !parsed.panel.url) && currentDbState.panel && currentDbState.panel.url) {
+              parsed.panel = { ...currentDbState.panel, ...parsed.panel };
+            }
+            if ((!parsed.rebeccaPanel || !parsed.rebeccaPanel.url) && currentDbState.rebeccaPanel && currentDbState.rebeccaPanel.url) {
+              parsed.rebeccaPanel = { ...currentDbState.rebeccaPanel, ...parsed.rebeccaPanel };
+            }
+            if ((!parsed.mroceanPanel || !parsed.mroceanPanel.url) && currentDbState.mroceanPanel && currentDbState.mroceanPanel.url) {
+              parsed.mroceanPanel = { ...currentDbState.mroceanPanel, ...parsed.mroceanPanel };
+            }
+
             const dbPath = path.join(process.cwd(), 'db.json');
             fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
             db.updateState(parsed);
@@ -4093,9 +4152,9 @@ export async function initBot() {
             return;
           }
 
-          // Encrypted backup
+          // If unable to parse directly, ask for password in case it's encrypted with custom payload
           adminSession.set(chatId, `restore_pass_${msg.document.file_id}`);
-          bot!.sendMessage(chatId, '🔑 این فایل پشتیبان رمزگذاری شده است.\nلطفاً رمز عبور فایل بکاپ را جهت رمزگشایی ارسال فرمایید:');
+          bot!.sendMessage(chatId, '🔑 لطفاً رمز عبور فایل بکاپ را ارسال فرمایید (یا اگر بدون رمز است عدد 0 را بفرستید):');
           return;
         } catch (err: any) {
           bot!.sendMessage(chatId, `❌ خطا در پردازش فایل: ${err.message}`);

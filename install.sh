@@ -21,8 +21,8 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-GIT_URL="https://github.com/meh732/botsel.git"
-FALLBACK_GIT_URL="https://github.com/meh732/Bot-sana.git"
+GIT_URL="https://github.com/meh732/Bot-sana.git"
+FALLBACK_GIT_URL="https://github.com/meh732/botsel.git"
 DIR_NAME="sanaei-bot"
 
 show_menu() {

@@ -26,10 +26,21 @@ export function encryptData(text: string, keyString: string): string {
 /**
  * Decrypts a password-secured backup payload
  */
-export function decryptData(jsonStr: string, keyString: string): string {
+export function decryptData(jsonInput: string | any, keyString: string): string {
   try {
-    const payload = JSON.parse(jsonStr);
-    if (payload.type !== 'sanaei_bot_secured_backup' || !payload.iv || !payload.encryptedData) {
+    let payload: any = jsonInput;
+    if (typeof jsonInput === 'string') {
+      try {
+        payload = JSON.parse(jsonInput);
+        if (typeof payload === 'string') {
+          payload = JSON.parse(payload);
+        }
+      } catch (e) {
+        throw new Error('فرمت فایل پشتیبان معتبر نمی‌باشد.');
+      }
+    }
+    
+    if (!payload || payload.type !== 'sanaei_bot_secured_backup' || !payload.iv || !payload.encryptedData) {
       throw new Error('فرمت فایل پشتیبان نامعتبر است یا این فایل رمزگذاری شده مناسب نیست.');
     }
     

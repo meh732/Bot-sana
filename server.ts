@@ -312,6 +312,21 @@ async function startServer() {
     }
   });
 
+  api.get("/backup/plain-download", (req, res) => {
+    try {
+      const dbPath = path.join(process.cwd(), 'db.json');
+      if (!fs.existsSync(dbPath)) {
+        return res.status(404).json({ success: false, message: 'فایل دیتابیس یافت نشد.' });
+      }
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=backup_plain_${Date.now()}.json`);
+      const fileStream = fs.createReadStream(dbPath);
+      fileStream.pipe(res);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در دانلود بکاپ.' });
+    }
+  });
+
   api.post("/backup", (req, res) => {
     try {
       const { password } = req.body;
@@ -341,41 +356,56 @@ async function startServer() {
       }
       
       let parsed: any = null;
-      let rawJsonStr = typeof payload === 'object' ? JSON.stringify(payload) : String(payload).trim();
+      let rawData: any = payload;
 
-      // Determine if this is an encrypted backup
-      let isEncrypted = false;
-      try {
-        const temp = JSON.parse(rawJsonStr);
-        if (temp && temp.type === 'sanaei_bot_secured_backup') {
-          isEncrypted = true;
+      // Unpack string if passed as string
+      if (typeof rawData === 'string') {
+        const trimmed = rawData.trim();
+        try {
+          rawData = JSON.parse(trimmed);
+        } catch (e) {
+          rawData = trimmed;
         }
-      } catch (e) {
-        // Not a standard JSON or raw encrypted string
-        isEncrypted = true; 
+      }
+
+      // Check if this is an encrypted payload
+      let isEncrypted = false;
+      if (rawData && typeof rawData === 'object' && rawData.type === 'sanaei_bot_secured_backup') {
+        isEncrypted = true;
+      } else if (typeof rawData === 'string' && rawData.includes('sanaei_bot_secured_backup')) {
+        isEncrypted = true;
       }
 
       if (isEncrypted) {
-        if (!password) {
-          return res.status(400).json({ success: false, message: 'این فایل پشتیبان رمزگذاری شده است. لطفاً رمز عبور بکاپ را وارد کنید.' });
+        if (!password || password.trim() === '') {
+          return res.status(400).json({ success: false, message: 'این فایل پشتیبان با رمز عبور محافظت شده است. لطفاً رمز عبور بکاپ را وارد فرمایید.' });
         }
         try {
-          const decryptedData = decryptData(rawJsonStr, password);
+          const decryptedData = decryptData(rawData, password.trim());
           parsed = JSON.parse(decryptedData);
         } catch (decryptErr: any) {
           return res.status(400).json({ success: false, message: 'رمز عبور پشتیبان اشتباه است یا ساختار فایل پشتیبان مخدوش می‌باشد.' });
         }
       } else {
-        try {
-          parsed = JSON.parse(rawJsonStr);
-        } catch (e: any) {
-          return res.status(400).json({ success: false, message: 'ساختار فایل ارسالی یک JSON معتبر نیست: ' + e.message });
+        // Plain JSON backup
+        if (typeof rawData === 'object' && rawData !== null) {
+          parsed = rawData;
+        } else {
+          try {
+            parsed = JSON.parse(String(rawData).trim());
+          } catch (e: any) {
+            return res.status(400).json({ success: false, message: 'ساختار فایل ارسالی یک JSON معتبر نیست: ' + e.message });
+          }
         }
       }
       
-      if (!parsed || !parsed.users) {
-        return res.status(400).json({ success: false, message: 'فایل پشتیبان معتبر نیست. ساختار دیتابیس یا لیست کاربران یافت نشد.' });
+      if (!parsed || (typeof parsed !== 'object')) {
+        return res.status(400).json({ success: false, message: 'فایل پشتیبان نامعتبر است.' });
       }
+
+      // Ensure basic data structures exist
+      if (!parsed.users) parsed.users = [];
+      if (!parsed.products) parsed.products = [];
       
       // Smart Merging: Prevent wiping critical connection parameters with empty values from the backup
       const currentDbState = db.getState();
@@ -394,6 +424,10 @@ async function startServer() {
       
       if ((!parsed.rebeccaPanel || !parsed.rebeccaPanel.url) && currentDbState.rebeccaPanel && currentDbState.rebeccaPanel.url) {
         parsed.rebeccaPanel = { ...currentDbState.rebeccaPanel, ...parsed.rebeccaPanel };
+      }
+
+      if ((!parsed.mroceanPanel || !parsed.mroceanPanel.url) && currentDbState.mroceanPanel && currentDbState.mroceanPanel.url) {
+        parsed.mroceanPanel = { ...currentDbState.mroceanPanel, ...parsed.mroceanPanel };
       }
       
       // Write to db.json and update memory state

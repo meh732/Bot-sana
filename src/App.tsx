@@ -264,7 +264,8 @@ function SettingsView() {
       });
       const data = await res.json();
       if (data.success && data.payload) {
-        const blob = new Blob([JSON.stringify(data.payload, null, 2)], { type: 'application/json' });
+        const payloadText = typeof data.payload === 'string' ? data.payload : JSON.stringify(data.payload, null, 2);
+        const blob = new Blob([payloadText], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -294,7 +295,7 @@ function SettingsView() {
     setActionLoading(true);
     try {
       const fileText = await selectedFile.text();
-      let payload: any;
+      let payload: any = fileText;
       try {
         payload = JSON.parse(fileText);
       } catch (e) {
