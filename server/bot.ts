@@ -569,7 +569,13 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     let remainingTimeStr = '';
     let expiryDateStr = '';
 
-    const expTime = clientObj && clientObj.expiryTime !== undefined ? clientObj.expiryTime : 0;
+    let expTime = Number(clientObj && clientObj.expiryTime !== undefined ? clientObj.expiryTime : 0);
+    
+    // Normalize second-based timestamps (10-digit unix epoch seconds) to milliseconds (13-digit)
+    if (expTime > 0 && expTime < 10000000000) {
+      expTime = expTime * 1000;
+    }
+
     if (expTime > 0) {
       const remainingMs = expTime - Date.now();
       if (remainingMs <= 0) {
@@ -590,13 +596,63 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       const expDate = new Date(expTime);
       expiryDateStr = `${expDate.toLocaleDateString('fa-IR')} (ساعت ${expDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})`;
     } else if (expTime < 0) {
-      const days = Math.round(Math.abs(expTime) / 86400000);
+      // Relative countdown from first connection in X-UI
+      let days = 0;
+      if (Math.abs(expTime) > 86400000) {
+        days = Math.round(Math.abs(expTime) / 86400000);
+      } else if (Math.abs(expTime) <= 365) {
+        days = Math.round(Math.abs(expTime));
+      } else {
+        days = Math.round(Math.abs(expTime) / 86400);
+      }
       remainingTimeStr = `${days} روز (شروع شمارش پس از اولین اتصال)`;
       expiryDateStr = 'پس از اولین اتصال فعال می‌شود';
     } else {
-      if (purchase.durationDays && purchase.durationDays > 0) {
-        remainingTimeStr = `${purchase.durationDays} روز (شروع پس از اولین اتصال یا بدون انقضا)`;
-        expiryDateStr = 'نامحدود تا اتصال';
+      // expTime === 0: Check purchase records for duration / expiration
+      if (purchase.expiryDate) {
+        const pExpTime = new Date(purchase.expiryDate).getTime();
+        if (!isNaN(pExpTime) && pExpTime > 0) {
+          const remainingMs = pExpTime - Date.now();
+          if (remainingMs <= 0) {
+            remainingTimeStr = '❌ منقضی شده';
+            isExpired = true;
+          } else {
+            const days = Math.floor(remainingMs / 86400000);
+            const hours = Math.floor((remainingMs % 86400000) / 3600000);
+            const mins = Math.floor((remainingMs % 3600000) / 60000);
+            if (days > 0) {
+              remainingTimeStr = `${days} روز و ${hours} ساعت باقیمانده`;
+            } else if (hours > 0) {
+              remainingTimeStr = `${hours} ساعت و ${mins} دقیقه باقیمانده`;
+            } else {
+              remainingTimeStr = `${mins} دقیقه باقیمانده`;
+            }
+          }
+          const expDate = new Date(pExpTime);
+          expiryDateStr = `${expDate.toLocaleDateString('fa-IR')} (ساعت ${expDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})`;
+        }
+      } else if (purchase.durationDays && purchase.durationDays > 0) {
+        if (purchase.createdAt) {
+          const createTime = new Date(purchase.createdAt).getTime();
+          if (!isNaN(createTime)) {
+            const calculatedExp = createTime + purchase.durationDays * 86400000;
+            const remainingMs = calculatedExp - Date.now();
+            if (remainingMs <= 0) {
+              remainingTimeStr = '❌ منقضی شده';
+              isExpired = true;
+            } else {
+              const days = Math.floor(remainingMs / 86400000);
+              const hours = Math.floor((remainingMs % 86400000) / 3600000);
+              remainingTimeStr = `${days} روز و ${hours} ساعت باقیمانده`;
+            }
+            const expDate = new Date(calculatedExp);
+            expiryDateStr = `${expDate.toLocaleDateString('fa-IR')} (ساعت ${expDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})`;
+          }
+        }
+        if (!remainingTimeStr) {
+          remainingTimeStr = `${purchase.durationDays} روز (شروع پس از اولین اتصال یا بدون انقضا)`;
+          expiryDateStr = 'نامحدود تا اتصال';
+        }
       } else {
         remainingTimeStr = 'نامحدود (بدون انقضا)';
         expiryDateStr = 'همیشگی';
@@ -1831,6 +1887,7 @@ export async function initBot() {
           [{ text: '🎁 هدیه/تست رایگان', callback_data: 'admin_test_menu' }, { text: '💳 شماره کارت پرداخت', callback_data: 'admin_card_menu' }],
           [{ text: '📦 مدیریت محصولات', callback_data: 'admin_products_menu' }, { text: '🎟 کدهای تخفیف', callback_data: 'admin_coupons_menu' }],
           [{ text: '👥 مدیریت جامع کاربران و همکاران', callback_data: 'admin_users_menu' }],
+          [{ text: '🌐 آمار کاربران آنلاین پنل‌ها (سنایی / ربکا / مستر اوشن)', callback_data: 'admin_online_users_all' }],
           [{ text: '📊 گزارش فروش و کاربران (امروز)', callback_data: 'admin_daily_report' }],
           [{ text: '📢 ارسال پیام همگانی', callback_data: 'admin_broadcast' }, { text: '📞 پشتیبانی', callback_data: 'admin_set_support_id' }],
           [{ text: '⚙️ تنظیمات بکاپ خودکار', callback_data: 'admin_auto_backup_menu' }],
@@ -1838,6 +1895,138 @@ export async function initBot() {
         ]
       } as any
     });
+  };
+
+  const sendOnlineUsersMenu = async (chatId: number, targetPanel: 'all' | 'sanaei' | 'rebecca' | 'mrocean' = 'all', editMessageId?: number) => {
+    try {
+      const waitMsg = editMessageId ? null : await bot!.sendMessage(chatId, '⏳ در حال واکشی آمار زنده و وضعیت آنلاین کاربران از سرورها...');
+      const targetMsgId = editMessageId || waitMsg?.message_id;
+
+      const onlineStats = await multiPanel.getOnlineStats();
+
+      let text = '';
+      let inline_keyboard: any[] = [];
+
+      if (targetPanel === 'all') {
+        text = `🌐 <b>گزارش زنده کاربران آنلاین به تفکیک پنل‌ها</b>:\n\n` +
+          `👥 <b>مجموع کل کاربران آنلاین:</b> <b>${onlineStats.totalOnline}</b> نفر (از کل ${onlineStats.totalAll} اکانت)\n\n` +
+          `🔵 <b>پنل سنایی (X-UI):</b>\n` +
+          `▫️ آنلاین: <b>${onlineStats.sanaei.onlineCount}</b> نفر\n` +
+          `▫️ کل کلاینت‌ها: ${onlineStats.sanaei.totalClients} اکانت\n\n` +
+          `🟣 <b>پنل ربکا (Rebecca):</b>\n` +
+          `▫️ آنلاین: <b>${onlineStats.rebecca.onlineCount}</b> نفر\n` +
+          `▫️ کل کاربران: ${onlineStats.rebecca.totalUsers} اکانت\n\n` +
+          `🌊 <b>پنل مستر اوشن (MR OCEAN):</b>\n` +
+          `▫️ آنلاین: <b>${onlineStats.mrocean.onlineCount}</b> نفر\n` +
+          `▫️ کل کاربران: ${onlineStats.mrocean.totalUsers} اکانت\n\n` +
+          `💡 <i>جهت مشاهده لیست نام و جزئیات افراد آنلاین در هر سرور، از دکمه‌های زیر استفاده فرمایید:</i>`;
+
+        inline_keyboard = [
+          [
+            { text: `🔵 لیست آنلاین‌های سنایی (${onlineStats.sanaei.onlineCount} نفر)`, callback_data: 'admin_online_sanaei' }
+          ],
+          [
+            { text: `🟣 لیست آنلاین‌های ربکا (${onlineStats.rebecca.onlineCount} نفر)`, callback_data: 'admin_online_rebecca' }
+          ],
+          [
+            { text: `🌊 لیست آنلاین‌های مستر اوشن (${onlineStats.mrocean.onlineCount} نفر)`, callback_data: 'admin_online_mrocean' }
+          ],
+          [
+            { text: '🔄 بروزرسانی زنده', callback_data: 'admin_online_users_all' },
+            { text: '🔙 بازگشت به منوی ادمین', callback_data: 'admin_main' }
+          ]
+        ];
+      } else if (targetPanel === 'sanaei') {
+        const clients = onlineStats.sanaei.clients || [];
+        text = `🔵 <b>لیست کاربران آنلاین در پنل سنایی (X-UI)</b>:\n\n` +
+          `▫️ تعداد آنلاین فعلی: <b>${onlineStats.sanaei.onlineCount}</b> نفر\n` +
+          `▫️ کل کلاینت‌های ثبت‌شده: <b>${onlineStats.sanaei.totalClients}</b> اکانت\n\n`;
+
+        if (clients.length === 0) {
+          text += `❌ در حال حاضر هیچ کاربری در پنل سنایی آنلاین نیست یا اتصالی ثبت نشده است.\n`;
+        } else {
+          clients.forEach((c, idx) => {
+            const upGb = c.up ? (c.up / (1024 * 1024 * 1024)).toFixed(2) + ' GB' : '';
+            const downGb = c.down ? (c.down / (1024 * 1024 * 1024)).toFixed(2) + ' GB' : '';
+            const trafficInfo = (upGb || downGb) ? ` (مصرف: ${downGb || '0'} دان / ${upGb || '0'} آپ)` : '';
+            const ipInfo = c.ip ? ` | IP: <code>${escapeHtml(c.ip)}</code>` : '';
+            text += `<b>${idx + 1}-</b> 👤 <code>${escapeHtml(c.email)}</code>${trafficInfo}${ipInfo}\n`;
+          });
+        }
+
+        inline_keyboard = [
+          [
+            { text: '🔄 بروزرسانی سنایی', callback_data: 'admin_online_sanaei' },
+            { text: '🔙 بازگشت به آمار کل پنل‌ها', callback_data: 'admin_online_users_all' }
+          ]
+        ];
+      } else if (targetPanel === 'rebecca') {
+        const users = onlineStats.rebecca.users || [];
+        text = `🟣 <b>لیست کاربران آنلاین در پنل ربکا (Rebecca)</b>:\n\n` +
+          `▫️ تعداد آنلاین فعلی: <b>${onlineStats.rebecca.onlineCount}</b> نفر\n` +
+          `▫️ کل کاربران ثبت‌شده: <b>${onlineStats.rebecca.totalUsers}</b> اکانت\n\n`;
+
+        if (users.length === 0) {
+          text += `❌ در حال حاضر هیچ کاربری در پنل ربکا آنلاین نیست.\n`;
+        } else {
+          users.forEach((u, idx) => {
+            text += `<b>${idx + 1}-</b> 👤 <code>${escapeHtml(u.username)}</code>\n` +
+              `   📊 مصرف: <b>${u.usedTrafficGb} GB</b> از ${u.dataLimitGb > 0 ? u.dataLimitGb + ' GB' : 'نامحدود'}\n` +
+              `   ⏱ آخرین اتصال: ${escapeHtml(u.lastOnline || 'فعال')}\n\n`;
+          });
+        }
+
+        inline_keyboard = [
+          [
+            { text: '🔄 بروزرسانی ربکا', callback_data: 'admin_online_rebecca' },
+            { text: '🔙 بازگشت به آمار کل پنل‌ها', callback_data: 'admin_online_users_all' }
+          ]
+        ];
+      } else if (targetPanel === 'mrocean') {
+        const users = onlineStats.mrocean.users || [];
+        text = `🌊 <b>لیست کاربران آنلاین در پنل مستر اوشن (MR OCEAN)</b>:\n\n` +
+          `▫️ تعداد آنلاین فعلی: <b>${onlineStats.mrocean.onlineCount}</b> نفر\n` +
+          `▫️ کل کاربران ثبت‌شده: <b>${onlineStats.mrocean.totalUsers}</b> اکانت\n\n`;
+
+        if (users.length === 0) {
+          text += `❌ در حال حاضر هیچ کاربری در پنل مستر اوشن آنلاین نیست.\n`;
+        } else {
+          users.forEach((u, idx) => {
+            text += `<b>${idx + 1}-</b> 👤 <code>${escapeHtml(u.username)}</code>\n` +
+              `   📊 مصرف: <b>${u.usedTrafficGb} GB</b> از ${u.dataLimitGb > 0 ? u.dataLimitGb + ' GB' : 'نامحدود'}\n` +
+              `   ⏱ وضعیت: <b>${escapeHtml(u.lastOnline || 'آنلاین')}</b>\n\n`;
+          });
+        }
+
+        inline_keyboard = [
+          [
+            { text: '🔄 بروزرسانی مستر اوشن', callback_data: 'admin_online_mrocean' },
+            { text: '🔙 بازگشت به آمار کل پنل‌ها', callback_data: 'admin_online_users_all' }
+          ]
+        ];
+      }
+
+      if (targetMsgId) {
+        try {
+          await bot!.editMessageText(text, {
+            chat_id: chatId,
+            message_id: targetMsgId,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard }
+          });
+          return;
+        } catch (editErr: any) {
+          if (!editErr.message?.includes('message is not modified')) {
+            await bot!.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          }
+        }
+      } else {
+        await bot!.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+      }
+    } catch (e: any) {
+      console.error('[sendOnlineUsersMenu Error]', e.message);
+      bot!.sendMessage(chatId, `❌ خطا در واکشی وضعیت آنلاین: ${e.message}`);
+    }
   };
 
   const sendCardSettingsMenu = (chatId: number) => {
@@ -2186,6 +2375,17 @@ export async function initBot() {
       return;
     }
     sendAdminMainMenu(chatId);
+  });
+
+  bot.onText(/\/online/, (msg) => {
+    const chatId = msg.chat.id;
+    userSession.delete(chatId);
+    adminSession.delete(chatId);
+    if (!isUserAdmin(chatId, db.getState())) {
+      bot!.sendMessage(chatId, '❌ شما به بخش مدیریت دسترسی ندارید.');
+      return;
+    }
+    sendOnlineUsersMenu(chatId, 'all');
   });
 
   bot.onText(/\/cancel/, (msg) => {
@@ -4715,6 +4915,38 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'admin_online_users_all') {
+      if (isAdmin) {
+        await sendOnlineUsersMenu(chatId, 'all', query.message?.message_id);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_online_sanaei') {
+      if (isAdmin) {
+        await sendOnlineUsersMenu(chatId, 'sanaei', query.message?.message_id);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_online_rebecca') {
+      if (isAdmin) {
+        await sendOnlineUsersMenu(chatId, 'rebecca', query.message?.message_id);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'admin_online_mrocean') {
+      if (isAdmin) {
+        await sendOnlineUsersMenu(chatId, 'mrocean', query.message?.message_id);
+      }
+      answerQuery();
+      return;
+    }
+
     if (data === 'seller_detailed_report') {
       const userObj = db.getUser(chatId);
       if (userObj && userObj.isSeller) {
@@ -5384,22 +5616,47 @@ export async function initBot() {
           user.balance = (user.balance || 0) - finalPrice;
         } else {
           user.debt = (user.debt || 0) + finalPrice;
-          user.debtVolume = (user.debtVolume || 0) + Number(purchase.volumeGb);
+          user.debtVolume = (user.debtVolume || 0) + Number(purchase.volumeGb || 0);
           user.totalSales = (user.totalSales || 0) + finalPrice;
         }
         
-        // Save the purchase update explicitly: update createdAt to now so logs show it as recent update
+        // Update purchase state on successful renewal
         purchase.createdAt = new Date().toISOString();
+        purchase.lastUsedBytes = 0;
+        purchase.baseSettledBytes = 0;
+        if (purchase.durationDays && purchase.durationDays > 0) {
+          purchase.expiryDate = new Date(Date.now() + purchase.durationDays * 86400000).toISOString();
+        }
+
+        // Record transaction in ledger for accounting and statement reports
+        recordUserTransaction(user, {
+          type: 'purchase',
+          amount: finalPrice,
+          direction: 'debit',
+          description: `تمدید ${purchase.name} (${purchase.volumeGb || 0} GB / ${purchase.durationDays || 0} روز)`,
+          configName: purchase.name,
+          volumeGb: purchase.volumeGb || 0,
+          balanceAfter: user.balance,
+          debtAfter: user.debt,
+          createdAt: purchase.createdAt
+        });
 
         db.saveUser(user);
-
-        let finalMsg = `✅ تمدید سرویس با موفقیت انجام شد!\n\n📦 ${purchase.name}\nحجم ریست شد و زمان تمدید گردید.\n\n`;
-        if (user.isSeller) {
-           finalMsg += `📉 بدهی جدید شما: ${(user.debt || 0).toLocaleString()} تومان\n`;
-        } else {
-           finalMsg += `💰 موجودی جدید: ${user.balance.toLocaleString()} تومان\n`;
+        if (purchaseOwner && purchaseOwner.chatId !== user.chatId) {
+          db.saveUser(purchaseOwner);
         }
-        bot!.sendMessage(chatId, finalMsg);
+
+        let finalMsg = `🎉 <b>تمدید سرویس با موفقیت انجام شد!</b>\n\n` +
+          `📦 <b>سرویس:</b> ${escapeHtml(purchase.name || 'کانفیگ')}\n` +
+          `▫️ حجم مصرفی با موفقیت صفر گردید و اعتبار زمانی تمدید شد.\n` +
+          `▫️ مبلغ پرداختی: <b>${finalPrice.toLocaleString()}</b> تومان\n\n`;
+        if (user.isSeller) {
+           finalMsg += `📉 <b>بدهی جدید شما:</b> ${(user.debt || 0).toLocaleString()} تومان\n`;
+        } else {
+           finalMsg += `💰 <b>موجودی جدید:</b> ${user.balance.toLocaleString()} تومان\n`;
+        }
+        await bot!.sendMessage(chatId, finalMsg, { parse_mode: 'HTML' });
+        await sendServiceInfo(chatId, purchase);
 
       } catch (err: any) {
         bot!.sendMessage(chatId, `❌ خطای تمدید: ${err.message}`);

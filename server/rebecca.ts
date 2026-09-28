@@ -744,47 +744,67 @@ export class RebeccaClient {
   public async renewClient(username: string, volumeGb: number, durationDays: number): Promise<boolean> {
     try {
       const { baseURL, headers } = await this.getAuthHeaders();
+      const cleanUsername = username.trim();
       const dataLimitBytes = volumeGb > 0 ? Math.floor(volumeGb * 1024 * 1024 * 1024) : 0;
-      const expireTimestamp = durationDays > 0 ? Math.floor((Date.now() + durationDays * 24 * 60 * 60 * 1000) / 1000) : 0;
 
       // 1. Reset traffic
+      const resetEndpoints = [
+        `${baseURL}/api/v2/users/${encodeURIComponent(cleanUsername)}/reset`,
+        `${baseURL}/api/user/${encodeURIComponent(cleanUsername)}/reset`,
+        `${baseURL}/api/user/${encodeURIComponent(cleanUsername)}/reset-traffic`,
+        `${baseURL}/api/admin/user/${encodeURIComponent(cleanUsername)}/reset`
+      ];
+      for (const ep of resetEndpoints) {
+        try {
+          await this.client.post(ep, {}, { headers, validateStatus: () => true, timeout: 5000 });
+        } catch (e) {}
+      }
+
+      // 2. Fetch existing user to extend expiration if not expired
+      let existingUser: any = null;
       try {
-        await this.client.post(`${baseURL}/api/user/${username}/reset`, {}, {
-          headers,
-          validateStatus: () => true,
-          timeout: 6000
-        });
+        existingUser = await this.getClient(cleanUsername);
       } catch (e) {}
 
-      // 2. Rebecca 0.3.0: PUT /api/user/{username}
+      let expireTimestamp = 0;
+      if (durationDays > 0) {
+        let currentExpireSec = Number(existingUser?.expire || existingUser?.expire_date || 0);
+        if (currentExpireSec > 10000000000) {
+          currentExpireSec = Math.floor(currentExpireSec / 1000);
+        }
+        const nowSec = Math.floor(Date.now() / 1000);
+        const baseSec = (currentExpireSec > nowSec) ? currentExpireSec : nowSec;
+        expireTimestamp = baseSec + durationDays * 24 * 60 * 60;
+      }
+
+      // 3. Update user on Rebecca 0.3.0 & Marzban
       const payload: any = {
         status: 'active',
         data_limit: dataLimitBytes,
         expire: expireTimestamp || 0
       };
 
-      const res = await this.client.put(`${baseURL}/api/user/${username}`, payload, {
-        headers,
-        validateStatus: () => true,
-        timeout: 6000
-      });
+      const updateEndpoints = [
+        { url: `${baseURL}/api/v2/users/${encodeURIComponent(cleanUsername)}`, method: 'put' },
+        { url: `${baseURL}/api/user/${encodeURIComponent(cleanUsername)}`, method: 'put' },
+        { url: `${baseURL}/api/admin/user/${encodeURIComponent(cleanUsername)}`, method: 'put' }
+      ];
 
-      if (res.status >= 200 && res.status < 300) {
-        return true;
+      for (const item of updateEndpoints) {
+        try {
+          const res = await (this.client as any)[item.method](item.url, payload, {
+            headers,
+            validateStatus: () => true,
+            timeout: 8000
+          });
+          if (res.status >= 200 && res.status < 300) {
+            console.log(`[Rebecca] Successfully renewed client ${cleanUsername}`);
+            return true;
+          }
+        } catch (e) {}
       }
 
-      const res2 = await this.client.put(`${baseURL}/api/v2/users/${username}`, payload, {
-        headers,
-        validateStatus: () => true,
-        timeout: 6000
-      });
-
-      if (res2.status >= 200 && res2.status < 300) {
-        return true;
-      }
-
-      // Legacy fallback
-      const existingUser = await this.getClient(username);
+      // Legacy payload fallback with proxies
       const proxies = existingUser?.proxies || {
         vless: {},
         vmess: {},
@@ -793,10 +813,10 @@ export class RebeccaClient {
       };
       const legacyPayload = {
         ...payload,
-        username,
+        username: cleanUsername,
         proxies
       };
-      const res3 = await this.client.put(`${baseURL}/api/user/${username}`, legacyPayload, {
+      const res3 = await this.client.put(`${baseURL}/api/user/${encodeURIComponent(cleanUsername)}`, legacyPayload, {
         headers,
         validateStatus: () => true,
         timeout: 6000
@@ -897,6 +917,89 @@ export class RebeccaClient {
     } catch (e: any) {
       console.error('[Rebecca] getAllClientsWithTraffic error:', e.message);
       return [];
+    }
+  }
+
+  public async getOnlineUsers(): Promise<{
+    onlineCount: number;
+    totalUsers: number;
+    users: Array<{
+      username: string;
+      usedTrafficGb: number;
+      dataLimitGb: number;
+      lastOnline?: string;
+      status: string;
+    }>;
+  }> {
+    try {
+      const state = db.getState();
+      if (!state.rebeccaPanel?.url) {
+        return { onlineCount: 0, totalUsers: 0, users: [] };
+      }
+
+      const { baseURL, headers } = await this.getAuthHeaders();
+      let rawUsers: any[] = [];
+
+      try {
+        const res = await this.client.get(`${baseURL}/api/v2/users?limit=1000`, {
+          headers,
+          validateStatus: () => true,
+          timeout: 8000
+        });
+        if (res.status === 200 && res.data) {
+          rawUsers = Array.isArray(res.data.users) ? res.data.users : (Array.isArray(res.data) ? res.data : []);
+        } else {
+          const resLegacy = await this.client.get(`${baseURL}/api/users?limit=1000`, {
+            headers,
+            validateStatus: () => true,
+            timeout: 8000
+          });
+          if (resLegacy.status === 200 && resLegacy.data) {
+            rawUsers = Array.isArray(resLegacy.data.users) ? resLegacy.data.users : (Array.isArray(resLegacy.data) ? resLegacy.data : []);
+          }
+        }
+      } catch (e) {}
+
+      const onlineUsers: Array<{ username: string; usedTrafficGb: number; dataLimitGb: number; lastOnline?: string; status: string }> = [];
+
+      for (const u of rawUsers) {
+        const onlineAt = u.online_at || u.last_online || u.onlineAt;
+        let isOnline = u.is_online === true || u.online === true;
+        
+        if (!isOnline && onlineAt) {
+          const onlineTime = new Date(onlineAt).getTime();
+          // If active in last 10 minutes
+          if (!isNaN(onlineTime) && Date.now() - onlineTime < 10 * 60 * 1000) {
+            isOnline = true;
+          }
+        }
+
+        if (isOnline || (u.status === 'active' && u.used_traffic > 0)) {
+          let lastOnlineStr = 'هم‌اکنون آنلاین';
+          if (onlineAt) {
+            const d = new Date(onlineAt);
+            if (!isNaN(d.getTime())) {
+              lastOnlineStr = `${d.toLocaleDateString('fa-IR')} ${d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}`;
+            }
+          }
+          onlineUsers.push({
+            username: u.username,
+            usedTrafficGb: Number(((u.used_traffic || u.usedTraffic || 0) / (1024 * 1024 * 1024)).toFixed(2)),
+            dataLimitGb: Number(((u.data_limit || u.dataLimit || 0) / (1024 * 1024 * 1024)).toFixed(2)),
+            lastOnline: lastOnlineStr,
+            status: u.status || 'active'
+          });
+        }
+      }
+
+      return {
+        onlineCount: onlineUsers.length,
+        totalUsers: rawUsers.length,
+        users: onlineUsers
+      };
+    } catch (err: any) {
+      console.error('[Rebecca] getOnlineUsers error:', err.message);
+      return { onlineCount: 0, totalUsers: 0, users: [] };
     }
   }
 }

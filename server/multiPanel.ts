@@ -447,6 +447,38 @@ export class MultiPanelService {
       }
     }
   }
+
+  /**
+   * Fetches real-time online statistics across Sanaei, Rebecca, and Mr Ocean separately
+   */
+  public async getOnlineStats(): Promise<{
+    sanaei: { onlineCount: number; totalClients: number; clients: any[] };
+    rebecca: { onlineCount: number; totalUsers: number; users: any[] };
+    mrocean: { onlineCount: number; totalUsers: number; users: any[] };
+    totalOnline: number;
+    totalAll: number;
+  }> {
+    const [sanaeiRes, rebeccaRes, mroceanRes] = await Promise.allSettled([
+      xui.getOnlineClients(),
+      rebecca.getOnlineUsers(),
+      mrocean.getOnlineUsers()
+    ]);
+
+    const sanaei = sanaeiRes.status === 'fulfilled' ? sanaeiRes.value : { onlineCount: 0, totalClients: 0, clients: [] };
+    const reb = rebeccaRes.status === 'fulfilled' ? rebeccaRes.value : { onlineCount: 0, totalUsers: 0, users: [] };
+    const mro = mroceanRes.status === 'fulfilled' ? mroceanRes.value : { onlineCount: 0, totalUsers: 0, users: [] };
+
+    const totalOnline = (sanaei.onlineCount || 0) + (reb.onlineCount || 0) + (mro.onlineCount || 0);
+    const totalAll = (sanaei.totalClients || 0) + (reb.totalUsers || 0) + (mro.totalUsers || 0);
+
+    return {
+      sanaei,
+      rebecca: reb,
+      mrocean: mro,
+      totalOnline,
+      totalAll
+    };
+  }
 }
 
 export const multiPanel = new MultiPanelService();

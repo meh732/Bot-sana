@@ -747,6 +747,41 @@ class XuiClient {
     }
   }
 
+  public async updateClient(inboundId: number | string, clientUuid: string, clientObj: any): Promise<boolean> {
+    try {
+      const opts = await this.getAuthOptions();
+      const workingPrefix = this.workingApiPrefix || '/panel/api';
+      const payload = {
+        id: Number(inboundId),
+        settings: JSON.stringify({ clients: [clientObj] })
+      };
+
+      const paths = [
+        `${workingPrefix}/inbounds/updateClient/${clientUuid}`,
+        `${workingPrefix}/inbounds/updateclient/${clientUuid}`,
+        `/panel/api/inbounds/updateClient/${clientUuid}`,
+        `/api/inbounds/updateClient/${clientUuid}`,
+        `${workingPrefix}/clients/update/${clientUuid}`
+      ];
+
+      for (const p of paths) {
+        try {
+          const res = await this.client.post(`${opts.baseURL}${p}`, payload, {
+            headers: { ...opts.headers, 'Content-Type': 'application/json' },
+            validateStatus: () => true,
+            timeout: 7000
+          });
+          if (res.data?.success || (res.status >= 200 && res.status < 300 && res.data?.success !== false)) {
+            return true;
+          }
+        } catch (e) {}
+      }
+    } catch (e: any) {
+      console.error(`[X-UI] updateClient error for ${clientUuid}:`, e.message);
+    }
+    return false;
+  }
+
   public async updateClientEnable(email: string, enable: boolean, panelType?: 'xui' | 'rebecca') {
     try {
       const mode = this.getActiveMode();
@@ -874,8 +909,17 @@ class XuiClient {
     try {
       const state = db.getState();
       const opts = await this.getAuthOptions();
-      const inboundsList = await this.getXuiInboundsDirect();
+      const inboundsList = await this.getXuiInboundsDirect() || [];
       
+      const cleanEmail = String(email || '').trim().toLowerCase();
+      if (!cleanEmail) {
+        throw new Error('شناسه کاربری یا ایمیل برای تمدید معتبر نیست.');
+      }
+
+      // 1. Reset client traffic in panel
+      await this.resetClientTraffic(email);
+
+      // 2. Locate target client across inbounds
       let targetClient: any = null;
       let targetInboundIds: number[] = [];
       let originalLimitIp = 0;
@@ -884,12 +928,21 @@ class XuiClient {
       
       for (const inbound of inboundsList) {
         if (inbound.settings) {
-          const parsed = typeof inbound.settings === 'string' ? JSON.parse(inbound.settings) : inbound.settings;
-          if (parsed && parsed.clients) {
-            const found = parsed.clients.find((c: any) => c.email === email);
+          let parsed: any;
+          try {
+            parsed = typeof inbound.settings === 'string' ? JSON.parse(inbound.settings) : inbound.settings;
+          } catch (e) {
+            continue;
+          }
+          if (parsed && Array.isArray(parsed.clients)) {
+            const found = parsed.clients.find((c: any) => 
+              (c.email && String(c.email).trim().toLowerCase() === cleanEmail) ||
+              (c.id && String(c.id).trim().toLowerCase() === cleanEmail) ||
+              (c.subId && String(c.subId).trim().toLowerCase() === cleanEmail)
+            );
             if (found) {
-              if (!targetClient) targetClient = found;
-              targetInboundIds.push(inbound.id);
+              if (!targetClient) targetClient = { ...found };
+              targetInboundIds.push(Number(inbound.id));
               if (found.limitIp) originalLimitIp = found.limitIp;
               if (found.tgId) originalTelegramId = found.tgId;
               if (found.group) originalGroup = found.group;
@@ -897,129 +950,70 @@ class XuiClient {
           }
         }
       }
-      
-      if (!targetClient) {
-        throw new Error(`کاربری با ایمیل ${email} در پنل سنایی یافت نشد.`);
+
+      // 3. Expiration calculation:
+      // If existing client expiry is still in the future, extend from current expiry date.
+      // If expired or not set, extend from Date.now().
+      let newExpiryTime = 0;
+      if (durationDays > 0) {
+        const existingExp = Number(targetClient?.expiryTime || 0);
+        const normalizedExisting = (existingExp > 0 && existingExp < 10000000000) ? existingExp * 1000 : existingExp;
+        const baseTime = (normalizedExisting > Date.now()) ? normalizedExisting : Date.now();
+        newExpiryTime = baseTime + durationDays * 24 * 60 * 60 * 1000;
       }
 
-      console.log(`[X-UI] Renewing client ${email}. Deleting existing...`);
-      // Delete old client first
+      const totalBytes = volumeGb > 0 ? Math.floor(volumeGb * 1024 * 1024 * 1024) : 0;
+
+      // 4. Try in-place update first (preserves UUID, subId, and keys)
+      if (targetClient && targetInboundIds.length > 0) {
+        const clientId = targetClient.id || targetClient.password;
+        const updatedObj = {
+          ...targetClient,
+          enable: true,
+          expiryTime: newExpiryTime,
+          total: totalBytes,
+          totalGB: totalBytes
+        };
+
+        let anyUpdated = false;
+        for (const ibId of targetInboundIds) {
+          const ok = await this.updateClient(ibId, clientId, updatedObj);
+          if (ok) anyUpdated = true;
+        }
+
+        if (anyUpdated) {
+          console.log(`[X-UI] Successfully renewed client ${email} in-place on inbounds: ${targetInboundIds.join(', ')}`);
+          const subId = targetClient.subId || clientId;
+          const subUrlStr = this.buildXuiSubUrl(subId);
+          return {
+            subUrl: subUrlStr,
+            email: email,
+            id: clientId,
+            panelType: 'xui' as const,
+            expiryTime: newExpiryTime
+          };
+        }
+      }
+
+      // 5. Fallback: recreate client if in-place update was not accepted
+      console.log(`[X-UI] Fallback to recreate client ${email} on renewal...`);
       await this.delXuiClientByEmailDirect(email);
       for (const ibId of targetInboundIds) {
-        await this.delClient(ibId, targetClient.id || targetClient.password);
-      }
-      
-      // Calculate new props
-      const expiryTime = durationDays > 0 ? Date.now() + durationDays * 24 * 60 * 60 * 1000 : 0;
-      const totalBytes = volumeGb > 0 ? Math.floor(volumeGb * 1024 * 1024 * 1024) : 0;
-      
-      const clientId = targetClient.id || targetClient.password;
-      const subId = targetClient.subId || uuidv4().replace(/-/g, '').substring(0, 16);
-
-      // Reconstruct Multi-Inbound Tags from targetInboundIds if needed
-      const otherTags: string[] = [];
-      if (targetInboundIds.length > 1 && inboundsList.length > 0) {
-        targetInboundIds.slice(1).forEach(id => {
-          const found = inboundsList.find(ib => Number(ib.id) === Number(id));
-          if (found && found.remark) {
-            otherTags.push(found.remark);
-          }
-        });
-      }
-
-      const clientObj: any = {
-        id: clientId,
-        password: clientId,
-        email: email,
-        enable: true,
-        expiryTime: expiryTime,
-        total: totalBytes,
-        totalGB: totalBytes,
-        limitIp: Number(originalLimitIp) || 0,
-        flow: targetClient.flow || "",
-        tgId: originalTelegramId || "",
-        subId: subId,
-        group: originalGroup || ""
-      };
-
-      if (otherTags.length > 0) {
-        clientObj.inboundTags = otherTags;
-      }
-
-      const settings = {
-        clients: [clientObj]
-      };
-
-      let isSuccess = false;
-      let lastError = null;
-      let lastResponse = null;
-      let non404Response = null;
-      const primaryInboundId = targetInboundIds[0];
-      const workingPrefix = this.workingApiPrefix || '/panel/api';
-
-      try {
-        const url = `${opts.baseURL}${workingPrefix}/inbounds/addClient`;
-        let res = await this.client.post(url, { id: Number(primaryInboundId), settings: JSON.stringify(settings) }, {
-             headers: { ...opts.headers, 'Content-Type': 'application/json' },
-             validateStatus: () => true
-        });
-        lastResponse = res;
-        if (res?.status && res.status !== 404) non404Response = res;
-        if (res?.data?.success) isSuccess = true;
-
-        if (!isSuccess) {
-           res = await this.client.post(url, { id: Number(primaryInboundId), settings: settings }, {
-               headers: { ...opts.headers, 'Content-Type': 'application/json' },
-               validateStatus: () => true
-           });
-           lastResponse = res;
-           if (res?.status && res.status !== 404) non404Response = res;
-           if (res?.data?.success) isSuccess = true;
+        if (targetClient) {
+          await this.delClient(ibId, targetClient.id || targetClient.password);
         }
-      } catch (err: any) { lastError = err; }
-      
-      // Legacy URL fallbacks if needed...
-      if (!isSuccess) {
-         const possibleUrls = [
-           `${opts.baseURL}/panel/api/inbounds/addClient`,
-           `${opts.baseURL}/api/inbounds/addClient`,
-           `${opts.baseURL}/panel/inbounds/addclient`
-         ];
-         for (const url of possibleUrls) {
-           try {
-             let res = await this.client.post(url, { id: Number(primaryInboundId), settings: JSON.stringify(settings) }, {
-               headers: { ...opts.headers, 'Content-Type': 'application/json' },
-               validateStatus: () => true
-             });
-             lastResponse = res;
-             if (res?.status && res.status !== 404) non404Response = res;
-             if (res?.data?.success) { isSuccess = true; break; }
-             
-             res = await this.client.post(url, { id: Number(primaryInboundId), settings: settings }, {
-               headers: { ...opts.headers, 'Content-Type': 'application/json' },
-               validateStatus: () => true
-             });
-             lastResponse = res;
-             if (res?.status && res.status !== 404) non404Response = res;
-             if (res?.data?.success) { isSuccess = true; break; }
-           } catch(e:any) { lastError = e; }
-         }
       }
 
-      if (!isSuccess) {
-        const responseToUse = non404Response || lastResponse;
-        let errorMsg = responseToUse?.data?.msg || lastError?.message || 'پنل پاسخ ناموفق در ثبت مجدد مشتری بازگرداند.';
-        throw new Error(errorMsg);
-      }
-
-      const subUrlStr = this.buildXuiSubUrl(subId);
-
-      return {
-        subUrl: subUrlStr,
-        email: email,
-        id: clientId,
-        panelType: 'xui' as const
-      };
+      const res = await this.addXuiClientDirect(
+        email, 
+        volumeGb, 
+        durationDays, 
+        targetInboundIds.length > 0 ? targetInboundIds : undefined,
+        Number(originalLimitIp) || 0,
+        originalTelegramId || '',
+        originalGroup || ''
+      );
+      return res;
     } catch (e: any) {
       console.error('[X-UI] renewClient Error:', e.message);
       throw e;
@@ -1521,30 +1515,113 @@ class XuiClient {
     }
   }
 
-  public async updateClient(inboundId: number | string, clientId: string, clientObj: any) {
+  public async getOnlineClients(): Promise<{
+    onlineCount: number;
+    totalClients: number;
+    clients: Array<{
+      email: string;
+      ip?: string;
+      inboundRemark?: string;
+      up?: number;
+      down?: number;
+    }>;
+  }> {
     try {
+      const state = db.getState();
+      if (!state.panel?.url) {
+        return { onlineCount: 0, totalClients: 0, clients: [] };
+      }
+
       const opts = await this.getAuthOptions();
       const workingPrefix = this.workingApiPrefix || '/panel/api';
       const paths = [
-        `${workingPrefix}/inbounds/updateClient/${clientId}`,
-        `/panel/api/inbounds/updateClient/${clientId}`,
-        `/api/inbounds/updateClient/${clientId}`,
-        `/xui/api/inbounds/updateClient/${clientId}`
+        `${workingPrefix}/inbounds/onlines`,
+        `${workingPrefix}/inbounds/online`,
+        `/panel/api/inbounds/onlines`,
+        `/api/inbounds/onlines`,
+        `/xui/api/inbounds/onlines`
       ];
+
+      let rawOnlineData: any = null;
       for (const p of paths) {
         try {
-          const res = await this.client.post(`${opts.baseURL}${p}`, {
-            id: Number(inboundId),
-            settings: JSON.stringify({ clients: [clientObj] })
-          }, {
-            headers: { ...opts.headers, 'Content-Type': 'application/json' },
-            validateStatus: () => true
+          // Try POST first then GET
+          let res = await this.client.post(`${opts.baseURL}${p}`, {}, {
+            headers: opts.headers,
+            validateStatus: () => true,
+            timeout: 6000
           });
-          if (res?.data?.success) return res.data;
-        } catch {}
+          if (res.data?.success || Array.isArray(res.data?.obj) || (res.status === 200 && res.data?.obj)) {
+            rawOnlineData = res.data.obj || res.data;
+            break;
+          }
+          res = await this.client.get(`${opts.baseURL}${p}`, {
+            headers: opts.headers,
+            validateStatus: () => true,
+            timeout: 6000
+          });
+          if (res.data?.success || Array.isArray(res.data?.obj) || (res.status === 200 && res.data?.obj)) {
+            rawOnlineData = res.data.obj || res.data;
+            break;
+          }
+        } catch (e) {}
       }
-    } catch (e: any) {
-      console.error('[X-UI] updateClient error:', e.message);
+
+      const allClients = await this.getAllClientsWithTraffic().catch(() => []);
+      const totalClients = allClients.length;
+      const onlineClients: Array<{ email: string; ip?: string; inboundRemark?: string; up?: number; down?: number }> = [];
+
+      if (Array.isArray(rawOnlineData)) {
+        for (const item of rawOnlineData) {
+          if (typeof item === 'string') {
+            const matched = allClients.find(c => c.email === item || c.id === item);
+            onlineClients.push({
+              email: item,
+              up: matched?.up,
+              down: matched?.down
+            });
+          } else if (typeof item === 'object' && item !== null) {
+            onlineClients.push({
+              email: item.email || item.username || item.id || 'نامشخص',
+              ip: item.ip || item.address,
+              up: item.up,
+              down: item.down
+            });
+          }
+        }
+      } else if (rawOnlineData && typeof rawOnlineData === 'object') {
+        for (const [key, val] of Object.entries(rawOnlineData)) {
+          const ips = Array.isArray(val) ? val.join(', ') : String(val || '');
+          const matched = allClients.find(c => c.email === key || c.id === key);
+          onlineClients.push({
+            email: key,
+            ip: ips || undefined,
+            up: matched?.up,
+            down: matched?.down
+          });
+        }
+      }
+
+      // If direct API endpoint did not return online users, fallback to clients active today
+      if (onlineClients.length === 0 && allClients.length > 0) {
+        const activeRecent = allClients.filter(c => c.enable && ((c.up || 0) + (c.down || 0)) > 1024 * 1024);
+        for (const c of activeRecent.slice(0, 15)) {
+          onlineClients.push({
+            email: c.email || c.id,
+            up: c.up,
+            down: c.down
+          });
+        }
+      }
+
+      return {
+        onlineCount: onlineClients.length,
+        totalClients,
+        clients: onlineClients
+      };
+    } catch (err: any) {
+      console.error('[X-UI] getOnlineClients error:', err.message);
+      return { onlineCount: 0, totalClients: 0, clients: [] };
     }
   }
 }

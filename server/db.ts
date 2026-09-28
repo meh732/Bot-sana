@@ -104,6 +104,7 @@ export interface Purchase {
   discountPercent?: number;
   discountAmount?: number;
   expiredAt?: number;
+  expiryDate?: string;
   isDeleted?: boolean;
 }
 

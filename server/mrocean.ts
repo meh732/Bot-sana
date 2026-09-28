@@ -514,6 +514,53 @@ export class MrOceanClient {
     }
   }
 
+  public async getOnlineUsers(): Promise<{
+    onlineCount: number;
+    totalUsers: number;
+    users: Array<{
+      username: string;
+      usedTrafficGb: number;
+      dataLimitGb: number;
+      lastOnline?: string;
+      status: string;
+    }>;
+  }> {
+    try {
+      const state = db.getState();
+      if (!state.mroceanPanel?.url && !state.mroceanPanel?.username) {
+        return { onlineCount: 0, totalUsers: 0, users: [] };
+      }
+      const dashboard = await this.getDashboard();
+      if (!dashboard || !Array.isArray(dashboard.users)) {
+        return { onlineCount: 0, totalUsers: 0, users: [] };
+      }
+
+      const allUsers = dashboard.users;
+      const onlineList = allUsers.filter(u => {
+        return u.online === true || String(u.online) === 'true' || (u.lastOnline && u.lastOnline.includes('دقیقه'));
+      });
+
+      const onlineUsers = (onlineList.length > 0 ? onlineList : allUsers.filter(u => u.status === 'active')).map(u => ({
+        username: u.username,
+        usedTrafficGb: Number(((u.usedTraffic || 0) / (1024 * 1024 * 1024)).toFixed(2)),
+        dataLimitGb: Number(((u.dataLimit || 0) / (1024 * 1024 * 1024)).toFixed(2)),
+        lastOnline: u.lastOnline || (u.online ? 'هم‌اکنون متصل' : 'فعال'),
+        status: u.status || 'active'
+      }));
+
+      const onlineCount = dashboard.onlineTotal !== undefined ? dashboard.onlineTotal : onlineList.length;
+
+      return {
+        onlineCount,
+        totalUsers: dashboard.usersTotal !== undefined ? dashboard.usersTotal : allUsers.length,
+        users: onlineUsers
+      };
+    } catch (err: any) {
+      console.error('[MrOcean] getOnlineUsers error:', err.message);
+      return { onlineCount: 0, totalUsers: 0, users: [] };
+    }
+  }
+
   public async getAllClientsWithTraffic(): Promise<any[]> {
     try {
       const state = db.getState();
@@ -525,20 +572,36 @@ export class MrOceanClient {
         return [];
       }
 
-      return dashboard.users.map(u => ({
-        id: u.username,
-        email: u.username,
-        username: u.username,
-        subUrl: u.subscriptionUrl || u.portalUrl || '',
-        portalUrl: u.portalUrl || '',
-        up: 0,
-        down: u.usedTraffic || 0,
-        totalUsed: u.usedTraffic || 0,
-        total: u.dataLimit || 0,
-        expiryTime: u.expire ? u.expire * 1000 : 0,
-        enable: u.status === 'active',
-        panel: 'mrocean' as const
-      }));
+      return dashboard.users.map(u => {
+        const rawExp = u.expire || (u as any).expire_at || (u as any).expiresAt;
+        let expMs = 0;
+        if (rawExp) {
+          const num = Number(rawExp);
+          if (!isNaN(num) && num > 0) {
+            expMs = num < 10000000000 ? num * 1000 : num;
+          } else if (typeof rawExp === 'string') {
+            const parsed = new Date(rawExp).getTime();
+            if (!isNaN(parsed) && parsed > 0) expMs = parsed;
+          }
+        }
+
+        return {
+          id: u.username,
+          email: u.username,
+          username: u.username,
+          subUrl: u.subscriptionUrl || u.portalUrl || '',
+          portalUrl: u.portalUrl || '',
+          up: 0,
+          down: u.usedTraffic || 0,
+          totalUsed: u.usedTraffic || 0,
+          total: u.dataLimit || 0,
+          expiryTime: expMs,
+          enable: u.status === 'active',
+          online: u.online === true || String(u.online) === 'true',
+          lastOnline: u.lastOnline,
+          panel: 'mrocean' as const
+        };
+      });
     } catch (err: any) {
       console.error('[MrOcean] getAllClientsWithTraffic error:', err.message);
       return [];
