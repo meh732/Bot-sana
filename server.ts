@@ -4,9 +4,10 @@ import path from "path";
 import cors from "cors";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
+import QRCode from "qrcode";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit } from "./server/bot.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, getSellerDiscountForProduct } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
 import { xui } from "./server/xui.js";
 import { rebecca } from "./server/rebecca.js";
@@ -883,6 +884,169 @@ async function startServer() {
   api.post("/sellers/sync-financials", async (req, res) => {
     const result = await syncAllUsersAndSellersFinancials();
     res.json({ success: true, updatedCount: result.updatedCount, users: db.getState().users });
+  });
+
+  // --- Seller Storefront Web Portal API Endpoints ---
+  api.post("/seller-portal/login", (req, res) => {
+    const { username, password, chatId } = req.body;
+    const state = db.getState();
+    const sellers = (state.users || []).filter((u: any) => u.isSeller);
+
+    let targetSeller: any = null;
+    if (chatId) {
+      targetSeller = sellers.find((u: any) => String(u.chatId) === String(chatId));
+    }
+    if (!targetSeller && username) {
+      const uLower = String(username).trim().toLowerCase();
+      targetSeller = sellers.find((u: any) => 
+        (u.portalUsername && String(u.portalUsername).toLowerCase() === uLower) ||
+        (u.username && String(u.username).toLowerCase() === uLower) ||
+        (String(u.chatId) === uLower)
+      );
+      if (targetSeller && targetSeller.portalPassword) {
+        if (String(password).trim() !== String(targetSeller.portalPassword).trim()) {
+          return res.status(401).json({ success: false, message: 'کلمه عبور وارد شده اشتباه است.' });
+        }
+      }
+    }
+
+    if (!targetSeller) {
+      return res.status(404).json({ success: false, message: 'همکار فروشنده‌ای با این مشخصات یافت نشد.' });
+    }
+
+    res.json({
+      success: true,
+      seller: {
+        chatId: targetSeller.chatId,
+        username: targetSeller.username,
+        portalUsername: targetSeller.portalUsername || targetSeller.username || `seller_${targetSeller.chatId}`,
+        name: targetSeller.name || targetSeller.username || `همکار ${targetSeller.chatId}`,
+        debt: targetSeller.debt || 0,
+        debtLimit: targetSeller.debtLimit || 0,
+        isUnlimitedLimit: !!targetSeller.isUnlimitedLimit,
+        customDisplayPrices: targetSeller.customDisplayPrices || {},
+        showCustomPricesOnly: targetSeller.showCustomPricesOnly ?? true
+      }
+    });
+  });
+
+  api.get("/seller-portal/info/:chatId", (req, res) => {
+    const chatId = parseInt(req.params.chatId);
+    const user = db.getUser(chatId);
+    if (!user || !user.isSeller) {
+      return res.status(404).json({ success: false, message: 'پنل همکار یافت نشد یا دسترسی غیرمجاز است.' });
+    }
+
+    const state = db.getState();
+    const categories = state.categories || [];
+    const products = (state.products || []).map((p: any) => {
+      const isPAYG = !!p.isPayAsYouGo;
+      const sellerDiscount = getSellerDiscountForProduct(user, p);
+      let realWholesalePrice = isPAYG ? 0 : p.price;
+      if (sellerDiscount > 0 && !isPAYG) {
+        realWholesalePrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
+      }
+
+      const customPrice = user.customDisplayPrices?.[p.id];
+
+      return {
+        id: p.id,
+        name: p.name,
+        volumeGb: p.volumeGb,
+        durationDays: p.durationDays,
+        categoryId: p.categoryId,
+        isPayAsYouGo: !!p.isPayAsYouGo,
+        panelType: p.panelType,
+        originalPrice: p.price,
+        realWholesalePrice, // Real price charged to seller
+        sellerDiscount,
+        customDisplayPrice: customPrice !== undefined ? customPrice : null
+      };
+    });
+
+    res.json({
+      success: true,
+      seller: {
+        chatId: user.chatId,
+        username: user.username,
+        portalUsername: user.portalUsername || user.username || `seller_${user.chatId}`,
+        name: user.name || user.username || `همکار ${user.chatId}`,
+        debt: user.debt || 0,
+        debtLimit: user.debtLimit || 0,
+        isUnlimitedLimit: isSellerUnlimitedLimit(user),
+        customDisplayPrices: user.customDisplayPrices || {},
+        showCustomPricesOnly: user.showCustomPricesOnly ?? true
+      },
+      categories,
+      products
+    });
+  });
+
+  api.post("/seller-portal/save-prices/:chatId", (req, res) => {
+    const chatId = parseInt(req.params.chatId);
+    const user = db.getUser(chatId);
+    if (!user || !user.isSeller) {
+      return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+    }
+
+    const { customDisplayPrices, showCustomPricesOnly } = req.body;
+    if (customDisplayPrices !== undefined) {
+      user.customDisplayPrices = customDisplayPrices;
+    }
+    if (showCustomPricesOnly !== undefined) {
+      user.showCustomPricesOnly = !!showCustomPricesOnly;
+    }
+    db.saveUser(user);
+    res.json({ success: true, customDisplayPrices: user.customDisplayPrices, showCustomPricesOnly: user.showCustomPricesOnly });
+  });
+
+  api.post("/seller-portal/buy/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const { productId, customName } = req.body;
+      if (!productId) {
+        return res.status(400).json({ success: false, message: 'انتخاب محصول الزامی است.' });
+      }
+
+      const purchase = await executeSellerPortalPurchase(chatId, productId, customName);
+
+      let qrCodeDataUrl = '';
+      const mainSub = purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || '';
+      if (mainSub) {
+        try {
+          qrCodeDataUrl = await QRCode.toDataURL(mainSub, { width: 400, margin: 2 });
+        } catch (e) {}
+      }
+
+      const volStr = purchase.isPayAsYouGo ? 'نامحدود (مصرف آزاد)' : `${purchase.volumeGb || 0} گیگابایت`;
+      const durStr = purchase.isPayAsYouGo ? 'نامحدود' : `${purchase.durationDays || 0} روز`;
+
+      let cleanMessage = `🚀 <b>سرویس اختصاصی شما آماده استفاده است</b>\n\n` +
+        `👤 <b>عنوان سرویس:</b> <code>${customName || purchase.name}</code>\n` +
+        `📊 <b>حجم کل:</b> ${volStr}\n` +
+        `⏳ <b>مدت اعتبار:</b> ${durStr}\n\n`;
+
+      if (purchase.sanaeiSubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال (سرور ۱):</b>\n<code>${purchase.sanaeiSubUrl}</code>\n\n`;
+      }
+      if (purchase.rebeccaSubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال (سرور ۲):</b>\n<code>${purchase.rebeccaSubUrl}</code>\n\n`;
+      }
+      if (!purchase.sanaeiSubUrl && !purchase.rebeccaSubUrl && purchase.subUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.subUrl}</code>\n\n`;
+      }
+
+      cleanMessage += `⚡ <i>جهت اتصال کافیست لینک فوق را کپی و در نرم‌افزار V2Ray / Mahsa / Shadowrocket / Nekobox وارد نمایید.</i>`;
+
+      res.json({
+        success: true,
+        purchase,
+        qrCodeDataUrl,
+        cleanMessage
+      });
+    } catch (e: any) {
+      res.status(400).json({ success: false, message: e.message || 'خطا در ثبت سفارش پورتال' });
+    }
   });
 
   app.use("/api", api);

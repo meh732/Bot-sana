@@ -1,7 +1,18 @@
 import { useState, useEffect } from 'react';
 import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users as UsersIcon, Box, Download, Upload, Zap, CheckCircle, Percent, X, Edit2, Package, Menu, PanelLeftClose, PanelLeftOpen, ChevronRight, ChevronLeft, Lock } from 'lucide-react';
+import { SellerPortalView } from './SellerPortalView';
 
 export default function App() {
+  const isSellerPortalPath = typeof window !== 'undefined' && (
+    window.location.pathname.includes('/seller') || 
+    window.location.search.includes('id=') || 
+    window.location.search.includes('seller=')
+  );
+
+  if (isSellerPortalPath) {
+    return <SellerPortalView />;
+  }
+
   const [activeTab, setActiveTab] = useState<'settings' | 'products' | 'users' | 'sellers'>('settings');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -3111,6 +3122,35 @@ function SellersView() {
     }
   };
 
+  const paySellerDebtCustomAmount = async (chatId: number, currentDebt: number) => {
+    const input = prompt(
+      `میزان مبلغ پرداختی همکار را به تومان وارد کنید (مثلاً 50000 یا 500000 یا ۵۰ هزار | بدهی فعلی: ${(currentDebt || 0).toLocaleString()} تومان):`
+    );
+    if (input === null) return;
+    const parsed = parseAmountInput(input);
+    if (parsed === null || parsed <= 0) {
+      alert('مبلغ وارد شده معتبر نیست.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/users/${chatId}/charge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: parsed })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`✅ مبلغ ${parsed.toLocaleString()} تومان به عنوان پرداخت بدهی/واریزی همکار با موفقیت منظور شد.`);
+        fetchUsers();
+      } else {
+        alert('خطا: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    }
+  };
+
   const settleDebt = async (chatId: number) => {
     if (
       !confirm(
@@ -3711,6 +3751,13 @@ function SellersView() {
                       className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-md font-medium text-xs transition"
                     >
                       ویرایش سقف و بدهی
+                    </button>
+                    <button
+                      onClick={() => paySellerDebtCustomAmount(u.chatId, u.debt || 0)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-medium text-xs transition shadow-xs flex items-center gap-1"
+                      title="پرداخت بدهی با مبلغ دلخواه"
+                    >
+                      💳 پرداخت بدهی
                     </button>
                     <button
                       onClick={() => settleDebt(u.chatId)}

@@ -182,6 +182,107 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
   return { success: true, settledGb, message: `مصرف تا حجم ${settledGb} گیگابایت تسویه شد و از این حجم به بعد محاسبه خواهد شد.` };
 }
 
+export async function executeSellerPortalPurchase(sellerChatId: number, productId: string, customName?: string) {
+  const user = db.getUser(sellerChatId);
+  if (!user || !user.isSeller) {
+    throw new Error('حساب کاربری همکار معتبر نیست.');
+  }
+
+  const state = db.getState();
+  const product = state.products.find((p: any) => p && p.id === productId);
+  if (!product) {
+    throw new Error('محصول مورد نظر یافت نشد.');
+  }
+
+  const isPAYG = !!product.isPayAsYouGo;
+  const sellerDiscount = getSellerDiscountForProduct(user, product);
+  let finalPrice = isPAYG ? 0 : product.price;
+
+  if (sellerDiscount > 0 && !isPAYG) {
+    finalPrice = Math.max(0, Math.round(product.price * (1 - sellerDiscount / 100)));
+  }
+
+  if (!isPAYG && !isSellerUnlimitedLimit(user)) {
+    const currentDebt = user.debt || 0;
+    const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+    if (currentDebt + finalPrice > limit) {
+      throw new Error(`سقف اعتبار مجاز خرید همکار پر شده است! (بدهی فعلی: ${currentDebt.toLocaleString()} تومان / سقف: ${limit.toLocaleString()} تومان)`);
+    }
+  }
+
+  const clientResult = await multiPanel.createClientConfig({
+    user,
+    product,
+    customName
+  });
+
+  const clientEmail = clientResult.clientEmail;
+  const volGb = isPAYG ? 0 : (product.volumeGb !== undefined ? Number(product.volumeGb) : 0);
+  const durDays = isPAYG ? 0 : (product.durationDays !== undefined ? Number(product.durationDays) : 0);
+
+  if (!isPAYG) {
+    user.debt = (user.debt || 0) + finalPrice;
+    user.debtVolume = (user.debtVolume || 0) + Number(product.volumeGb || 0);
+    user.totalSales = (user.totalSales || 0) + finalPrice;
+  }
+
+  const newPurchase: any = {
+    id: clientEmail,
+    name: product.name,
+    price: isPAYG ? 0 : finalPrice,
+    subId: clientResult.subId,
+    subUrl: clientResult.subUrl,
+    sanaeiSubUrl: clientResult.sanaeiSubUrl,
+    rebeccaSubUrl: clientResult.rebeccaSubUrl,
+    mroceanSubUrl: clientResult.mroceanSubUrl,
+    mroceanPortalUrl: clientResult.mroceanPortalUrl,
+    panelType: clientResult.panelType,
+    volumeGb: volGb,
+    durationDays: durDays,
+    createdAt: new Date().toISOString(),
+    originalPrice: isPAYG ? 0 : product.price,
+    discountPercent: sellerDiscount,
+    discountAmount: isPAYG ? 0 : (product.price - finalPrice)
+  };
+
+  if (isPAYG) {
+    newPurchase.isPayAsYouGo = true;
+    newPurchase.originalPricePerGb = product.price;
+    newPurchase.pricePerGb = sellerDiscount > 0 ? Math.max(0, Math.round(product.price * (1 - sellerDiscount / 100))) : product.price;
+    newPurchase.lastUsedBytes = 0;
+    newPurchase.baseSettledBytes = 0;
+  }
+
+  user.purchases = user.purchases || [];
+  user.purchases.push(newPurchase);
+
+  recordUserTransaction(user, {
+    type: 'purchase',
+    amount: isPAYG ? 0 : finalPrice,
+    direction: 'debit',
+    description: isPAYG ? `سرویس مصرف آزاد PAYG (${newPurchase.name}) - پورتال بی‌نام` : `خرید ${newPurchase.name} (${volGb} GB / ${durDays} روز) - پورتال بی‌نام`,
+    configName: newPurchase.name,
+    volumeGb: volGb,
+    balanceAfter: user.balance,
+    debtAfter: user.debt,
+    createdAt: newPurchase.createdAt
+  });
+
+  db.saveUser(user);
+
+  if (bot) {
+    const notifyMsg = `🛍 <b>سفارش جدید از پورتال اختصاصی بی‌نام همکار</b>\n\n` +
+      `📦 <b>پکیج:</b> ${newPurchase.name}\n` +
+      `👤 <b>عنوان کانفیگ:</b> <code>${escapeHtml(customName || clientEmail)}</code>\n` +
+      `💰 <b>مبلغ ثبت‌شده در بدهی:</b> ${finalPrice.toLocaleString()} تومان\n` +
+      `📉 <b>بدهی جدید:</b> ${(user.debt || 0).toLocaleString()} تومان`;
+    
+    bot.sendMessage(sellerChatId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
+  }
+
+  return newPurchase;
+}
+
 function getProductButtonText(user: any, p: any): string {
   try {
     if (!p) return 'محصول نامعتبر';
@@ -198,6 +299,13 @@ function getProductButtonText(user: any, p: any): string {
     
     const priceNum = Number(p.price) || 0;
     const pName = p.name || 'محصول';
+
+    // Hide prices in bot if user has enabled discreet face-to-face selling mode
+    if (user && user.hidePricesInBot) {
+      const volInfo = isPayG ? 'مصرف آزاد' : (p.volumeGb ? `${p.volumeGb} GB` : 'نامحدود');
+      const durInfo = isPayG ? 'نامحدود' : (p.durationDays ? `${p.durationDays} روز` : 'نامحدود');
+      return `📦 ${badge}${pName} (${volInfo} | ${durInfo}) [انتخاب]`;
+    }
 
     if (user && user.isSeller) {
       const sellerDiscount = getSellerDiscountForProduct(user, p);
@@ -724,6 +832,10 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     }
 
     inlineButtons.push([
+      { text: '🤫 ارسال بدون نام و برند (مخصوص مشتری)', callback_data: `clean_customer_msg_${purchase.id}` }
+    ]);
+
+    inlineButtons.push([
       { text: '📋 بازگشت به لیست خریدها', callback_data: 'user_purchases_list' }
     ]);
 
@@ -752,6 +864,79 @@ async function sendServiceInfo(chatId: number, purchase: any) {
   } catch (err: any) {
     console.error('[Bot] sendServiceInfo error:', err);
     bot.sendMessage(chatId, `❌ خطا در استعلام سرویس: ${err.message}\n\n` + (purchase.subUrl ? `🔗 لینک ساب:\n<code>${escapeHtml(purchase.subUrl)}</code>` : ''), { parse_mode: 'HTML' });
+  }
+}
+
+export async function sendCleanCustomerConfigMessage(chatId: number, purchase: any) {
+  if (!bot) return;
+  try {
+    let clientObj: any = null;
+    try {
+      const allClients = await multiPanel.getAllClientsWithTraffic();
+      const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) ||
+                          rebecca.extractSubToken(purchase.subUrl);
+      if (targetSubId && allClients) {
+        clientObj = allClients.find((cl: any) => {
+          const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+          const clToken = cl.token ? String(cl.token).trim().toLowerCase() : '';
+          const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
+          return clSubId === targetSubId || clToken === targetSubId || clId === targetSubId;
+        });
+      }
+    } catch (e) {}
+
+    const volStr = purchase.isPayAsYouGo
+      ? 'نامحدود (سرویس مصرف آزاد)'
+      : (purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود');
+    
+    const durStr = purchase.isPayAsYouGo
+      ? 'نامحدود'
+      : (purchase.durationDays ? `${purchase.durationDays} روز` : 'نامحدود');
+
+    let subLinks = '';
+    if (purchase.sanaeiSubUrl) {
+      subLinks += `🔵 <b>لینک اتصال سرور ۱:</b>\n<code>${escapeHtml(purchase.sanaeiSubUrl)}</code>\n\n`;
+    }
+    if (purchase.rebeccaSubUrl) {
+      subLinks += `🟣 <b>لینک اتصال سرور ۲:</b>\n<code>${escapeHtml(purchase.rebeccaSubUrl)}</code>\n\n`;
+    }
+    if (purchase.mroceanSubUrl) {
+      subLinks += `🌊 <b>لینک اتصال سرور ۳:</b>\n<code>${escapeHtml(purchase.mroceanSubUrl)}</code>\n\n`;
+    }
+
+    if (!subLinks && purchase.subUrl) {
+      subLinks = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\n`;
+    }
+
+    const cleanMessage = `🔑 <b>اطلاعات اکانت و سرویس شما</b>\n\n` +
+      `📦 <b>پکیج:</b> ${escapeHtml(purchase.name || 'سرویس اشتراکی')}\n` +
+      `📊 <b>حجم کل:</b> ${volStr}\n` +
+      `⏳ <b>اعتبار زمان:</b> ${durStr}\n\n` +
+      subLinks +
+      `📱 <b>راهنمای سریع فعال‌سازی:</b>\n` +
+      `۱. لینک فوق را لمس کنید تا کپی شود.\n` +
+      `۲. نرم‌افزار V2ray (مانند V2rayNG, Streisand, Sing-box, V2rayN, Shadowrocket) را باز کنید.\n` +
+      `۳. گزینه <b>افزودن از کلیپ‌بورد (Import from Clipboard)</b> یا <b>Update Subscription</b> را بزنید.\n\n` +
+      `💡 <i>(این پیام فاقد هرگونه نام ربات یا ادمین است و می‌توانید آن را مستقیماً برای مشتری ارسال فرمایید.)</i>`;
+
+    let photoSent = false;
+    const primarySubUrl = purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || purchase.mroceanSubUrl;
+    if (primarySubUrl) {
+      try {
+        const buffer = await QRCode.toBuffer(primarySubUrl, { width: 450, margin: 2 });
+        await bot.sendPhoto(chatId, buffer, {
+          caption: cleanMessage.length <= 1024 ? cleanMessage : cleanMessage.slice(0, 1020) + '...',
+          parse_mode: 'HTML'
+        });
+        photoSent = true;
+      } catch (err: any) {}
+    }
+
+    if (!photoSent) {
+      await bot.sendMessage(chatId, cleanMessage, { parse_mode: 'HTML' });
+    }
+  } catch (err: any) {
+    bot.sendMessage(chatId, `❌ خطا در ساخت پیام بدون نام: ${err.message}`);
   }
 }
 
@@ -790,6 +975,7 @@ function getSellerReplyKeyboard(): any {
   return {
     keyboard: [
       [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
+      [{ text: '💳 پرداخت بدهی (مبلغ دلخواه)', style: 'success' }, { text: '🌐 پورتال بی‌نام (فروش حضوری)', style: 'primary' }],
       [{ text: '📅 فروش امروز با جزئیات', style: 'primary' }, { text: '🗓 گزارش فروش ماهانه', style: 'primary' }],
       [{ text: '🧾 صورتحساب حسابداری', style: 'primary' }, { text: '📊 گزارش دقیق عملکرد', style: 'primary' }],
       [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
@@ -2587,8 +2773,98 @@ export async function initBot() {
       userSession.delete(chatId);
     }
 
-    // Process awaiting payment amount input FIRST
+    // Check for reseller debt payment button or text
+    const isSellerDebtPay = [
+      'پرداخت بدهی', 'پرداخت بدهی همکار', '💳 پرداخت بدهی (مبلغ دلخواه)', 'پرداخت بدهی با مبلغ دلخواه'
+    ].includes(cleanText) || text.trim() === '💳 پرداخت بدهی (مبلغ دلخواه)';
+
+    if (isSellerDebtPay) {
+      userSession.delete(chatId);
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) {
+        bot!.sendMessage(chatId, '❌ شما به عنوان همکار فروشنده ثبت نشده‌اید.');
+        return;
+      }
+      userSession.set(chatId, { action: 'seller_debt_pay_amount' });
+      const debtVal = userObj.debt || 0;
+      bot!.sendMessage(chatId, `💳 <b>پرداخت بدهی همکار (مبلغ دلخواه)</b>:\n\n📉 میزان بدهی فعلی شما: <b>${debtVal.toLocaleString()}</b> تومان\n\nلطفاً مبلغ پرداختی مد نظر خود را به <b>تومان</b> به صورت عددی ارسال فرمایید:\n\n*(مثال: <code>50000</code> یا <code>200000</code> یا <code>۵۰ هزار</code> یا <code>۲.۵ میلیون</code>)*\n\n*(جهت انصراف، دستور /cancel را ارسال فرمایید)*`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // Check for reseller web portal request
+    const isSellerPortalRequest = [
+      'پورتال بی‌نام', 'پورتال بی نام', 'پورتال اختصاصی', 'پورتال فروش', '🌐 پورتال بی‌نام (فروش حضوری)'
+    ].includes(cleanText) || text.trim() === '🌐 پورتال بی‌نام (فروش حضوری)';
+
+    if (isSellerPortalRequest) {
+      userSession.delete(chatId);
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) {
+        bot!.sendMessage(chatId, '❌ شما به عنوان همکار فروشنده ثبت نشده‌اید.');
+        return;
+      }
+      
+      if (!userObj.portalUsername) userObj.portalUsername = userObj.username || `seller_${userObj.chatId}`;
+      if (!userObj.portalPassword) userObj.portalPassword = Math.floor(100000 + Math.random() * 900000).toString();
+      db.saveUser(userObj);
+
+      const panelBase = state.panel?.subUrlBase || state.rebeccaPanel?.subUrlBase || process.env.APP_URL || '';
+      let portalUrl = '';
+      if (panelBase && panelBase.startsWith('http')) {
+        try {
+          const u = new URL(panelBase);
+          portalUrl = `${u.protocol}//${u.host}/seller`;
+        } catch {}
+      }
+      if (!portalUrl) {
+        portalUrl = `http://94.183.184.94:2020/seller`;
+      }
+
+      const msgText = `🌐 <b>پورتال اختصاصی و بی‌نام همکار (مخصوص فروش حضوری)</b>:\n\n` +
+        `شما می‌توانید با ورود به آدرس زیر در مرورگر گوشی خود، بدون نمایش قیمت خرید یا نام ربات، برای مشتریان حضوری کانفیگ بسازید و تحویل دهید:\n\n` +
+        `🔗 <b>لینک ورود به پورتال:</b>\n<code>${portalUrl}</code>\n\n` +
+        `🔑 <b>مشخصات اختصاصی ورود شما:</b>\n` +
+        `▫️ نام کاربری: <code>${escapeHtml(userObj.portalUsername)}</code>\n` +
+        `▫️ کلمه عبور: <code>${escapeHtml(userObj.portalPassword)}</code>\n\n` +
+        `💡 <i>(نکته: پس از یک‌بار ورود، مرورگر مشخصات شما را ذخیره می‌کند و نیازی به ورود مجدد نخواهد بود.)</i>`;
+
+      bot!.sendMessage(chatId, msgText, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🌐 ورود مستقیم به پورتال وب بی‌نام', url: portalUrl }],
+            [{ text: userObj.hidePricesInBot ? '👁‍🗨 نمایش قیمت‌ها در ربات' : '🙈 حالت فروش حضوری در ربات (مخفی‌سازی قیمت‌ها)', callback_data: 'toggle_hide_prices_bot' }]
+          ]
+        }
+      });
+      return;
+    }
+
+    // Process seller debt payment amount input
     const userSg = userSession.get(chatId);
+    if (userSg && userSg.action === 'seller_debt_pay_amount' && text && !text.startsWith('/')) {
+      const parsed = parseAmountInput(text);
+      if (parsed === null || parsed <= 0) {
+        bot!.sendMessage(chatId, '❌ مبلغ وارد شده نامعتبر است. لطفاً مبلغ پرداختی را به تومان بفرستید (مثلاً 50000 یا ۵۰ هزار):');
+        return;
+      }
+
+      userSession.set(chatId, { action: 'payment_awaiting_photo', amount: parsed, pendingPurchase: { isSellerDebtPayment: true } as any });
+      const cardNumber = state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
+      const cardHolder = state.cardHolder || 'مدیریت حساب';
+
+      const paymentInstructions = `💳 <b>دستورالعمل پرداخت بدهی همکار</b>:\n\n` +
+        `لطفاً مبلغ <b>${parsed.toLocaleString()}</b> تومان را به مشخصات بانکی زیر واریز نمایید:\n\n` +
+        `  💳 شماره کارت:\n  <code>${escapeHtml(cardNumber)}</code>\n\n` +
+        `  👤 به نام:\n  <b>${escapeHtml(cardHolder)}</b>\n\n` +
+        `⚠️ <b>توجه کُنید</b>:\n` +
+        `پس از انجام واریز، لطفاً <b>عکس رسید پرداخت (فیش واریزی)</b> خود را به همین گفتگو ارسال فرمایید تا پس از تایید مدیریت، مستقیماً از بدهی شما کسر گردیده و تراز حسابتان بروزرسانی شود.`;
+
+      bot!.sendMessage(chatId, paymentInstructions, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // Process awaiting payment amount input FIRST
     if (userSg && userSg.action === 'payment_awaiting_amount' && text && !text.startsWith('/')) {
       const englishDigits = text.trim()
         .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
@@ -4995,6 +5271,18 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'toggle_hide_prices_bot') {
+      const userObj = db.getUser(chatId);
+      if (userObj && userObj.isSeller) {
+        userObj.hidePricesInBot = !userObj.hidePricesInBot;
+        db.saveUser(userObj);
+        const statusStr = userObj.hidePricesInBot ? '🙈 فعال (قیمت‌ها در ربات مخفی شدند)' : '👁‍🗨 غیرفعال (قیمت‌ها نمایش داده می‌شوند)';
+        answerQuery({ text: `وضعیت تغییر کرد: ${statusStr}`, show_alert: true });
+        bot!.sendMessage(chatId, `✨ <b>حالت فروش حضوری در ربات:</b> ${statusStr}\n\nاکنون هنگام زدن دکمه خرید سرویس همکار، قیمت‌های خرید و درصد تخفیفات از منوی لیست پکیج‌های ربات حذف شده‌اند.`);
+      }
+      return;
+    }
+
     if (data && data.startsWith('user_rep_')) {
       const parts = data.replace('user_rep_', '').split('_');
       const mode = (parts[0] as 'daily' | 'monthly' | 'statement' | 'overview') || 'daily';
@@ -5068,6 +5356,9 @@ export async function initBot() {
           reply_markup: {
             inline_keyboard: [
               [
+                { text: '💳 پرداخت بدهی (مبلغ دلخواه)', callback_data: 'seller_pay_debt_flow' }
+              ],
+              [
                 { text: '📅 گزارش فروش امروز (با جزئیات)', callback_data: `user_rep_daily_${chatId}` },
                 { text: '🗓 گزارش فروش ماهانه', callback_data: `user_rep_monthly_${chatId}` }
               ],
@@ -5079,6 +5370,19 @@ export async function initBot() {
           } as any
         });
       }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'seller_pay_debt_flow') {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) {
+        answerQuery({ text: '❌ شما دسترسی همکار ندارید', show_alert: true });
+        return;
+      }
+      userSession.set(chatId, { action: 'seller_debt_pay_amount' });
+      const debtVal = userObj.debt || 0;
+      bot!.sendMessage(chatId, `💳 <b>پرداخت بدهی همکار (مبلغ دلخواه)</b>:\n\n📉 میزان بدهی فعلی شما: <b>${debtVal.toLocaleString()}</b> تومان\n\nلطفاً مبلغ پرداختی مد نظر خود را به <b>تومان</b> به صورت عددی ارسال فرمایید:\n\n*(مثال: <code>50000</code> یا <code>200000</code> یا <code>۵۰ هزار</code> یا <code>۲.۵ میلیون</code>)*`, { parse_mode: 'HTML' });
       answerQuery();
       return;
     }
@@ -5548,6 +5852,49 @@ export async function initBot() {
       } else {
         answerQuery({ text: '❌ سرویس یافت نشد' });
         bot!.sendMessage(chatId, '❌ سرویس مورد نظر یافت نشد.');
+      }
+      return;
+    }
+
+    if (data && (data.startsWith('clean_customer_msg_') || data.startsWith('clean_msg_'))) {
+      const purchaseId = data.replace('clean_customer_msg_', '').replace('clean_msg_', '');
+      const currentUser = db.getUser(chatId) || user;
+      const userPurchases = currentUser?.purchases || [];
+      let purchase = userPurchases.find((p: any) => 
+        String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+        (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+        (p.subUrl && p.subUrl.includes(purchaseId)) ||
+        (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+      );
+      if (!purchase && !isNaN(Number(purchaseId))) {
+        const idx = parseInt(purchaseId, 10);
+        if (idx >= 0 && idx < userPurchases.length) {
+          purchase = userPurchases[idx];
+        }
+      }
+
+      if (!purchase) {
+        const allUsers = db.getState().users || [];
+        for (const u of allUsers) {
+          const found = (u.purchases || []).find((p: any) => 
+            String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+            (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase()) ||
+            (p.subUrl && p.subUrl.includes(purchaseId)) ||
+            (p.name && String(p.name).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+          );
+          if (found) {
+            purchase = found;
+            break;
+          }
+        }
+      }
+
+      if (purchase) {
+        answerQuery({ text: '🤫 در حال ساخت پیام بدون نام ربات (مخصوص مشتری)...' });
+        await sendCleanCustomerConfigMessage(chatId, purchase);
+      } else {
+        answerQuery({ text: '❌ سرویس یافت نشد' });
+        bot!.sendMessage(chatId, '❌ سرویس مورد نظر جهت دریافت اطلاعات بدون نام یافت نشد.');
       }
       return;
     }
