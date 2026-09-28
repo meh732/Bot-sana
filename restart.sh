@@ -1,65 +1,64 @@
 #!/bin/bash
 
-# --- Persian Colors for Terminal Output ---
+# --- Terminal Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0;3c' # No Color
-CLEAR='\033[0m'
+NC='\033[0m'
 
-echo -e "${BLUE}===============================================${CLEAR}"
-echo -e "${YELLOW}   🔄 سیستم راه‌اندازی مجدد و پاکسازی هوشمند ربات   ${CLEAR}"
-echo -e "${BLUE}===============================================${CLEAR}"
+echo -e "${BLUE}===============================================${NC}"
+echo -e "${YELLOW}   🔄 Bot Restart & Process Cleanup Utility    ${NC}"
+echo -e "${BLUE}===============================================${NC}"
 
 # 1. Kill duplicate processes on port 3000
-echo -e "${YELLOW}🔹 ۱. در حال بررسی و بستن پروسه‌های فعال روی پورت 3000...${CLEAR}"
-PID_3000=$(lsof -t -i:3000)
+echo -e "${YELLOW}🔹 1. Checking and clearing active processes on port 3000...${NC}"
+PID_3000=$(lsof -t -i:3000 2>/dev/null)
 if [ ! -z "$PID_3000" ]; then
-    echo -e "${RED}⚠️ پروسه‌های فعال روی پورت 3000 یافت شد (PID: $PID_3000). در حال بستن فورس...${CLEAR}"
+    echo -e "${RED}⚠️ Active process found on port 3000 (PID: $PID_3000). Terminating...${NC}"
     kill -9 $PID_3000 2>/dev/null
-    echo -e "${GREEN}✅ پورت 3000 کاملاً آزاد شد.${CLEAR}"
+    echo -e "${GREEN}✅ Port 3000 is now free.${NC}"
 else
-    echo -e "${GREEN}✅ هیچ پروسه‌ای روی پورت 3000 فعال نبود.${CLEAR}"
+    echo -e "${GREEN}✅ Port 3000 is available.${NC}"
 fi
 
-# 2. Kill all background/stale Node/TSX process matching server/bot
-echo -e "${YELLOW}🔹 ۲. در حال پاکسازی پروسه‌های مزاحم و تکراری Node/tsx...${CLEAR}"
+# 2. Kill all background/stale Node/TSX processes matching server/bot
+echo -e "${YELLOW}🔹 2. Cleaning stale background Node/TSX processes...${NC}"
 pkill -9 -f "server.ts" 2>/dev/null
 pkill -9 -f "dist/server.cjs" 2>/dev/null
 pkill -9 -f "tsx" 2>/dev/null
-echo -e "${GREEN}✅ تمامی پروسه‌های هم‌پوشان و قدیمی با موفقیت متوقف شدند.${CLEAR}"
+echo -e "${GREEN}✅ Stale processes stopped.${NC}"
 
 # 3. Clean and build the project to ensure correct compilation
-echo -e "${YELLOW}🔹 ۳. در حال کامپایل و بیلد مجدد پروژه جهت اعمال کدهای جدید...${CLEAR}"
+echo -e "${YELLOW}🔹 3. Compiling and building project to apply code changes...${NC}"
 npm run clean 2>/dev/null
 npm run build
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✅ پروژه با موفقیت کامپایل و بیلد گردید.${CLEAR}"
+    echo -e "${GREEN}✅ Project built and compiled successfully.${NC}"
 else
-    echo -e "${RED}❌ خطا در کامپایل پروژه. لطفاً خطاها را بررسی کنید.${CLEAR}"
+    echo -e "${RED}❌ Build error! Please review the compilation errors above.${NC}"
     exit 1
 fi
 
 # 4. Start the application
-echo -e "${BLUE}===============================================${CLEAR}"
-echo -e "${YELLOW}🔹 ۴. راه‌اندازی مجدد سرور:${CLEAR}"
-echo -e "${BLUE}===============================================${CLEAR}"
+echo -e "${BLUE}===============================================${NC}"
+echo -e "${YELLOW}🔹 4. Restarting Application Service:${NC}"
+echo -e "${BLUE}===============================================${NC}"
 
 if command -v pm2 &> /dev/null
 then
-    echo -e "${YELLOW}ℹ️ سیستم PM2 شناسایی شد. در حال راه‌اندازی مجدد از طریق PM2...${CLEAR}"
+    echo -e "${YELLOW}ℹ️ PM2 detected. Restarting service with PM2...${NC}"
     pm2 delete "sanaei-bot" 2>/dev/null
-    pm2 start dist/server.cjs --name "sanaei-bot"
+    pm2 start dist/server.cjs --name "sanaei-bot" 2>/dev/null || pm2 start npm --name "sanaei-bot" -- run start
     pm2 save
-    echo -e "${GREEN}✅ ربات با نام 'sanaei-bot' به صورت موفقیت‌آمیز در پس‌زمینه PM2 راه‌اندازی شد.${CLEAR}"
+    echo -e "${GREEN}✅ Bot restarted successfully under PM2 as 'sanaei-bot'.${NC}"
 else
-    echo -e "${YELLOW}⚠️ ابزار PM2 نصب نیست. ربات به صورت مستقیم در پس‌زمینه اجرا می‌شود...${CLEAR}"
+    echo -e "${YELLOW}⚠️ PM2 not found. Starting process in background...${NC}"
     nohup npm start > bot_output.log 2>&1 &
-    echo -e "${GREEN}✅ ربات با موفقیت در پس‌زمینه اجرا شد (لاگ‌ها در فایل bot_output.log ذخیره می‌شوند).${CLEAR}"
+    echo -e "${GREEN}✅ Bot started in background (logs: bot_output.log).${NC}"
 fi
 
-echo -e "${GREEN}===============================================${CLEAR}"
-echo -e "${GREEN}🎉 سیستم با موفقیت به روزرسانی و راه‌اندازی مجدد شد!${CLEAR}"
-echo -e "${GREEN}===============================================${CLEAR}"
+echo -e "${GREEN}===============================================${NC}"
+echo -e "${GREEN}🎉 System updated and restarted successfully!${NC}"
+echo -e "${GREEN}===============================================${NC}"
