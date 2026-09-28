@@ -4894,6 +4894,46 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'admin_online_users_all') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      answerQuery({ text: '⏳ در حال واکشی آمار آنلاین...' });
+      await sendOnlineUsersMenu(chatId, 'all', query.message?.message_id);
+      return;
+    }
+
+    if (data === 'admin_online_sanaei') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      answerQuery({ text: '⏳ در حال واکشی آمار سنایی...' });
+      await sendOnlineUsersMenu(chatId, 'sanaei', query.message?.message_id);
+      return;
+    }
+
+    if (data === 'admin_online_rebecca') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      answerQuery({ text: '⏳ در حال واکشی آمار ربکا...' });
+      await sendOnlineUsersMenu(chatId, 'rebecca', query.message?.message_id);
+      return;
+    }
+
+    if (data === 'admin_online_mrocean') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      answerQuery({ text: '⏳ در حال واکشی آمار مستر اوشن...' });
+      await sendOnlineUsersMenu(chatId, 'mrocean', query.message?.message_id);
+      return;
+    }
+
     if (data === 'admin_users_menu') {
       if (!isAdmin) {
         answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });

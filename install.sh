@@ -62,31 +62,35 @@ do_install_dependencies() {
 
 do_uninstall() {
   echo -e "\n${RED}⚠️ Stopping bot processes and removing installation files...${NC}"
+  
+  # Navigate to home/root first so we don't hold lock on working dir
+  cd /root 2>/dev/null || cd "$HOME" 2>/dev/null || cd /tmp
+
   if command -v pm2 &> /dev/null; then
     pm2 stop "sanaei-bot" &> /dev/null
     pm2 delete "sanaei-bot" &> /dev/null
     pm2 save --force &> /dev/null
   fi
 
-  # Kill any stray port 3000 processes
-  PID_3000=$(lsof -t -i:3000 2>/dev/null)
-  if [ ! -z "$PID_3000" ]; then
-    kill -9 $PID_3000 2>/dev/null
-  fi
+  # Kill any stray processes matching server.ts, server.cjs or tsx
+  pkill -9 -f "server.ts" 2>/dev/null
+  pkill -9 -f "dist/server.cjs" 2>/dev/null
+  pkill -9 -f "sanaei-bot" 2>/dev/null
 
-  if [ -d "$DIR_NAME" ]; then
-    rm -rf "$DIR_NAME"
-    echo -e "${GREEN}✅ Directory '$DIR_NAME' and all associated files have been removed.${NC}"
-  elif [ -d "Bot-sana" ]; then
-    rm -rf "Bot-sana"
-    echo -e "${GREEN}✅ Directory 'Bot-sana' removed.${NC}"
-  else
-    echo -e "${YELLOW}ℹ️ Installation directory not found (already clean).${NC}"
-  fi
+  # Kill any process on default ports or common ports
+  for p in 3000 2020 8080; do
+    PID_P=$(lsof -t -i:$p 2>/dev/null)
+    if [ -n "$PID_P" ]; then
+      kill -9 $PID_P 2>/dev/null
+    fi
+  done
+
+  rm -rf "$DIR_NAME" "Bot-sana" "botsel" 2>/dev/null
+  echo -e "${GREEN}✅ Previous installation files and running processes removed.${NC}"
 }
 
 do_fresh_install() {
-  echo -e "\n${YELLOW}⚠️ This operation will stop any existing bot and overwrite '$DIR_NAME'.${NC}"
+  echo -e "\n${YELLOW}⚠️ This operation will stop any existing bot and perform a clean installation of '$DIR_NAME'.${NC}"
   read -p "Are you sure you want to proceed? (y/n): " confirm
   if [[ $confirm != "y" && $confirm != "Y" ]]; then
     echo -e "${RED}❌ Installation cancelled.${NC}"
@@ -96,28 +100,42 @@ do_fresh_install() {
   echo -e "\n${CYAN}=============================================${NC}"
   echo -e "${YELLOW}       Admin & Web Panel Configuration       ${NC}"
   echo -e "${CYAN}=============================================${NC}"
-  read -p "Enter web panel port [default: 3000]: " PANEL_PORT
-  PANEL_PORT=${PANEL_PORT:-3000}
+  read -p "Enter web panel port [default: 2020]: " PANEL_PORT
+  PANEL_PORT=${PANEL_PORT:-2020}
   
   read -p "Enter panel admin username (optional): " PANEL_USER
   read -sp "Enter panel admin password (optional): " PANEL_PASS
   echo ""
 
+  # Kill port if currently used
+  PID_TARGET=$(lsof -t -i:$PANEL_PORT 2>/dev/null)
+  if [ -n "$PID_TARGET" ]; then
+    kill -9 $PID_TARGET 2>/dev/null
+  fi
+
   do_uninstall
   do_install_dependencies
 
-  echo -e "\n${CYAN}>> Cloning latest repository code...${NC}"
-  git clone "$GIT_URL" "$DIR_NAME" 2>/dev/null || git clone "$FALLBACK_GIT_URL" "$DIR_NAME"
+  cd /root 2>/dev/null || cd "$HOME" 2>/dev/null || cd /tmp
+
+  echo -e "\n${CYAN}>> Cloning latest repository code from GitHub...${NC}"
+  git clone "$GIT_URL" "$DIR_NAME"
   
   if [ ! -d "$DIR_NAME" ]; then
+    echo -e "${YELLOW}>> Trying fallback repository...${NC}"
+    git clone "$FALLBACK_GIT_URL" "$DIR_NAME"
+  fi
+
+  if [ ! -d "$DIR_NAME" ]; then
     echo -e "${RED}❌ Error: Failed to clone repository from GitHub.${NC}"
-    echo -e "${YELLOW}Please check your internet connection or verify the repository URL.${NC}"
+    echo -e "${YELLOW}Please check your internet connection or verify the repository URL: $GIT_URL${NC}"
     exit 1
   fi
 
   cd "$DIR_NAME" || exit 1
 
   echo "PORT=$PANEL_PORT" > .env
+  echo "NODE_ENV=production" >> .env
   if [ -n "$PANEL_USER" ] && [ -n "$PANEL_PASS" ]; then
     echo "PANEL_USERNAME=$PANEL_USER" >> .env
     echo "PANEL_PASSWORD=$PANEL_PASS" >> .env
@@ -126,17 +144,21 @@ do_fresh_install() {
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
   npm install
 
-  echo -e "\n${CYAN}>> Building and compiling application...${NC}"
+  echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
+  npm run clean 2>/dev/null
   npm run build
 
-  echo -e "\n${CYAN}>> Starting bot service with PM2...${NC}"
-  pm2 start npm --name "sanaei-bot" -- run start
+  echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
+  pm2 delete "sanaei-bot" 2>/dev/null
+  PORT=$PANEL_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" || pm2 start npm --name "sanaei-bot" -- run start
   pm2 save
   pm2 startup
 
+  SERVER_IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com || echo "YOUR_SERVER_IP")
+
   echo -e "\n${GREEN}=============================================${NC}"
   echo -e "${GREEN}🎉 Fresh installation completed successfully!${NC}"
-  echo -e "🌐 Web Dashboard URL: ${CYAN}http://YOUR_SERVER_IP:${PANEL_PORT}${NC}"
+  echo -e "🌐 Web Dashboard URL: ${CYAN}http://${SERVER_IP}:${PANEL_PORT}${NC}"
   echo -e "🔧 View live logs with:"
   echo -e "   ${YELLOW}pm2 logs sanaei-bot${NC}"
   echo -e "${GREEN}=============================================${NC}"
