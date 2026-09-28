@@ -3017,6 +3017,8 @@ function SellersView() {
   const [categories, setCategories] = useState<any[]>([]);
   const [newChatId, setNewChatId] = useState('');
   const [newUsername, setNewUsername] = useState('');
+  const [newPortalUsername, setNewPortalUsername] = useState('');
+  const [newPortalPassword, setNewPortalPassword] = useState('');
   const [newLimit, setNewLimit] = useState('1000000');
   const [loading, setLoading] = useState(false);
   
@@ -3101,6 +3103,8 @@ function SellersView() {
         body: JSON.stringify({
           chatId: newChatId,
           username: newUsername,
+          portalUsername: newPortalUsername,
+          portalPassword: newPortalPassword,
           debtLimit: finalLimit,
           isUnlimitedLimit: isUnlimited,
         }),
@@ -3111,6 +3115,8 @@ function SellersView() {
         setUsers(data.users || []);
         setNewChatId('');
         setNewUsername('');
+        setNewPortalUsername('');
+        setNewPortalPassword('');
         setNewLimit('1000000');
       } else {
         alert('خطا: ' + data.message);
@@ -3611,6 +3617,27 @@ function SellersView() {
         </div>
       )}
 
+      {/* Portal Demo Banner */}
+      <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 p-6 rounded-xl shadow-md border border-emerald-500/30 text-white flex flex-col md:flex-row items-center justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-bold mb-1 flex items-center gap-2 text-emerald-300">
+            <span>🌐 پورتال اختصاصی و بی‌نام همکاران (فروش حضوری)</span>
+          </h3>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            محیط وب کاملاً مستقل بدون لوگو یا نام ربات، مخصوص استفاده همکاران روی گوشی در حضور مشتری.
+          </p>
+        </div>
+        <a
+          href="/seller"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-lg transition shadow-lg flex items-center gap-2 whitespace-nowrap"
+        >
+          <span>🌐 ورود و تست پورتال وب همکار</span>
+          <Zap className="w-4 h-4 fill-current" />
+        </a>
+      </div>
+
       {/* Introduction Banner */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
         <h3 className="text-lg font-bold text-slate-900 mb-2">👥 پنل اختصاصی مدیریت نمایندگان (همکاران فروشنده)</h3>
@@ -3625,7 +3652,7 @@ function SellersView() {
           <span className="ml-auto">افزودن نماینده همکار جدید</span>
           <Plus className="w-5 h-5 text-indigo-600" />
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
           <div className="text-right">
             <label className="block text-xs font-medium text-slate-700 mb-1">شناسه عددی تلگرام (Chat ID)</label>
             <input
@@ -3639,7 +3666,7 @@ function SellersView() {
             />
           </div>
           <div className="text-right">
-            <label className="block text-xs font-medium text-slate-700 mb-1">آیدی تلگرام بدون @ (نام کاربری)</label>
+            <label className="block text-xs font-medium text-slate-700 mb-1">آیدی تلگرام (نام کاربری)</label>
             <input
               type="text"
               placeholder="مثلا PartnerVPN"
@@ -3650,7 +3677,29 @@ function SellersView() {
             />
           </div>
           <div className="text-right">
-            <label className="block text-xs font-medium text-slate-700 mb-1">سقف بدهی اولیه (تومان - 0 یعنی سقف آزاد)</label>
+            <label className="block text-xs font-medium text-slate-700 mb-1">یوزر پورتال وب (اختیاری)</label>
+            <input
+              type="text"
+              placeholder="خودکار ساخته می‌شود"
+              value={newPortalUsername}
+              onChange={(e) => setNewPortalUsername(e.target.value)}
+              className="w-full px-3 py-2 border rounded-md text-sm font-mono text-left"
+              dir="ltr"
+            />
+          </div>
+          <div className="text-right">
+            <label className="block text-xs font-medium text-slate-700 mb-1">رمز پورتال وب (اختیاری)</label>
+            <input
+              type="text"
+              placeholder="خودکار ساخته می‌شود"
+              value={newPortalPassword}
+              onChange={(e) => setNewPortalPassword(e.target.value)}
+              className="w-full px-3 py-2 border rounded-md text-sm font-mono text-left"
+              dir="ltr"
+            />
+          </div>
+          <div className="text-right">
+            <label className="block text-xs font-medium text-slate-700 mb-1">سقف بدهی (تومان - 0 آزاد)</label>
             <input
               type="number"
               placeholder="1000000 (یا 0 برای آزاد)"
@@ -3660,15 +3709,15 @@ function SellersView() {
               dir="ltr"
             />
           </div>
-          <div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 transition font-semibold text-sm h-10 flex items-center justify-center gap-1"
-            >
-              <Plus className="w-4 h-4 animate-pulse" /> <span>ثبت نماینده جدید</span>
-            </button>
-          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-indigo-600 text-white py-2 px-6 rounded-md hover:bg-indigo-700 transition font-semibold text-sm h-10 flex items-center justify-center gap-1"
+          >
+            <Plus className="w-4 h-4 animate-pulse" /> <span>ثبت نماینده جدید</span>
+          </button>
         </div>
       </form>
 
