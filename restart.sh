@@ -11,15 +11,23 @@ echo -e "${BLUE}===============================================${NC}"
 echo -e "${YELLOW}   🔄 Bot Restart & Process Cleanup Utility    ${NC}"
 echo -e "${BLUE}===============================================${NC}"
 
-# 1. Kill duplicate processes on port 3000
-echo -e "${YELLOW}🔹 1. Checking and clearing active processes on port 3000...${NC}"
-PID_3000=$(lsof -t -i:3000 2>/dev/null)
-if [ ! -z "$PID_3000" ]; then
-    echo -e "${RED}⚠️ Active process found on port 3000 (PID: $PID_3000). Terminating...${NC}"
-    kill -9 $PID_3000 2>/dev/null
-    echo -e "${GREEN}✅ Port 3000 is now free.${NC}"
+# 1. Detect port and kill duplicate processes
+TARGET_PORT=3000
+if [ -f ".env" ]; then
+    ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
+    if [ -n "$ENV_PORT" ]; then
+        TARGET_PORT="$ENV_PORT"
+    fi
+fi
+
+echo -e "${YELLOW}🔹 1. Checking and clearing active processes on port ${TARGET_PORT}...${NC}"
+PID_TARGET=$(lsof -t -i:${TARGET_PORT} 2>/dev/null)
+if [ ! -z "$PID_TARGET" ]; then
+    echo -e "${RED}⚠️ Active process found on port ${TARGET_PORT} (PID: $PID_TARGET). Terminating...${NC}"
+    kill -9 $PID_TARGET 2>/dev/null
+    echo -e "${GREEN}✅ Port ${TARGET_PORT} is now free.${NC}"
 else
-    echo -e "${GREEN}✅ Port 3000 is available.${NC}"
+    echo -e "${GREEN}✅ Port ${TARGET_PORT} is available.${NC}"
 fi
 
 # 2. Kill all background/stale Node/TSX processes matching server/bot

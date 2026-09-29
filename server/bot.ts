@@ -1025,7 +1025,12 @@ function getSellerReplyKeyboard(): any {
 export async function initBot() {
   clearAllActiveIntervals();
   const state = db.getState();
-  const rawToken = state.botToken ? String(state.botToken).trim() : '';
+  const rawToken = (
+    state.botToken && !state.botToken.startsWith('123456789:ABC') 
+      ? state.botToken 
+      : (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || state.botToken || '')
+  ).trim();
+
   if (!rawToken || !rawToken.includes(':') || rawToken.length < 20) {
     console.log('[Bot] No valid Bot Token configured. Bot not started.');
     return;
@@ -1047,26 +1052,10 @@ export async function initBot() {
   }
 
   // Grace delay to let Telegram servers process the connection teardown
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
   try {
-    console.log(`[Bot] Verifying Telegram Bot token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
-    const tempBot = new TelegramBot(rawToken, { polling: false });
-
-    // Remove any lingering webhook and ensure no pending update restrictions linger
-    try {
-      await (tempBot as any).deleteWebHook({ drop_pending_updates: false });
-    } catch (e: any) {
-      // Ignore webhook deletion error if no webhook was set
-    }
-
-    try {
-      const me = await tempBot.getMe();
-      console.log(`[Bot] Verified Telegram Bot: @${me.username} (${me.first_name})`);
-    } catch (verr: any) {
-      console.error(`[Bot Error] Telegram Token is invalid or inaccessible: ${verr.message || verr}. Bot polling will not start.`);
-      return;
-    }
+    console.log(`[Bot] Initializing Telegram Bot with token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
 
     bot = new TelegramBot(rawToken, { 
       polling: {
@@ -1094,6 +1083,14 @@ export async function initBot() {
       } 
     });
     isPolling = true;
+
+    // Asynchronously delete webhook and verify identity without blocking event listener registration
+    (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
+    bot.getMe().then((me) => {
+      console.log(`[Bot] Successfully connected & verified as @${me.username} (${me.first_name})`);
+    }).catch((verr: any) => {
+      console.warn(`[Bot Warning] getMe check returned: ${verr.message || verr}. Polling is active and waiting for connection.`);
+    });
 
     // Attach crucial error listeners to avoid crashing or unhandled rejections
     bot.on('polling_error', (error: any) => {

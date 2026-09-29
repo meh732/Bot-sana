@@ -331,6 +331,55 @@ class Database {
       console.error('Failed to load db.json', e);
       this.state = { ...defaultState };
     }
+
+    // Auto-Recovery Guard: If db.json contains dummy or empty bot token, check backups to restore real data
+    const isDummyOrEmpty = !this.state.botToken || 
+                           this.state.botToken === '123456789:ABCdefGHIjklMNOpqrSTUvwxYZ123456789' ||
+                           this.state.botToken.startsWith('123456789:ABC');
+
+    if (isDummyOrEmpty) {
+      const candidatePaths: string[] = [];
+      const backupsDir = path.join(process.cwd(), 'backups');
+      if (fs.existsSync(backupsDir)) {
+        try {
+          const files = fs.readdirSync(backupsDir)
+            .filter(f => f.startsWith('backup_') && f.endsWith('.json'))
+            .map(f => path.join(backupsDir, f))
+            .sort((a, b) => {
+              try { return fs.statSync(b).mtime.getTime() - fs.statSync(a).mtime.getTime(); } catch { return 0; }
+            });
+          candidatePaths.push(...files);
+        } catch (e) {}
+      }
+
+      candidatePaths.push(
+        path.join(process.cwd(), 'db.json.bak'),
+        path.join(process.cwd(), '..', 'db.json.bak'),
+        '/tmp/db.json.bak'
+      );
+
+      for (const bPath of candidatePaths) {
+        if (fs.existsSync(bPath)) {
+          try {
+            const rawContent = fs.readFileSync(bPath, 'utf8');
+            const candidateParsed = JSON.parse(rawContent);
+            const token = candidateParsed.botToken ? String(candidateParsed.botToken).trim() : '';
+            if (token && !token.startsWith('123456789:ABC') && token.includes(':')) {
+              console.log(`[Database Recovery] Successfully restored database and bot token from backup: ${bPath}`);
+              this.state = this.sanitizeState(candidateParsed);
+              this.save();
+              break;
+            }
+          } catch (err) {}
+        }
+      }
+
+      if ((!this.state.botToken || this.state.botToken.startsWith('123456789:ABC')) && process.env.BOT_TOKEN) {
+        this.state.botToken = process.env.BOT_TOKEN.trim();
+        this.save();
+        console.log('[Database Recovery] Restored botToken from environment variable BOT_TOKEN.');
+      }
+    }
   }
 
   private lastBackupTime = 0;
