@@ -41,9 +41,13 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Optional Basic Auth for the Panel
+  // Optional Basic Auth for Admin routes (excluding seller-portal)
   if (process.env.PANEL_USERNAME && process.env.PANEL_PASSWORD) {
-    app.use((req, res, next) => {
+    app.use('/api', (req, res, next) => {
+      // Exclude seller portal endpoints from admin basic auth
+      if (req.path.startsWith('/seller-portal')) {
+        return next();
+      }
       const b64auth = (req.headers.authorization || '').split(' ')[1] || '';
       const [login, password] = Buffer.from(b64auth, 'base64').toString().split(':');
 
@@ -858,6 +862,21 @@ async function startServer() {
     });
   });
 
+  api.delete("/sellers/:chatId", (req, res) => {
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user) return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+
+    user.isSeller = false;
+    user.portalUsername = undefined;
+    user.portalPassword = undefined;
+    user.customDisplayPrices = undefined;
+    user.sellerDiscount = 0;
+    user.sellerDiscounts = [];
+
+    db.saveUser(user);
+    res.json({ success: true, message: 'همکار با موفقیت حذف گردید و دسترسی پورتال غیرفعال گردید.', users: db.getState().users });
+  });
+
   api.post("/users/:chatId/settle", (req, res) => {
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false });
@@ -1021,31 +1040,39 @@ async function startServer() {
     }
 
     const state = db.getState();
-    const categories = state.categories || [];
-    const products = (state.products || []).map((p: any) => {
-      const isPAYG = !!p.isPayAsYouGo;
-      const sellerDiscount = getSellerDiscountForProduct(user, p);
-      let realWholesalePrice = isPAYG ? 0 : p.price;
-      if (sellerDiscount > 0 && !isPAYG) {
-        realWholesalePrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
-      }
+    const categories = (state.categories || []).filter((c: any) => !c.disabled);
+    
+    // Only return active products that match what is active in the bot
+    const products = (state.products || [])
+      .filter((p: any) => !p.disabled)
+      .map((p: any) => {
+        const isPAYG = !!p.isPayAsYouGo;
+        const sellerDiscount = getSellerDiscountForProduct(user, p);
+        let realWholesalePrice = isPAYG ? 0 : p.price;
+        if (sellerDiscount > 0 && !isPAYG) {
+          realWholesalePrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
+        }
 
-      const customPrice = user.customDisplayPrices?.[p.id];
+        const customPrice = user.customDisplayPrices?.[p.id];
 
-      return {
-        id: p.id,
-        name: p.name,
-        volumeGb: p.volumeGb,
-        durationDays: p.durationDays,
-        categoryId: p.categoryId,
-        isPayAsYouGo: !!p.isPayAsYouGo,
-        panelType: p.panelType,
-        originalPrice: p.price,
-        realWholesalePrice, // Real price charged to seller
-        sellerDiscount,
-        customDisplayPrice: customPrice !== undefined ? customPrice : null
-      };
-    });
+        return {
+          id: p.id,
+          name: p.name,
+          volumeGb: p.volumeGb,
+          durationDays: p.durationDays,
+          categoryId: p.categoryId,
+          isPayAsYouGo: !!p.isPayAsYouGo,
+          panelType: p.panelType,
+          originalPrice: p.price,
+          realWholesalePrice, // Real price charged to seller
+          sellerDiscount,
+          customDisplayPrice: customPrice !== undefined ? customPrice : null
+        };
+      });
+
+    const reportToday = getUserAccountingReport(user, 'today');
+    const reportMonthly = getUserAccountingReport(user, 'monthly');
+    const reportAll = getUserAccountingReport(user, 'all');
 
     res.json({
       success: true,
@@ -1057,8 +1084,19 @@ async function startServer() {
         debt: user.debt || 0,
         debtLimit: user.debtLimit || 0,
         isUnlimitedLimit: isSellerUnlimitedLimit(user),
+        debtVolume: user.debtVolume || 0,
+        totalSales: user.totalSales || 0,
+        totalPayments: user.totalPayments || 0,
+        sellerDiscount: user.sellerDiscount || 0,
         customDisplayPrices: user.customDisplayPrices || {},
-        showCustomPricesOnly: user.showCustomPricesOnly ?? true
+        showCustomPricesOnly: user.showCustomPricesOnly ?? true,
+        purchases: (user.purchases || []).filter((p: any) => !p.isDeleted),
+        transactions: user.transactions || []
+      },
+      accounting: {
+        today: reportToday,
+        monthly: reportMonthly,
+        all: reportAll
       },
       categories,
       products
