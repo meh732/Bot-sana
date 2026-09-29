@@ -6,7 +6,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import { createServer as createViteServer } from "vite";
-import { db } from "./server/db.js";
+import { db, recordUserTransaction } from "./server/db.js";
 import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, getSellerDiscountForProduct } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
 import { xui } from "./server/xui.js";
@@ -1041,10 +1041,19 @@ async function startServer() {
 
     const state = db.getState();
     const categories = (state.categories || []).filter((c: any) => !c.disabled);
+    const activeCategoryIds = new Set(categories.map((c: any) => String(c.id)));
     
-    // Only return active products that match what is active in the bot
+    // Only return products that are strictly ready for sale:
+    // 1. Not disabled
+    // 2. Category must not be disabled
+    // 3. Must be ready for sale (valid volume/days or pay-as-you-go or valid price)
     const products = (state.products || [])
-      .filter((p: any) => !p.disabled)
+      .filter((p: any) => {
+        if (!p || p.disabled === true || p.enabled === false) return false;
+        if (p.categoryId && !activeCategoryIds.has(String(p.categoryId))) return false;
+        const isReady = !!p.isPayAsYouGo || (Number(p.volumeGb || 0) > 0 && Number(p.durationDays || 0) > 0) || Number(p.price || 0) > 0;
+        return isReady;
+      })
       .map((p: any) => {
         const isPAYG = !!p.isPayAsYouGo;
         const sellerDiscount = getSellerDiscountForProduct(user, p);
@@ -1069,6 +1078,10 @@ async function startServer() {
           customDisplayPrice: customPrice !== undefined ? customPrice : null
         };
       });
+
+    // Only return categories that actually have active ready products
+    const productCatIds = new Set(products.map((p: any) => String(p.categoryId)).filter(Boolean));
+    const activeCategories = categories.filter((c: any) => productCatIds.has(String(c.id)));
 
     const reportToday = getUserAccountingReport(user, 'today');
     const reportMonthly = getUserAccountingReport(user, 'monthly');
@@ -1098,9 +1111,77 @@ async function startServer() {
         monthly: reportMonthly,
         all: reportAll
       },
-      categories,
+      bankInfo: {
+        cardNumber: state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸',
+        cardHolder: state.cardHolder || 'مدیریت حساب'
+      },
+      freeTest: {
+        enabled: state.freeTestEnabled !== false,
+        volumeGb: state.freeTestVolumeGb !== undefined ? Number(state.freeTestVolumeGb) : 1,
+        durationDays: state.freeTestDurationDays !== undefined ? Number(state.freeTestDurationDays) : 3
+      },
+      categories: activeCategories,
       products
     });
+  });
+
+  api.post("/seller-portal/submit-debt-payment/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'همکار یافت نشد' });
+      }
+
+      const { amount, receiptBase64 } = req.body;
+      const parsedAmount = parseInt(amount);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        return res.status(400).json({ success: false, message: 'مبلغ وارد شده معتبر نمی‌باشد.' });
+      }
+
+      const state = db.getState();
+      const payId = Math.random().toString(36).substring(2, 10);
+      let currentPending = state.pendingPayments || [];
+
+      currentPending.push({
+        id: payId,
+        chatId,
+        amount: parsedAmount,
+        receiptBase64: receiptBase64 || undefined,
+        timestamp: Date.now(),
+        pendingPurchase: { isSellerDebtPayment: true } as any
+      });
+      db.updateState({ pendingPayments: currentPending });
+
+      const uName = user.username ? `@${user.username}` : `همکار ${user.chatId}`;
+      const notifyAdminsMsg = `🔔 <b>درخواست پرداخت بدهی همکار (ثبت شده از پورتال وب)</b>\n\n` +
+        `👤 همکار: <b>${uName}</b>\n` +
+        `🆔 شناسه کاربری: <code>${chatId}</code>\n` +
+        `💰 مبلغ اعلامی فیش: <b>${parsedAmount.toLocaleString()}</b> تومان\n` +
+        `📉 بدهی فعلی: <b>${(user.debt || 0).toLocaleString()}</b> تومان\n\n` +
+        `جهت بررسی و تایید می‌توانید از پنل مدیریت استفاده نمایید.`;
+
+      // Broadcast to admins
+      if (state.adminIds && state.adminIds.length > 0) {
+        state.adminIds.forEach((adminId: number) => {
+          sendDirectMessage(adminId, notifyAdminsMsg, {
+            inline_keyboard: [
+              [
+                { text: '✅ تایید و کسر از بدهی', callback_data: `approve_pay_${payId}` },
+                { text: '❌ رد فیش', callback_data: `reject_pay_${payId}` }
+              ]
+            ]
+          });
+        });
+      }
+
+      res.json({
+        success: true,
+        message: `رسید پرداخت مبلغ ${parsedAmount.toLocaleString()} تومان با موفقیت ثبت شد و در انتظار تایید مدیریت قرار گرفت.`
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در ثبت پرداخت' });
+    }
   });
 
   api.post("/seller-portal/save-prices/:chatId", (req, res) => {
@@ -1170,6 +1251,271 @@ async function startServer() {
     }
   });
 
+  api.post("/seller-portal/purchases/:chatId/:purchaseId/renew", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      }
+
+      const purchaseId = req.params.purchaseId;
+      const purchases = user.purchases || [];
+      const purchase = purchases.find((p: any) => 
+        p.id === purchaseId || 
+        p.subId === purchaseId || 
+        (p.id && String(p.id).toLowerCase() === String(purchaseId).toLowerCase())
+      );
+
+      if (!purchase) {
+        return res.status(404).json({ success: false, message: 'کانفیگ یافت نشد.' });
+      }
+
+      const finalPrice = Number(purchase.price || 0);
+      if (!isSellerUnlimitedLimit(user)) {
+        const debtLimit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+        if ((user.debt || 0) + finalPrice > debtLimit) {
+          return res.status(400).json({
+            success: false,
+            message: `سقف اعتبار شما برای تمدید این سرویس کافی نیست. (بدهی فعلی: ${(user.debt || 0).toLocaleString()} تومان / سقف: ${debtLimit.toLocaleString()} تومان)`
+          });
+        }
+      }
+
+      const volGb = Number(purchase.volumeGb || 0);
+      const durDays = Number(purchase.durationDays || 0);
+
+      // Call multiPanel renew
+      await multiPanel.renewClient(purchase, volGb, durDays);
+
+      user.debt = (user.debt || 0) + finalPrice;
+      user.debtVolume = (user.debtVolume || 0) + volGb;
+      user.totalSales = (user.totalSales || 0) + finalPrice;
+
+      purchase.createdAt = new Date().toISOString();
+      purchase.lastUsedBytes = 0;
+      purchase.baseSettledBytes = 0;
+      if (durDays > 0) {
+        purchase.expiryDate = new Date(Date.now() + durDays * 86400000).toISOString();
+      }
+      purchase.disabled = false;
+
+      recordUserTransaction(user, {
+        type: 'purchase',
+        amount: finalPrice,
+        direction: 'debit',
+        description: `تمدید سرویس ${purchase.name} (${volGb} GB / ${durDays} روز) از پورتال وب`,
+        configName: purchase.name,
+        volumeGb: volGb,
+        balanceAfter: user.balance,
+        debtAfter: user.debt,
+        createdAt: purchase.createdAt
+      });
+
+      db.saveUser(user);
+
+      res.json({
+        success: true,
+        message: `سرویس «${purchase.name}» با موفقیت تمدید گردید و حجم و زمان آن مجدداً تنظیم شد.`,
+        purchase,
+        debt: user.debt,
+        debtVolume: user.debtVolume
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در تمدید سرویس' });
+    }
+  });
+
+  api.post("/seller-portal/purchases/:chatId/:purchaseId/toggle-enable", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+
+      const purchaseId = req.params.purchaseId;
+      const purchases = user.purchases || [];
+      const purchase = purchases.find((p: any) => 
+        p.id === purchaseId || 
+        p.subId === purchaseId || 
+        (p.id && String(p.id).toLowerCase() === String(purchaseId).toLowerCase())
+      );
+
+      if (!purchase) return res.status(404).json({ success: false, message: 'کانفیگ یافت نشد.' });
+
+      const { enable } = req.body;
+      const targetEnable = enable !== undefined ? !!enable : !!purchase.disabled;
+
+      await multiPanel.updateClientEnable(purchase, targetEnable);
+      purchase.disabled = !targetEnable;
+      db.saveUser(user);
+
+      res.json({
+        success: true,
+        enable: targetEnable,
+        message: targetEnable ? 'کانفیگ با موفقیت در سرور فعال (متصل) شد.' : 'کانفیگ با موفقیت در سرور غیرفعال (قطع) شد.',
+        purchase
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در تغییر وضعیت کانفیگ' });
+    }
+  });
+
+  api.post("/seller-portal/purchases/:chatId/:purchaseId/rename", (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+
+      const purchaseId = req.params.purchaseId;
+      const purchases = user.purchases || [];
+      const purchase = purchases.find((p: any) => 
+        p.id === purchaseId || 
+        p.subId === purchaseId || 
+        (p.id && String(p.id).toLowerCase() === String(purchaseId).toLowerCase())
+      );
+
+      if (!purchase) return res.status(404).json({ success: false, message: 'کانفیگ یافت نشد.' });
+
+      const { newName } = req.body;
+      if (!newName || !newName.trim()) {
+        return res.status(400).json({ success: false, message: 'نام جدید وارد نشده است.' });
+      }
+
+      purchase.name = newName.trim();
+      db.saveUser(user);
+
+      res.json({
+        success: true,
+        message: 'عنوان کانفیگ با موفقیت تغییر کرد.',
+        purchase
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در تغییر نام' });
+    }
+  });
+
+  api.delete("/seller-portal/purchases/:chatId/:purchaseId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+
+      const purchaseId = req.params.purchaseId;
+      const purchases = user.purchases || [];
+      const purchase = purchases.find((p: any) => 
+        p.id === purchaseId || 
+        p.subId === purchaseId || 
+        (p.id && String(p.id).toLowerCase() === String(purchaseId).toLowerCase())
+      );
+
+      if (!purchase) return res.status(404).json({ success: false, message: 'کانفیگ یافت نشد.' });
+
+      try {
+        await multiPanel.delClient(purchase);
+      } catch (delErr: any) {
+        console.warn('[MultiPanel delete warning]:', delErr.message);
+      }
+
+      purchase.isDeleted = true;
+      db.saveUser(user);
+
+      res.json({
+        success: true,
+        message: 'کانفیگ با موفقیت حذف گردید.'
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در حذف کانفیگ' });
+    }
+  });
+
+  api.post("/seller-portal/free-test/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+
+      const state = db.getState();
+      if (state.freeTestEnabled === false) {
+        return res.status(400).json({ success: false, message: 'سرویس تست رایگان توسط مدیر غیرفعال است.' });
+      }
+
+      const { customName } = req.body;
+      const volGb = state.freeTestVolumeGb !== undefined ? Number(state.freeTestVolumeGb) : 1;
+      const durDays = state.freeTestDurationDays !== undefined ? Number(state.freeTestDurationDays) : 3;
+
+      const testInboundIds = (state.freeTestInboundIds && state.freeTestInboundIds.length > 0)
+        ? state.freeTestInboundIds
+        : (state.freeTestInboundId ? [state.freeTestInboundId] : undefined);
+
+      const panelType = (state.freeTestPanel as any) || 'sanaei';
+      const cleanCustom = (customName || `test_${Date.now().toString().slice(-4)}`).replace(/[^a-zA-Z0-9_]/g, '_');
+
+      const clientResult = await multiPanel.createClientConfig({
+        user,
+        product: {
+          name: `تست رایگان (${volGb}GB - ${durDays} روز)`,
+          volumeGb: volGb,
+          durationDays: durDays,
+          panelType,
+          inboundIds: testInboundIds,
+          rebeccaInboundTags: (state.freeTestRebeccaTags && state.freeTestRebeccaTags.length > 0) ? state.freeTestRebeccaTags : state.freeTestRebeccaInbounds,
+          limitIp: 1
+        },
+        customName: cleanCustom
+      });
+
+      const newPurchase: any = {
+        id: clientResult.clientEmail,
+        name: `تست رایگان (${volGb}GB - ${durDays} روز)`,
+        price: 0,
+        subId: clientResult.subId,
+        subUrl: clientResult.subUrl,
+        sanaeiSubUrl: clientResult.sanaeiSubUrl,
+        rebeccaSubUrl: clientResult.rebeccaSubUrl,
+        mroceanSubUrl: clientResult.mroceanSubUrl,
+        mroceanPortalUrl: clientResult.mroceanPortalUrl,
+        panelType: clientResult.panelType,
+        volumeGb: volGb,
+        durationDays: durDays,
+        createdAt: new Date().toISOString()
+      };
+
+      user.purchases = user.purchases || [];
+      user.purchases.push(newPurchase);
+      db.saveUser(user);
+
+      let qrCodeDataUrl = '';
+      const mainSub = newPurchase.subUrl || newPurchase.sanaeiSubUrl || newPurchase.rebeccaSubUrl || '';
+      if (mainSub) {
+        try {
+          qrCodeDataUrl = await QRCode.toDataURL(mainSub, { width: 400, margin: 2 });
+        } catch (e) {}
+      }
+
+      let cleanMessage = `🎁 <b>اکانت تست رایگان آماده استفاده است</b>\n\n` +
+        `👤 <b>عنوان:</b> <code>${customName || newPurchase.name}</code>\n` +
+        `📊 <b>حجم تست:</b> ${volGb} گیگابایت\n` +
+        `⏳ <b>مدت اعتبار:</b> ${durDays} روز\n\n`;
+
+      if (newPurchase.sanaeiSubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${newPurchase.sanaeiSubUrl}</code>\n\n`;
+      } else if (newPurchase.subUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${newPurchase.subUrl}</code>\n\n`;
+      }
+      cleanMessage += `⚡ <i>جهت اتصال لینک فوق را در نرم‌افزار وارد نمایید.</i>`;
+
+      res.json({
+        success: true,
+        message: 'اکانت تست رایگان با موفقیت صادر شد.',
+        purchase: newPurchase,
+        qrCodeDataUrl,
+        cleanMessage
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در ایجاد اکانت تست' });
+    }
+  });
+
   app.use("/api", api);
 
   // Serve static files in production or when dist folder exists
@@ -1177,8 +1523,19 @@ async function startServer() {
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
   if (process.env.NODE_ENV === "production" || hasDist) {
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+      }
+    }));
     app.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {

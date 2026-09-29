@@ -20,12 +20,12 @@ import {
   Receipt,
   BarChart3,
   List,
-  CheckCircle,
-  TrendingUp,
-  FileText,
-  UserCheck,
-  Calendar,
-  DollarSign
+  RefreshCw,
+  Edit3,
+  Trash2,
+  Gift,
+  Upload,
+  ExternalLink
 } from 'lucide-react';
 
 interface SellerPortalProps {
@@ -51,16 +51,29 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [accountingData, setAccountingData] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [freeTestInfo, setFreeTestInfo] = useState<{ enabled: boolean; volumeGb: number; durationDays: number }>({
+    enabled: true,
+    volumeGb: 1,
+    durationDays: 3
+  });
 
-  // Navigation tab
+  // Navigation tabs
   const [activeTab, setActiveTab] = useState<'store' | 'debt' | 'purchases' | 'ledger' | 'reports'>('store');
   const [reportPeriod, setReportPeriod] = useState<'today' | 'monthly' | 'all'>('today');
+
+  // Bank Info for debt payments
+  const [bankInfo, setBankInfo] = useState<{ cardNumber: string; cardHolder: string }>({ cardNumber: '', cardHolder: '' });
+  const [showDebtPaymentModal, setShowDebtPaymentModal] = useState(false);
+  const [debtPaymentAmount, setDebtPaymentAmount] = useState('');
+  const [debtReceiptBase64, setDebtReceiptBase64] = useState('');
+  const [submittingDebtPayment, setSubmittingDebtPayment] = useState(false);
+  const [debtPaymentSuccessMsg, setDebtPaymentSuccessMsg] = useState('');
 
   // Store filters
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Settings state
+  // Settings state (Customer pricing)
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [customPrices, setCustomPrices] = useState<{ [key: string]: number }>({});
   const [showCustomPricesOnly, setShowCustomPricesOnly] = useState(true);
@@ -72,37 +85,31 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [purchasing, setPurchasing] = useState(false);
   const [showWholesalePrice, setShowWholesalePrice] = useState(false);
 
+  // Free Test Modal state
+  const [showFreeTestModal, setShowFreeTestModal] = useState(false);
+  const [freeTestClientName, setFreeTestClientName] = useState('');
+  const [creatingFreeTest, setCreatingFreeTest] = useState(false);
+
   // Purchase Result Modal
   const [purchaseResult, setPurchaseResult] = useState<any>(null);
   const [copiedText, setCopiedText] = useState(false);
+  const [copiedCleanMsg, setCopiedCleanMsg] = useState(false);
 
   // Purchased Config Detail Modal
   const [viewingPurchase, setViewingPurchase] = useState<any>(null);
   const [viewingQrCode, setViewingQrCode] = useState<string>('');
   const [purchasesSearchQuery, setPurchasesSearchQuery] = useState('');
+  const [purchasesFilter, setPurchasesFilter] = useState<'all' | 'active' | 'disabled'>('all');
   const [togglingPurchaseId, setTogglingPurchaseId] = useState<string | null>(null);
 
-  const handleToggleEnablePurchase = async (purchaseId: string, currentDisabled: boolean) => {
-    setTogglingPurchaseId(purchaseId);
-    try {
-      const targetEnable = !!currentDisabled;
-      const res = await fetch(`/api/users/${chatId}/purchases/${purchaseId}/toggle-enable`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enable: targetEnable })
-      });
-      const data = await res.json();
-      if (data.success) {
-        fetchPortalInfo(chatId);
-      } else {
-        alert('❌ خطا: ' + (data.message || 'عملیات ناموفق بود'));
-      }
-    } catch (e: any) {
-      alert('خطا در ارتباط با سرور: ' + e.message);
-    } finally {
-      setTogglingPurchaseId(null);
-    }
-  };
+  // Config actions modals
+  const [renewingPurchase, setRenewingPurchase] = useState<any>(null);
+  const [isRenewing, setIsRenewing] = useState(false);
+  const [renamingPurchase, setRenamingPurchase] = useState<any>(null);
+  const [newConfigName, setNewConfigName] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [deletingPurchase, setDeletingPurchase] = useState<any>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (chatId) {
@@ -123,8 +130,10 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         setAccountingData(data.accounting);
         setCategories(data.categories || []);
         setProducts(data.products || []);
+        if (data.freeTest) setFreeTestInfo(data.freeTest);
         setCustomPrices(data.seller.customDisplayPrices || {});
         setShowCustomPricesOnly(data.seller.showCustomPricesOnly ?? true);
+        if (data.bankInfo) setBankInfo(data.bankInfo);
         setIsLoggedIn(true);
         localStorage.setItem('seller_portal_chatid', idToUse);
       } else {
@@ -151,24 +160,23 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       });
       const data = await res.json();
       if (data.success) {
-        const activeChatId = String(data.seller.chatId);
-        setChatId(activeChatId);
-        fetchPortalInfo(activeChatId);
+        setChatId(String(data.chatId));
+        fetchPortalInfo(String(data.chatId));
       } else {
-        setError(data.message || 'نام کاربری یا کلمه عبور نادرست است.');
+        setError(data.message || 'نام کاربری یا کلمه عبور اشتباه است.');
         setLoading(false);
       }
-    } catch (err) {
-      setError('خطا در برقرار اتصال با سرور.');
+    } catch (err: any) {
+      setError('خطا در اتصال به سرور.');
       setLoading(false);
     }
   };
 
   const handleLogout = () => {
     localStorage.removeItem('seller_portal_chatid');
+    setChatId('');
     setIsLoggedIn(false);
     setSellerData(null);
-    setChatId('');
   };
 
   const handleSavePrices = async () => {
@@ -187,10 +195,10 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         setShowSettingsModal(false);
         fetchPortalInfo(chatId);
       } else {
-        alert(data.message || 'خطا در ذخیره قیمت‌ها');
+        alert('خطا در ذخیره‌سازی قیمت‌ها.');
       }
     } catch (err) {
-      alert('خطا در ذخیره‌سازی.');
+      alert('خطا در ارتباط با سرور.');
     } finally {
       setSavingSettings(false);
     }
@@ -213,15 +221,164 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         setPurchaseResult(data);
         setSelectedProduct(null);
         setCustomClientName('');
-        // Refresh seller data
         fetchPortalInfo(chatId);
       } else {
         alert(`❌ خطا: ${data.message}`);
       }
-    } catch (err) {
-      alert('خطا در ثبت سفارش.');
+    } catch (err: any) {
+      alert('خطا در ثبت سفارش: ' + err.message);
     } finally {
       setPurchasing(false);
+    }
+  };
+
+  const handleCreateFreeTest = async () => {
+    setCreatingFreeTest(true);
+    try {
+      const res = await fetch(`/api/seller-portal/free-test/${chatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customName: freeTestClientName.trim() })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setShowFreeTestModal(false);
+        setFreeTestClientName('');
+        setPurchaseResult(data);
+        fetchPortalInfo(chatId);
+      } else {
+        alert(`❌ خطا: ${data.message}`);
+      }
+    } catch (e: any) {
+      alert('خطا در ایجاد اکانت تست: ' + e.message);
+    } finally {
+      setCreatingFreeTest(false);
+    }
+  };
+
+  const handleToggleEnablePurchase = async (purchaseId: string, currentDisabled: boolean) => {
+    setTogglingPurchaseId(purchaseId);
+    try {
+      const targetEnable = !!currentDisabled;
+      const res = await fetch(`/api/seller-portal/purchases/${chatId}/${purchaseId}/toggle-enable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: targetEnable })
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchPortalInfo(chatId);
+      } else {
+        alert('❌ خطا: ' + (data.message || 'عملیات ناموفق بود'));
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور: ' + e.message);
+    } finally {
+      setTogglingPurchaseId(null);
+    }
+  };
+
+  const handleRenewPurchase = async () => {
+    if (!renewingPurchase) return;
+    setIsRenewing(true);
+    try {
+      const res = await fetch(`/api/seller-portal/purchases/${chatId}/${renewingPurchase.id}/renew`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('🎉 ' + data.message);
+        setRenewingPurchase(null);
+        fetchPortalInfo(chatId);
+      } else {
+        alert('❌ خطا: ' + (data.message || 'تمدید سرویس ناموفق بود'));
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور: ' + e.message);
+    } finally {
+      setIsRenewing(false);
+    }
+  };
+
+  const handleRenamePurchase = async () => {
+    if (!renamingPurchase || !newConfigName.trim()) return;
+    setIsRenaming(true);
+    try {
+      const res = await fetch(`/api/seller-portal/purchases/${chatId}/${renamingPurchase.id}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newName: newConfigName.trim() })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setRenamingPurchase(null);
+        fetchPortalInfo(chatId);
+      } else {
+        alert('❌ خطا: ' + (data.message || 'تغییر نام ناموفق بود'));
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور: ' + e.message);
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  const handleDeletePurchase = async () => {
+    if (!deletingPurchase) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/seller-portal/purchases/${chatId}/${deletingPurchase.id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDeletingPurchase(null);
+        fetchPortalInfo(chatId);
+      } else {
+        alert('❌ خطا: ' + (data.message || 'حذف ناموفق بود'));
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور: ' + e.message);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleDebtPaymentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsedAmount = parseInt(debtPaymentAmount.replace(/[^0-9]/g, ''));
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      alert('لطفاً مبلغ معتبری به تومان وارد فرمایید.');
+      return;
+    }
+
+    setSubmittingDebtPayment(true);
+    try {
+      const res = await fetch(`/api/seller-portal/submit-debt-payment/${chatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: parsedAmount,
+          receiptBase64: debtReceiptBase64
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDebtPaymentSuccessMsg(data.message || 'رسید پرداخت شما با موفقیت ارسال شد و در انتظار تایید مدیریت قرار گرفت.');
+        setTimeout(() => {
+          setShowDebtPaymentModal(false);
+          setDebtPaymentSuccessMsg('');
+          setDebtPaymentAmount('');
+          setDebtReceiptBase64('');
+          fetchPortalInfo(chatId);
+        }, 2500);
+      } else {
+        alert(data.message || 'خطا در ثبت پرداخت.');
+      }
+    } catch (e: any) {
+      alert('خطا در برقراری ارتباط با سرور.');
+    } finally {
+      setSubmittingDebtPayment(false);
     }
   };
 
@@ -234,6 +391,28 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
     setTimeout(() => setCopiedText(false), 2500);
   };
 
+  const getCleanCustomerMessage = (p: any) => {
+    if (!p) return '';
+    const volStr = p.isPayAsYouGo ? 'نامحدود (مصرف آزاد)' : `${p.volumeGb || 0} گیگابایت`;
+    const durStr = p.isPayAsYouGo ? 'نامحدود' : `${p.durationDays || 0} روز`;
+    let txt = `🚀 کانفیگ اختصاصی شما آماده است\n\n` +
+      `👤 عنوان سرویس: ${p.name || 'سرویس اشتراکی'}\n` +
+      `📊 حجم کل: ${volStr}\n` +
+      `⏳ مدت اعتبار: ${durStr}\n\n`;
+
+    if (p.sanaeiSubUrl) {
+      txt += `🔗 لینک اتصال (سرور ۱):\n${p.sanaeiSubUrl}\n\n`;
+    }
+    if (p.rebeccaSubUrl) {
+      txt += `🔗 لینک اتصال (سرور ۲):\n${p.rebeccaSubUrl}\n\n`;
+    }
+    if (!p.sanaeiSubUrl && !p.rebeccaSubUrl && p.subUrl) {
+      txt += `🔗 لینک اتصال:\n${p.subUrl}\n\n`;
+    }
+    txt += `⚡ راهنمای استفاده: لینک بالا را کپی کرده و در اپلیکیشن‌های V2RayNG / MahsaNG / Shadowrocket / Nekobox با لمس علامت + یا Update Subscription اضافه نمایید.`;
+    return txt;
+  };
+
   const filteredProducts = products.filter(p => {
     const matchesCat = selectedCategory === 'all' || p.categoryId === selectedCategory;
     const matchesSearch = !searchQuery || 
@@ -243,11 +422,16 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   });
 
   const sellerPurchases = (sellerData?.purchases || []).filter((p: any) => {
-    if (!purchasesSearchQuery) return true;
-    const q = purchasesSearchQuery.toLowerCase();
-    return (p.id && p.id.toLowerCase().includes(q)) ||
-           (p.name && p.name.toLowerCase().includes(q)) ||
-           (p.subId && String(p.subId).toLowerCase().includes(q));
+    const matchesSearch = !purchasesSearchQuery || 
+      (p.id && p.id.toLowerCase().includes(purchasesSearchQuery.toLowerCase())) ||
+      (p.name && p.name.toLowerCase().includes(purchasesSearchQuery.toLowerCase())) ||
+      (p.subId && String(p.subId).toLowerCase().includes(purchasesSearchQuery.toLowerCase()));
+
+    if (!matchesSearch) return false;
+
+    if (purchasesFilter === 'active') return !p.disabled;
+    if (purchasesFilter === 'disabled') return !!p.disabled;
+    return true;
   });
 
   const currentReport = accountingData?.[reportPeriod] || { summary: {}, salesItems: [], ledgerRows: [] };
@@ -345,18 +529,29 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   {sellerData?.portalUsername ? `@${sellerData.portalUsername}` : sellerData?.chatId}
                 </span>
               </h1>
-              <p className="text-[11px] text-slate-400">ساخت کانفیگ بی‌نام، وضعیت بدهی و صورتحساب مالی</p>
+              <p className="text-[11px] text-slate-400">ساخت کانفیگ بی‌نام، تمدید، وضعیت بدهی و گزارشات</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {freeTestInfo.enabled && (
+              <button
+                onClick={() => setShowFreeTestModal(true)}
+                className="px-3 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-bold rounded-xl text-xs transition flex items-center gap-1.5 shadow-sm"
+                title="ساخت اکانت تست رایگان برای مشتری"
+              >
+                <Gift className="w-4 h-4 fill-current" />
+                <span className="hidden sm:inline">اکانت تست رایگان</span>
+              </button>
+            )}
+
             <button
               onClick={() => setShowSettingsModal(true)}
               className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700/60 transition flex items-center gap-1.5 text-xs font-medium"
-              title="تنظیمات قیمت مشتری"
+              title="تنظیم قیمت‌های فروش به مشتری"
             >
               <Settings className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">تنظیم قیمت‌ها</span>
+              <span className="hidden sm:inline">تعیین قیمت مشتری</span>
             </button>
 
             <button
@@ -380,19 +575,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             }`}
           >
             <ShoppingBag className="w-4 h-4" />
-            <span>🛒 خرید سرویس</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('debt')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-              activeTab === 'debt'
-                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-                : 'bg-slate-800/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <CreditCard className="w-4 h-4" />
-            <span>📉 وضعیت بدهی و اعتبار</span>
+            <span>🛒 خرید سرویس جدید</span>
           </button>
 
           <button
@@ -404,7 +587,19 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             }`}
           >
             <List className="w-4 h-4" />
-            <span>📋 کانفیگ‌ها و خریدهای من ({sellerData?.purchases?.length || 0})</span>
+            <span>📋 کانفیگ‌ها و مشتریان من ({sellerData?.purchases?.length || 0})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('debt')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              activeTab === 'debt'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                : 'bg-slate-800/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+          >
+            <CreditCard className="w-4 h-4" />
+            <span>📉 بدهی و سقف اعتبار</span>
           </button>
 
           <button
@@ -416,7 +611,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             }`}
           >
             <Receipt className="w-4 h-4" />
-            <span>🧾 صورتحساب و مالی</span>
+            <span>🧾 صورتحساب و تراکنش‌ها</span>
           </button>
 
           <button
@@ -428,7 +623,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             }`}
           >
             <BarChart3 className="w-4 h-4" />
-            <span>📊 گزارش عملکرد</span>
+            <span>📊 گزارش عملکرد و فروش</span>
           </button>
         </div>
       </header>
@@ -439,6 +634,30 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         {/* TAB 1: STORE / BUY SERVICE */}
         {activeTab === 'store' && (
           <div className="space-y-6">
+            {/* Free Test Banner if active */}
+            {freeTestInfo.enabled && (
+              <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-500/30 rounded-3xl p-4 sm:p-5 flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-amber-500/20 border border-amber-500/30 rounded-2xl flex items-center justify-center text-amber-400">
+                    <Gift className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-100 text-sm">اکانت تست رایگان برای جذب مشتری</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      حجم تست: {freeTestInfo.volumeGb} GB | مدت اعتبار: {freeTestInfo.durationDays} روز (بدون کسر از اعتبار)
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowFreeTestModal(true)}
+                  className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5"
+                >
+                  <span>ساخت اکانت تست</span>
+                  <Zap className="w-4 h-4 fill-current" />
+                </button>
+              </div>
+            )}
+
             {/* Search & Categories */}
             <div className="space-y-3">
               <div className="relative">
@@ -447,7 +666,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="جستجوی سرویس یا حجم..."
+                  placeholder="جستجوی پکیج آماده فروش..."
                   className="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500/60 transition"
                 />
                 {searchQuery && (
@@ -467,7 +686,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                       : 'bg-slate-900 text-slate-400 hover:bg-slate-850 border border-slate-800'
                   }`}
                 >
-                  همه سرویس‌های فعال ({products.length})
+                  همه محصولات آماده فروش ({products.length})
                 </button>
 
                 {categories.map((cat) => (
@@ -490,7 +709,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             {filteredProducts.length === 0 ? (
               <div className="text-center py-12 bg-slate-900/50 border border-slate-800/80 rounded-3xl p-6">
                 <ShoppingBag className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                <p className="text-slate-400 text-sm font-medium">هیچ سرویس فعالی در این بخش یافت نشد.</p>
+                <p className="text-slate-400 text-sm font-medium">هیچ محصول آماده فروشی در این بخش موجود نیست.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -514,7 +733,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                             </span>
                           ) : (
                             <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
-                              استاندارد
+                              آماده فروش
                             </span>
                           )}
                         </div>
@@ -535,15 +754,15 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                         <div>
                           {showCustomPricesOnly && hasCustomPrice ? (
                             <div>
-                              <span className="text-xs text-slate-500 block">قیمت:</span>
-                              <span className="text-base font-extrabold text-slate-100">
+                              <span className="text-[10px] text-slate-500 block">قیمت مشتری:</span>
+                              <span className="text-base font-extrabold text-slate-100 font-mono">
                                 {displayPrice.toLocaleString()} <span className="text-xs font-normal text-slate-400">تومان</span>
                               </span>
                             </div>
                           ) : (
                             <div>
-                              <span className="text-xs text-slate-500 block">قیمت:</span>
-                              <span className="text-sm font-semibold text-emerald-400">تماس / توافقی</span>
+                              <span className="text-[10px] text-slate-500 block">قیمت مشتری:</span>
+                              <span className="text-sm font-semibold text-emerald-400">توافقی / تماس</span>
                             </div>
                           )}
                         </div>
@@ -552,7 +771,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                           onClick={() => setSelectedProduct(product)}
                           className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-2xl shadow-md shadow-emerald-500/10 transition flex items-center gap-1.5"
                         >
-                          <span>انتخاب</span>
+                          <span>ثبت و ساخت آنی</span>
                           <Zap className="w-3.5 h-3.5 fill-current" />
                         </button>
                       </div>
@@ -564,19 +783,213 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
           </div>
         )}
 
-        {/* TAB 2: DEBT & CREDIT STATUS */}
+        {/* TAB 2: SOLD CONFIGS & CUSTOMERS */}
+        {activeTab === 'purchases' && (
+          <div className="space-y-4">
+            {/* Search & Status Filters */}
+            <div className="flex flex-col sm:flex-row items-center gap-3">
+              <div className="relative flex-1 w-full">
+                <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                <input
+                  type="text"
+                  value={purchasesSearchQuery}
+                  onChange={(e) => setPurchasesSearchQuery(e.target.value)}
+                  placeholder="جستجوی نام مشتری، شناسه یا ساب..."
+                  className="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-slate-900 p-1 rounded-2xl border border-slate-800 text-xs w-full sm:w-auto justify-center">
+                <button
+                  onClick={() => setPurchasesFilter('all')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                    purchasesFilter === 'all' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  همه ({sellerData?.purchases?.length || 0})
+                </button>
+                <button
+                  onClick={() => setPurchasesFilter('active')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                    purchasesFilter === 'active' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  فعال ({(sellerData?.purchases || []).filter((p: any) => !p.disabled).length})
+                </button>
+                <button
+                  onClick={() => setPurchasesFilter('disabled')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                    purchasesFilter === 'disabled' ? 'bg-rose-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  قطع شده ({(sellerData?.purchases || []).filter((p: any) => !!p.disabled).length})
+                </button>
+              </div>
+            </div>
+
+            {sellerPurchases.length === 0 ? (
+              <div className="text-center py-12 bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
+                <List className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+                <p className="text-slate-400 text-sm">هیچ کانفیگی مطابق با فیلتر شما یافت نشد.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {sellerPurchases.map((p: any) => {
+                  const usedGb = ((p.lastUsedBytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
+                  const totalGb = p.volumeGb || 0;
+                  const percentUsed = totalGb > 0 ? Math.min(100, Math.round((Number(usedGb) / totalGb) * 100)) : 0;
+
+                  return (
+                    <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-5 space-y-4 hover:border-slate-700 transition shadow-lg">
+                      <div className="flex justify-between items-start flex-wrap gap-2">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="font-bold text-slate-100 text-base">
+                              {p.name || 'سرویس اشتراکی'}
+                            </h4>
+                            {p.disabled ? (
+                              <span className="bg-rose-500/20 text-rose-400 text-[10px] px-2.5 py-0.5 rounded-full border border-rose-500/30 font-medium">
+                                🛑 قطع شده
+                              </span>
+                            ) : (
+                              <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2.5 py-0.5 rounded-full border border-emerald-500/30 font-medium">
+                                🟢 متصل و فعال
+                              </span>
+                            )}
+                            {p.isPayAsYouGo ? (
+                              <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2.5 py-0.5 rounded-full border border-amber-500/30 font-medium">
+                                مصرف آزاد
+                              </span>
+                            ) : (
+                              <span className="bg-slate-800 text-slate-300 text-[10px] px-2.5 py-0.5 rounded-full border border-slate-700 font-medium">
+                                {p.volumeGb} GB / {p.durationDays} روز
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-500 font-mono mt-1" dir="ltr">
+                            ID: {p.id}
+                          </p>
+                        </div>
+
+                        <div className="text-left text-xs">
+                          <span className="text-slate-500 block">ثبت سفارش:</span>
+                          <span className="text-slate-300 font-mono">
+                            {p.createdAt ? new Date(p.createdAt).toLocaleDateString('fa-IR') : '—'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Usage & Progress */}
+                      {!p.isPayAsYouGo && totalGb > 0 && (
+                        <div className="space-y-1.5 bg-slate-950 p-3 rounded-2xl border border-slate-800/80">
+                          <div className="flex justify-between text-xs text-slate-400">
+                            <span>مصرف حجم: <b>{usedGb} GB</b> از <b>{totalGb} GB</b></span>
+                            <span className="font-mono">{percentUsed}٪</span>
+                          </div>
+                          <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-300 ${
+                                percentUsed > 90 ? 'bg-rose-500' : percentUsed > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                              }`}
+                              style={{ width: `${percentUsed}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Control Actions Bar */}
+                      <div className="pt-2 border-t border-slate-800 flex items-center justify-between flex-wrap gap-2">
+                        <div className="text-xs">
+                          <span className="text-slate-500">قیمت عمده: </span>
+                          <span className="font-bold text-slate-100 font-mono">{(p.price || 0).toLocaleString()} تومان</span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Renew Button */}
+                          <button
+                            onClick={() => setRenewingPurchase(p)}
+                            className="px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                            title="تمدید سرویس و ریست حجم/زمان"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>تمدید</span>
+                          </button>
+
+                          {/* Toggle Enable/Disable Button */}
+                          <button
+                            disabled={togglingPurchaseId === p.id}
+                            onClick={() => handleToggleEnablePurchase(p.id, !!p.disabled)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 ${
+                              p.disabled
+                                ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30'
+                                : 'bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 border border-rose-500/30'
+                            }`}
+                            title="قطع یا وصل فوری در سرور"
+                          >
+                            <Zap className="w-3.5 h-3.5" />
+                            <span>{togglingPurchaseId === p.id ? '...' : (p.disabled ? 'اتصال' : 'قطع')}</span>
+                          </button>
+
+                          {/* Rename Button */}
+                          <button
+                            onClick={() => {
+                              setRenamingPurchase(p);
+                              setNewConfigName(p.name || '');
+                            }}
+                            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition"
+                            title="تغییر نام دلخواه مشتری"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* View Links & QR */}
+                          <button
+                            onClick={() => {
+                              setViewingPurchase(p);
+                              const mainSub = p.subUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || '';
+                              if (mainSub) {
+                                import('qrcode').then(QRCode => {
+                                  QRCode.toDataURL(mainSub, { width: 350, margin: 2 }).then(setViewingQrCode).catch(() => {});
+                                });
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                          >
+                            <QrCode className="w-3.5 h-3.5" />
+                            <span>لینک و QR</span>
+                          </button>
+
+                          {/* Delete Button */}
+                          <button
+                            onClick={() => setDeletingPurchase(p)}
+                            className="p-1.5 bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 rounded-xl transition"
+                            title="حذف کانفیگ"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: DEBT & CREDIT STATUS */}
         {activeTab === 'debt' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-2">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-2 shadow-lg">
                 <span className="text-xs text-slate-400">بدهی فعلی به مدیریت:</span>
                 <p className="text-2xl font-black text-rose-400 font-mono">
                   {(sellerData?.debt || 0).toLocaleString()} <span className="text-xs font-normal text-slate-400">تومان</span>
                 </p>
-                <p className="text-[11px] text-slate-500">خریدها طبق این مبلغ در حساب شما ثبت می‌شوند</p>
+                <p className="text-[11px] text-slate-500">مجموع مبالغ ثبت شده بدهی همکاری</p>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-2">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-2 shadow-lg">
                 <span className="text-xs text-slate-400">سقف مجاز اعتبار خرید:</span>
                 <p className="text-2xl font-black text-emerald-400 font-mono">
                   {sellerData?.isUnlimitedLimit ? 'نامحدود (سقف آزاد)' : `${(sellerData?.debtLimit || 0).toLocaleString()} تومان`}
@@ -584,21 +997,31 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                 <p className="text-[11px] text-slate-500">حد مجاز بدهکار شدن حساب همکار</p>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-2">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-2 shadow-lg">
                 <span className="text-xs text-slate-400">تخفیف اختصاصی شما:</span>
                 <p className="text-2xl font-black text-amber-400 font-mono">
                   {sellerData?.sellerDiscount || 0}٪ <span className="text-xs font-normal text-slate-400">تخفیف همکاری</span>
                 </p>
-                <p className="text-[11px] text-slate-500">اعمال خودکار روی تمام خریدهای جدید</p>
+                <p className="text-[11px] text-slate-500">کسر مستقیم از قیمت تمام پکیج‌ها</p>
               </div>
             </div>
 
             {/* Financial Overview Card */}
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4">
-              <h3 className="font-bold text-slate-100 text-base flex items-center gap-2 border-b border-slate-800 pb-3">
-                <CreditCard className="w-5 h-5 text-emerald-400" />
-                <span>خلاصه تراز مالی و واریزی‌ها</span>
-              </h3>
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5 shadow-xl">
+              <div className="flex items-center justify-between flex-wrap gap-3 border-b border-slate-800 pb-4">
+                <h3 className="font-bold text-slate-100 text-base flex items-center gap-2">
+                  <CreditCard className="w-5 h-5 text-emerald-400" />
+                  <span>تراز مالی و تسویه بدهی همکار</span>
+                </h3>
+
+                <button
+                  onClick={() => setShowDebtPaymentModal(true)}
+                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-emerald-500/20 transition flex items-center gap-1.5"
+                >
+                  <CreditCard className="w-4 h-4" />
+                  <span>پرداخت بدهی (کارت به کارت)</span>
+                </button>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
                 <div className="bg-slate-950 p-4 rounded-2xl space-y-1">
@@ -623,114 +1046,14 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
               </div>
 
               <div className="bg-slate-950 p-4 rounded-2xl text-xs text-slate-400 leading-relaxed space-y-2">
-                <p className="text-slate-200 font-bold">💳 راهنمای پرداخت و تسویه بدهی:</p>
-                <p>جهت واریز یا تسویه بدهی حساب خود، می‌توانید در ربات تلگرام روی دکمه <span className="text-emerald-400 font-bold">«💳 پرداخت بدهی (مبلغ دلخواه)»</span> بزنید یا مستقیم با مدیریت تماس بگیرید.</p>
+                <p className="text-slate-200 font-bold">💳 اطلاعات حساب جهت واریز:</p>
+                <div className="flex items-center gap-4 flex-wrap text-slate-300 font-mono">
+                  <span>شماره کارت: <b>{bankInfo.cardNumber}</b></span>
+                  <span>به نام: <b>{bankInfo.cardHolder}</b></span>
+                </div>
+                <p className="pt-2 text-slate-400">پس از واریز، با زدن دکمه <b>«پرداخت بدهی»</b> عکس فیش را ارسال فرمایید تا کسر از بدهی ثبت گردد.</p>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* TAB 3: SOLD CONFIGS & PURCHASES */}
-        {activeTab === 'purchases' && (
-          <div className="space-y-4">
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
-              <input
-                type="text"
-                value={purchasesSearchQuery}
-                onChange={(e) => setPurchasesSearchQuery(e.target.value)}
-                placeholder="جستجوی کانفیگ، عنوان مشتری یا کد ساب..."
-                className="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
-              />
-            </div>
-
-            {sellerPurchases.length === 0 ? (
-              <div className="text-center py-12 bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-                <List className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                <p className="text-slate-400 text-sm">هیچ کانفیگی در این بخش یافت نشد.</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {sellerPurchases.map((p: any) => (
-                  <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 hover:border-slate-700 transition">
-                    <div className="flex justify-between items-start flex-wrap gap-2">
-                      <div>
-                        <h4 className="font-bold text-slate-100 text-sm flex items-center gap-2">
-                          <span>{p.name || 'سرویس'}</span>
-                          {p.disabled ? (
-                            <span className="bg-rose-500/20 text-rose-400 text-[10px] px-2 py-0.5 rounded-full border border-rose-500/30">
-                              🔴 غیرفعال (مسدود)
-                            </span>
-                          ) : (
-                            <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/30">
-                              🟢 فعال
-                            </span>
-                          )}
-                          {p.isPayAsYouGo ? (
-                            <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-0.5 rounded-full border border-amber-500/30">
-                              مصرف آزاد
-                            </span>
-                          ) : (
-                            <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/30">
-                              {p.volumeGb} GB / {p.durationDays} روز
-                            </span>
-                          )}
-                        </h4>
-                        <p className="text-[11px] text-slate-500 font-mono mt-1" dir="ltr">
-                          ID: {p.id}
-                        </p>
-                      </div>
-
-                      <div className="text-left text-xs">
-                        <span className="text-slate-500 block">تاریخ خرید:</span>
-                        <span className="text-slate-300 font-mono">
-                          {p.createdAt ? new Date(p.createdAt).toLocaleDateString('fa-IR') : '—'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-950 p-3 rounded-xl flex items-center justify-between text-xs flex-wrap gap-2">
-                      <div>
-                        <span className="text-slate-500">مبلغ خرید عمده: </span>
-                        <span className="font-bold text-emerald-400 font-mono">{(p.price || 0).toLocaleString()} تومان</span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          disabled={togglingPurchaseId === p.id}
-                          onClick={() => handleToggleEnablePurchase(p.id, !!p.disabled)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                            p.disabled
-                              ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/40'
-                              : 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 border border-rose-500/40'
-                          }`}
-                          title="فعال‌سازی یا غیرفعال‌سازی آنی این کانفیگ در سرور"
-                        >
-                          <Zap className="w-3.5 h-3.5" />
-                          <span>{togglingPurchaseId === p.id ? 'در حال تغییر...' : (p.disabled ? '✅ فعال‌سازی' : '🛑 غیرفعال‌سازی')}</span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setViewingPurchase(p);
-                            const mainSub = p.subUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || '';
-                            if (mainSub) {
-                              import('qrcode').then(QRCode => {
-                                QRCode.toDataURL(mainSub, { width: 350, margin: 2 }).then(setViewingQrCode).catch(() => {});
-                              });
-                            }
-                          }}
-                          className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg text-xs font-bold transition flex items-center gap-1"
-                        >
-                          <QrCode className="w-3.5 h-3.5" />
-                          <span>کد QR و متن بدون نام</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -845,12 +1168,12 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-4">
               <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2 border-b border-slate-800 pb-3">
                 <BarChart3 className="w-5 h-5 text-emerald-400" />
-                <span>ریز گزارش فروش و سرویس‌های ساخته شده</span>
+                <span>ریز گزارش فروش و کانفیگ‌های ساخته شده</span>
               </h3>
 
               <div className="space-y-2">
                 {currentReport.salesItems.length === 0 ? (
-                  <p className="text-xs text-slate-500 text-center py-6">هیچ فروشی در این بازه زمانی وجود ندارد.</p>
+                  <p className="text-xs text-slate-500 text-center py-6">هیچ فروشی در این بازه زمانی ثبت نشده است.</p>
                 ) : (
                   currentReport.salesItems.map((item: any) => (
                     <div key={item.id} className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 flex items-center justify-between text-xs flex-wrap gap-2">
@@ -873,14 +1196,14 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
 
       </main>
 
-      {/* Settings Modal */}
+      {/* Settings Modal: Custom Customer Pricing (Only active ready-for-sale products!) */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
           <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
               <div className="flex items-center gap-2">
                 <Sliders className="w-5 h-5 text-emerald-400" />
-                <h2 className="font-bold text-slate-100 text-base">تنظیم لیست قیمت فروشگاهی مشتری</h2>
+                <h2 className="font-bold text-slate-100 text-base">تعیین قیمت فروشگاهی محصولات آماده فروش</h2>
               </div>
               <button onClick={() => setShowSettingsModal(false)} className="text-slate-400 hover:text-slate-200 p-1">
                 <X className="w-5 h-5" />
@@ -888,11 +1211,11 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             </div>
 
             <div className="text-xs text-slate-400 mb-4 bg-slate-950 p-3 rounded-2xl border border-slate-800 leading-relaxed">
-              💡 <b>توجه:</b> قیمت‌های وارد شده در این بخش صرفاً برای <b>نمایش به مشتری حضوری</b> است و هیچ تاثیری در قیمت خرید عمده شما در ربات ندارد.
+              💡 <b>راهنما:</b> این لیست صرفاً شامل <b>محصولات فعال و آماده فروش</b> است. قیمتی که در اینجا وارد می‌کنید به مشتری حضوری نمایش داده شده و سود هر فروش را مشخص می‌نماید.
             </div>
 
             <div className="flex items-center justify-between bg-slate-950 p-3.5 rounded-2xl border border-slate-800 mb-4">
-              <span className="text-xs font-medium text-slate-200">نمایش قیمت‌های سفارشی به مشتری</span>
+              <span className="text-xs font-medium text-slate-200">نمایش قیمت‌های سفارشی شما به مشتریان</span>
               <input
                 type="checkbox"
                 checked={showCustomPricesOnly}
@@ -902,34 +1225,59 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             </div>
 
             <div className="overflow-y-auto space-y-3 flex-1 pr-1">
-              {products.map((p) => (
-                <div key={p.id} className="flex items-center justify-between gap-3 bg-slate-950/80 p-3 rounded-2xl border border-slate-800">
-                  <div className="flex-1">
-                    <p className="text-xs font-bold text-slate-200">{p.name}</p>
-                    <p className="text-[10px] text-slate-500">
-                      {p.isPayAsYouGo ? 'مصرف آزاد' : `${p.volumeGb}GB / ${p.durationDays}روز`}
-                    </p>
-                  </div>
+              {products.length === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-6">هیچ محصول فعالی برای قیمت‌گذاری یافت نشد.</p>
+              ) : (
+                products.map((p) => {
+                  const wholesale = p.realWholesalePrice || 0;
+                  const currentCustom = customPrices[p.id] !== undefined ? customPrices[p.id] : '';
+                  const profit = typeof currentCustom === 'number' && currentCustom > wholesale ? currentCustom - wholesale : 0;
 
-                  <div className="w-36">
-                    <input
-                      type="number"
-                      value={customPrices[p.id] !== undefined ? customPrices[p.id] : ''}
-                      onChange={(e) => {
-                        const val = e.target.value === '' ? undefined : Number(e.target.value);
-                        setCustomPrices(prev => {
-                          const next = { ...prev };
-                          if (val === undefined) delete next[p.id];
-                          else next[p.id] = val;
-                          return next;
-                        });
-                      }}
-                      placeholder="قیمت تومان"
-                      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-100 text-xs focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                </div>
-              ))}
+                  return (
+                    <div key={p.id} className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs font-bold text-slate-100">{p.name}</p>
+                          <p className="text-[11px] text-slate-400">
+                            {p.isPayAsYouGo ? 'مصرف آزاد' : `${p.volumeGb} GB / ${p.durationDays} روز`}
+                          </p>
+                        </div>
+                        <div className="text-left">
+                          <span className="text-[10px] text-slate-500 block">خرید عمده شما:</span>
+                          <span className="text-xs font-bold text-rose-400 font-mono">{wholesale.toLocaleString()} تومان</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
+                        <div className="flex items-center gap-2 flex-1">
+                          <span className="text-xs text-slate-300 whitespace-nowrap">قیمت مشتری:</span>
+                          <input
+                            type="number"
+                            value={currentCustom}
+                            onChange={(e) => {
+                              const val = e.target.value === '' ? undefined : Number(e.target.value);
+                              setCustomPrices(prev => {
+                                const next = { ...prev };
+                                if (val === undefined) delete next[p.id];
+                                else next[p.id] = val;
+                                return next;
+                              });
+                            }}
+                            placeholder="تومان"
+                            className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700/80 rounded-xl text-slate-100 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                        {profit > 0 && (
+                          <div className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-xl whitespace-nowrap text-left">
+                            <span className="text-[10px] text-emerald-400 block font-medium">سود شما:</span>
+                            <span className="text-xs font-bold text-emerald-400 font-mono">+{profit.toLocaleString()} ت</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
 
             <div className="pt-4 border-t border-slate-800 mt-4 flex justify-end gap-2">
@@ -944,7 +1292,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                 disabled={savingSettings}
                 className="px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl transition"
               >
-                {savingSettings ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}
+                {savingSettings ? 'در حال ذخیره...' : 'ذخیره لیست قیمت‌ها'}
               </button>
             </div>
           </div>
@@ -1000,12 +1348,12 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">عنوان اختصاصی کانفیگ برای مشتری (اختیاری)</label>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">عنوان مشتری یا نام دلخواه کانفیگ (اختیاری)</label>
               <input
                 type="text"
                 value={customClientName}
                 onChange={(e) => setCustomClientName(e.target.value)}
-                placeholder="مثال: علی - آیفون"
+                placeholder="مثال: علی - آیفون ۱۶"
                 className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500"
               />
             </div>
@@ -1026,10 +1374,179 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   <span>در حال ساخت کانفیگ...</span>
                 ) : (
                   <>
-                    <span>تأیید و دریافت کانفیگ</span>
+                    <span>تأیید و ساخت فوری کانفیگ</span>
                     <Check className="w-4 h-4" />
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Free Test Modal */}
+      {showFreeTestModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Gift className="w-5 h-5 text-amber-400" />
+                <h2 className="font-bold text-slate-100 text-base">ساخت اکانت تست رایگان برای مشتری</h2>
+              </div>
+              <button onClick={() => setShowFreeTestModal(false)} className="text-slate-400 hover:text-slate-200">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">حجم تست:</span>
+                <span className="font-bold text-slate-100">{freeTestInfo.volumeGb} گیگابایت</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">مدت اعتبار:</span>
+                <span className="font-bold text-slate-100">{freeTestInfo.durationDays} روز</span>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-slate-800/80 text-emerald-400 font-bold">
+                <span>هزینه همکار:</span>
+                <span>۰ تومان (کاملاً رایگان)</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">عنوان تست برای مشتری (اختیاری)</label>
+              <input
+                type="text"
+                value={freeTestClientName}
+                onChange={(e) => setFreeTestClientName(e.target.value)}
+                placeholder="مثال: رضا - تست"
+                className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-xs focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setShowFreeTestModal(false)}
+                className="px-4 py-2.5 bg-slate-800 text-slate-300 text-xs font-medium rounded-xl"
+              >
+                انصراف
+              </button>
+              <button
+                onClick={handleCreateFreeTest}
+                disabled={creatingFreeTest}
+                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-lg transition flex items-center gap-1.5"
+              >
+                {creatingFreeTest ? <span>در حال ساخت تست...</span> : <span>ساخت و دریافت آنی تست</span>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Renew Purchase Modal */}
+      {renewingPurchase && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="w-5 h-5 text-blue-400" />
+                <h2 className="font-bold text-slate-100 text-base">تمدید سرویس مشتری</h2>
+              </div>
+              <button onClick={() => setRenewingPurchase(null)} className="text-slate-400 hover:text-slate-200">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">نام سرویس:</span>
+                <span className="font-bold text-slate-100">{renewingPurchase.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">مشخصات تمدید:</span>
+                <span className="text-slate-200">{renewingPurchase.volumeGb} GB / {renewingPurchase.durationDays} روز</span>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-slate-800 text-rose-400 font-bold">
+                <span>ثبت در بدهی همکار:</span>
+                <span>{(renewingPurchase.price || 0).toLocaleString()} تومان</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              با تمدید، حجم و تاریخ انقضای کانفیگ در سرور مجدداً از نو تنظیم شده و در صورت قطع بودن به حالت متصل بازمی‌گردد.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setRenewingPurchase(null)}
+                className="px-4 py-2.5 bg-slate-800 text-slate-300 text-xs font-medium rounded-xl"
+              >
+                انصراف
+              </button>
+              <button
+                onClick={handleRenewPurchase}
+                disabled={isRenewing}
+                className="px-5 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs rounded-xl shadow-lg transition flex items-center gap-1.5"
+              >
+                {isRenewing ? <span>در حال تمدید...</span> : <span>تأیید و تمدید در سرور</span>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Purchase Modal */}
+      {renamingPurchase && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+            <h3 className="font-bold text-slate-100 text-sm">تغییر عنوان کانفیگ</h3>
+            <input
+              type="text"
+              value={newConfigName}
+              onChange={(e) => setNewConfigName(e.target.value)}
+              placeholder="عنوان جدید مشتری..."
+              className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-2xl text-slate-100 text-xs focus:outline-none focus:border-emerald-500"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setRenamingPurchase(null)}
+                className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl"
+              >
+                انصراف
+              </button>
+              <button
+                onClick={handleRenamePurchase}
+                disabled={isRenaming}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl"
+              >
+                {isRenaming ? 'در حال ثبت...' : 'ذخیره'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deletingPurchase && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+            <h3 className="font-bold text-rose-400 text-sm">حذف کامل کانفیگ</h3>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              آیا از حذف کامل کانفیگ «{deletingPurchase.name || deletingPurchase.id}» اطمینان دارید؟ این عملیات کانفیگ را از سرور و لیست شما حذف خواهد کرد.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setDeletingPurchase(null)}
+                className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl"
+              >
+                انصراف
+              </button>
+              <button
+                onClick={handleDeletePurchase}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs rounded-xl"
+              >
+                {isDeleting ? 'در حال حذف...' : 'تأیید حذف'}
               </button>
             </div>
           </div>
@@ -1062,7 +1579,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                 <span>اطلاعات بدون نام و برند آماده ارسال به مشتری</span>
               </p>
               <pre className="whitespace-pre-wrap font-vazir text-[11px] text-slate-300 bg-slate-900/80 p-3 rounded-xl border border-slate-800 overflow-x-auto">
-                {purchaseResult.cleanMessage.replace(/<[^>]+>/g, '')}
+                {purchaseResult.cleanMessage ? purchaseResult.cleanMessage.replace(/<[^>]+>/g, '') : ''}
               </pre>
             </div>
 
@@ -1122,6 +1639,28 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
               </pre>
             </div>
 
+            {/* Clean Message for Client */}
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs text-slate-300 space-y-2">
+              <p className="font-bold text-slate-100 border-b border-slate-800/80 pb-2 flex items-center justify-between">
+                <span>💬 پیام بدون برند مخصوص ارسال به مشتری:</span>
+                <button
+                  onClick={() => {
+                    const text = getCleanCustomerMessage(viewingPurchase);
+                    navigator.clipboard.writeText(text);
+                    setCopiedCleanMsg(true);
+                    setTimeout(() => setCopiedCleanMsg(false), 2500);
+                  }}
+                  className="text-emerald-400 hover:text-emerald-300 text-[11px] flex items-center gap-1 font-bold"
+                >
+                  {copiedCleanMsg ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedCleanMsg ? 'کپی شد!' : 'کپی پیام'}</span>
+                </button>
+              </p>
+              <pre className="whitespace-pre-wrap font-vazir text-[11px] text-slate-400 bg-slate-900/60 p-3 rounded-xl border border-slate-800/80 overflow-x-auto">
+                {getCleanCustomerMessage(viewingPurchase)}
+              </pre>
+            </div>
+
             <div className="space-y-2">
               <button
                 onClick={() => {
@@ -1143,6 +1682,93 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                 بستن
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Debt Payment Modal */}
+      {showDebtPaymentModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-5 h-5 text-emerald-400" />
+                <h2 className="font-bold text-slate-100 text-base">پرداخت بدهی همکاری</h2>
+              </div>
+              <button onClick={() => setShowDebtPaymentModal(false)} className="text-slate-400 hover:text-slate-200">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {debtPaymentSuccessMsg ? (
+              <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl text-emerald-400 text-xs leading-relaxed text-center space-y-2">
+                <Check className="w-8 h-8 mx-auto" />
+                <p className="font-bold">{debtPaymentSuccessMsg}</p>
+              </div>
+            ) : (
+              <form onSubmit={handleDebtPaymentSubmit} className="space-y-4">
+                <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">شماره کارت مدیریت:</span>
+                    <span className="font-bold text-slate-200 font-mono" dir="ltr">{bankInfo.cardNumber}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">نام صاحب کارت:</span>
+                    <span className="font-bold text-slate-200">{bankInfo.cardHolder}</span>
+                  </div>
+                  <div className="flex justify-between pt-1 border-t border-slate-800 text-rose-400 font-bold">
+                    <span>بدهی فعلی شما:</span>
+                    <span>{(sellerData?.debt || 0).toLocaleString()} تومان</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">مبلغ واریزی به تومان</label>
+                  <input
+                    type="text"
+                    value={debtPaymentAmount}
+                    onChange={(e) => setDebtPaymentAmount(e.target.value)}
+                    placeholder="مثال: ۵۰۰۰۰۰"
+                    className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-2xl text-slate-100 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">تصویر فیش واریزی (اختیاری)</label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onloadend = () => setDebtReceiptBase64(reader.result as string);
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    className="w-full text-xs text-slate-400 file:mr-0 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-slate-200 hover:file:bg-slate-700"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowDebtPaymentModal(false)}
+                    className="px-4 py-2.5 bg-slate-800 text-slate-300 text-xs font-medium rounded-xl"
+                  >
+                    انصراف
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submittingDebtPayment}
+                    className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl shadow-lg transition"
+                  >
+                    {submittingDebtPayment ? 'در حال ارسال...' : 'ارسال فیش و تایید'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

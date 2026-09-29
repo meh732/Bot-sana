@@ -106,6 +106,7 @@ export interface Purchase {
   expiredAt?: number;
   expiryDate?: string;
   isDeleted?: boolean;
+  disabled?: boolean;
 }
 
 export interface UserTransaction {
@@ -125,6 +126,12 @@ export interface User {
   chatId: number;
   username?: string;
   nickname?: string;
+  name?: string;
+  portalUsername?: string;
+  portalPassword?: string;
+  customDisplayPrices?: Record<string, number>;
+  showCustomPricesOnly?: boolean;
+  hidePricesInBot?: boolean;
   balance: number;
   testUsed: boolean;
   registeredAt: string;
@@ -159,16 +166,19 @@ export interface PendingPayment {
   chatId: number;
   amount: number;
   fileId?: string;
+  receiptBase64?: string;
   timestamp: number;
   pendingPurchase?: {
-    productId: string;
+    productId?: string;
     couponCode?: string;
     customName?: string;
+    isSellerDebtPayment?: boolean;
   };
 }
 
 export interface AppState {
   botToken?: string;
+  portalDomain?: string;
   activePanelMode?: PanelType | 'xui';
   panel: PanelConfig;
   rebeccaPanel?: RebeccaPanelConfig;
@@ -355,7 +365,13 @@ class Database {
       candidatePaths.push(
         path.join(process.cwd(), 'db.json.bak'),
         path.join(process.cwd(), '..', 'db.json.bak'),
-        '/tmp/db.json.bak'
+        '/tmp/sanaei_db_backup.json',
+        '/tmp/sanaei_backup.json',
+        '/tmp/sanaei-bot-db.json',
+        '/tmp/db.json.bak',
+        '/tmp/db_backup.json',
+        '/root/db.json.bak',
+        '/root/sanaei-bot/db.json.bak'
       );
 
       for (const bPath of candidatePaths) {
