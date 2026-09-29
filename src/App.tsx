@@ -602,7 +602,8 @@ function SettingsView() {
         autoBackupIntervalHours: state.autoBackupIntervalHours !== undefined ? Number(state.autoBackupIntervalHours) : 0,
         autoBackupPassword: state.autoBackupPassword || '',
         forceJoinEnabled: state.forceJoinEnabled || false,
-        forceJoinChannels: state.forceJoinChannels || []
+        forceJoinChannels: state.forceJoinChannels || [],
+        portalDomain: state.portalDomain || ''
       })
     });
     const data = await res.json();
@@ -1655,6 +1656,19 @@ function SettingsView() {
                   dir="ltr" 
                   placeholder="SupportAdmin" 
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">🌐 آدرس/دامنه پورتال همکاران (مستقل از دامنه ساب پنل‌ها)</label>
+                <input 
+                  type="text" 
+                  value={state.portalDomain || ''} 
+                  onChange={e => setState({...state, portalDomain: e.target.value})} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="مثال: https://mybotdomain.com یا http://94.183.184.94:3000" 
+                />
+                <p className="text-[11px] text-slate-500 mt-1">آدرسی که هنگام لمس «پورتال بی‌نام» به همکار داده می‌شود (مستقل از دامنه ساب). در صورت خالی بودن از پورت سرور استفاده می‌شود.</p>
               </div>
 
               <div>
@@ -3128,6 +3142,29 @@ function SellersView() {
     }
   };
 
+  const handleToggleEnablePurchase = async (chatId: number, purchaseId: string, currentDisabled: boolean) => {
+    const nextEnable = !!currentDisabled; // If currently disabled, enable it
+    try {
+      const res = await fetch(`/api/users/${chatId}/purchases/${purchaseId}/toggle-enable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: nextEnable })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || (nextEnable ? 'کانفیگ فعال شد.' : 'کانفیگ غیرفعال شد.'));
+        fetchUsers();
+        if (servicesModalUser && servicesModalUser.chatId === chatId) {
+          setServicesModalUser(data.user);
+        }
+      } else {
+        alert('خطا: ' + (data.message || 'عملیات ناموفق بود'));
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور: ' + e.message);
+    }
+  };
+
   const editPortalCredentials = async (user: any) => {
     const currentUsername = user.portalUsername || user.username || `seller_${user.chatId}`;
     const currentPassword = user.portalPassword || '123456';
@@ -3517,6 +3554,15 @@ function SellersView() {
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-slate-800">{p.name || 'سرویس'}</span>
+                              {p.disabled ? (
+                                <span className="bg-rose-100 text-rose-800 text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  🛑 غیرفعال (بسته)
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  ✅ فعال
+                                </span>
+                              )}
                               {p.isPayAsYouGo ? (
                                 <span className="bg-amber-100 text-amber-800 text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
                                   ⚡ مصرف آزاد (PAYG)
@@ -3571,6 +3617,16 @@ function SellersView() {
                               </div>
                               <div className="flex items-center gap-2">
                                 <button
+                                  onClick={() => handleToggleEnablePurchase(servicesModalUser.chatId, p.id, !!p.disabled)}
+                                  className={`px-3 py-1.5 rounded font-bold text-xs transition flex items-center gap-1 ${
+                                    p.disabled
+                                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                      : 'bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300'
+                                  }`}
+                                >
+                                  {p.disabled ? '✅ فعال‌سازی کانفیگ' : '🛑 غیرفعال‌سازی کانفیگ'}
+                                </button>
+                                <button
                                   onClick={() => handleSettlePaygPurchase(servicesModalUser.chatId, p.id)}
                                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium text-xs transition flex items-center gap-1 shadow-sm"
                                   title="انتقال کل مصرف فعلی به حجم مبنا تا از این حجم به بعد محاسبه شود"
@@ -3589,13 +3645,20 @@ function SellersView() {
                             </div>
                           </div>
                         ) : (
-                          <div className="bg-white border border-slate-200 rounded-lg p-3 text-xs flex justify-between items-center">
+                          <div className="bg-white border border-slate-200 rounded-lg p-3 text-xs flex justify-between items-center gap-2 flex-wrap">
                             <div>
-                              حجم کل: <span className="font-bold font-mono">{p.volume} GB</span> | مصرف: <span className="font-mono">{totalUsedGb.toFixed(2)} GB</span>
+                              حجم کل: <span className="font-bold font-mono">{p.volume} GB</span> | مصرف: <span className="font-mono">{totalUsedGb.toFixed(2)} GB</span> | قیمت: <span className="font-bold font-mono text-slate-800">{(p.price || 0).toLocaleString()} تومان</span>
                             </div>
-                            <div>
-                              قیمت پکیج: <span className="font-bold font-mono text-slate-800">{(p.price || 0).toLocaleString()} تومان</span>
-                            </div>
+                            <button
+                              onClick={() => handleToggleEnablePurchase(servicesModalUser.chatId, p.id, !!p.disabled)}
+                              className={`px-3 py-1.5 rounded font-bold text-xs transition flex items-center gap-1 ${
+                                p.disabled
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                  : 'bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300'
+                              }`}
+                            >
+                              {p.disabled ? '✅ فعال‌سازی کانفیگ' : '🛑 غیرفعال‌سازی کانفیگ'}
+                            </button>
                           </div>
                         )}
                       </div>

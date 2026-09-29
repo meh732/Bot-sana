@@ -721,15 +721,22 @@ async function startServer() {
     const { isSeller } = req.body;
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false });
-    user.isSeller = isSeller;
-    if (isSeller) {
+    user.isSeller = Boolean(isSeller);
+    if (user.isSeller) {
       if (user.debt === undefined) user.debt = 0;
       if (user.debtVolume === undefined) user.debtVolume = 0;
       if (user.debtLimit === undefined) user.debtLimit = 1000000; // Default 1M Toman Limit
       if (user.totalSales === undefined) user.totalSales = 0;
+      if (!user.portalUsername) user.portalUsername = user.username || `seller_${user.chatId}`;
+      if (!user.portalPassword) user.portalPassword = Math.floor(100000 + Math.random() * 900000).toString();
+    } else {
+      // Clear portal credentials when reseller access is revoked
+      user.portalUsername = undefined;
+      user.portalPassword = undefined;
+      user.customDisplayPrices = undefined;
     }
     db.saveUser(user);
-    res.json({ success: true });
+    res.json({ success: true, user, users: db.getState().users });
   });
 
   api.post("/users/:chatId/reset-test", (req, res) => {
@@ -897,6 +904,53 @@ async function startServer() {
     res.json({ success: true, message: result.message, user: updated, users: db.getState().users });
   });
 
+  api.post("/settings/portal-domain", (req, res) => {
+    const { portalDomain } = req.body;
+    const domainStr = portalDomain ? String(portalDomain).trim() : '';
+    db.updateState({ portalDomain: domainStr });
+    res.json({ success: true, portalDomain: domainStr, state: db.getState() });
+  });
+
+  api.post("/users/:chatId/purchases/:purchaseId/toggle-enable", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
+
+      const purchaseId = req.params.purchaseId;
+      const purchases = user.purchases || [];
+      const purchase = purchases.find((p: any) => 
+        p.id === purchaseId || 
+        p.subId === purchaseId || 
+        (p.id && String(p.id).toLowerCase() === String(purchaseId).toLowerCase())
+      );
+
+      if (!purchase) {
+        return res.status(404).json({ success: false, message: 'کانفیگ پیدا نشد' });
+      }
+
+      const { enable } = req.body;
+      const targetEnable = enable !== undefined ? !!enable : !!purchase.disabled;
+
+      // Call MultiPanel service to enable/disable on servers
+      await multiPanel.updateClientEnable(purchase, targetEnable);
+
+      purchase.disabled = !targetEnable;
+      db.saveUser(user);
+
+      res.json({
+        success: true,
+        enable: targetEnable,
+        message: targetEnable ? 'کانفیگ با موفقیت در سرورها فعال شد.' : 'کانفیگ با موفقیت در سرورها غیرفعال شد.',
+        purchase,
+        user,
+        users: db.getState().users
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در تغییر وضعیت کانفیگ' });
+    }
+  });
+
   api.post("/users/:chatId/recalculate", async (req, res) => {
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false, message: 'کاربر پیدا نشد' });
@@ -914,28 +968,33 @@ async function startServer() {
   api.post("/seller-portal/login", (req, res) => {
     const { username, password, chatId } = req.body;
     const state = db.getState();
-    const sellers = (state.users || []).filter((u: any) => u.isSeller);
+    const allUsers = state.users || [];
 
     let targetSeller: any = null;
     if (chatId) {
-      targetSeller = sellers.find((u: any) => String(u.chatId) === String(chatId));
+      targetSeller = allUsers.find((u: any) => String(u.chatId) === String(chatId));
     }
     if (!targetSeller && username) {
       const uLower = String(username).trim().toLowerCase();
-      targetSeller = sellers.find((u: any) => 
+      targetSeller = allUsers.find((u: any) => 
         (u.portalUsername && String(u.portalUsername).toLowerCase() === uLower) ||
         (u.username && String(u.username).toLowerCase() === uLower) ||
         (String(u.chatId) === uLower)
       );
-      if (targetSeller && targetSeller.portalPassword) {
-        if (String(password).trim() !== String(targetSeller.portalPassword).trim()) {
-          return res.status(401).json({ success: false, message: 'کلمه عبور وارد شده اشتباه است.' });
-        }
-      }
     }
 
     if (!targetSeller) {
       return res.status(404).json({ success: false, message: 'همکار فروشنده‌ای با این مشخصات یافت نشد.' });
+    }
+
+    if (!targetSeller.isSeller) {
+      return res.status(403).json({ success: false, message: 'دسترسی همکار شما توسط مدیریت لغو گردیده است و امکان ورود به پورتال وجود ندارد.' });
+    }
+
+    if (targetSeller.portalPassword && password) {
+      if (String(password).trim() !== String(targetSeller.portalPassword).trim()) {
+        return res.status(401).json({ success: false, message: 'کلمه عبور وارد شده اشتباه است.' });
+      }
     }
 
     res.json({

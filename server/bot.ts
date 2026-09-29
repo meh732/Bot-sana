@@ -948,6 +948,44 @@ export function isUserAdmin(chatId: number | string | undefined, state?: any): b
   return s.adminIds.some((id: any) => String(id).trim() === targetIdStr);
 }
 
+export function getSystemPortalUrl(): string {
+  const state = db.getState();
+  
+  // 1. Domain configured in Admin UI Settings
+  let configuredDomain = (state.portalDomain || '').trim();
+
+  // 2. Domain specified during Linux installation in environment variables / .env
+  let envDomain = (
+    process.env.DOMAIN || 
+    process.env.SERVER_DOMAIN || 
+    process.env.BOT_DOMAIN || 
+    process.env.PANEL_DOMAIN || 
+    process.env.APP_URL || 
+    ''
+  ).trim();
+
+  let targetHost = configuredDomain || envDomain;
+  const port = (process.env.PORT || '3000').trim();
+
+  if (targetHost) {
+    targetHost = targetHost.replace(/\/+$/, '');
+    if (!targetHost.startsWith('http://') && !targetHost.startsWith('https://')) {
+      targetHost = `https://${targetHost}`;
+    }
+    return targetHost.endsWith('/seller') ? targetHost : `${targetHost}/seller`;
+  }
+
+  // 3. If no domain was provided during Linux setup, use VPS Public IP + Port
+  const publicIp = (
+    process.env.SERVER_IP || 
+    process.env.PUBLIC_IP || 
+    process.env.HOST_IP || 
+    '94.183.184.94'
+  ).trim();
+
+  return `http://${publicIp}:${port}/seller`;
+}
+
 function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
   const keyboard = [];
   const firstRow = [];
@@ -2808,17 +2846,7 @@ export async function initBot() {
       if (!userObj.portalPassword) userObj.portalPassword = Math.floor(100000 + Math.random() * 900000).toString();
       db.saveUser(userObj);
 
-      const panelBase = state.panel?.subUrlBase || state.rebeccaPanel?.subUrlBase || process.env.APP_URL || '';
-      let portalUrl = '';
-      if (panelBase && panelBase.startsWith('http')) {
-        try {
-          const u = new URL(panelBase);
-          portalUrl = `${u.protocol}//${u.host}/seller`;
-        } catch {}
-      }
-      if (!portalUrl) {
-        portalUrl = `http://94.183.184.94:2020/seller`;
-      }
+      const portalUrl = getSystemPortalUrl();
 
       const msgText = `🌐 <b>پورتال اختصاصی و بی‌نام همکار (مخصوص فروش حضوری)</b>:\n\n` +
         `شما می‌توانید با ورود به آدرس زیر در مرورگر گوشی خود، بدون نمایش قیمت خرید یا نام ربات، برای مشتریان حضوری کانفیگ بسازید و تحویل دهید:\n\n` +
