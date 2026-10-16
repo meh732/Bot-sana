@@ -60,11 +60,15 @@ ensure_swap_and_memory() {
     SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
     if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -lt 500 ]; then
         if [ "$EUID" -eq 0 ]; then
-            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash on 1GB VPS...${NC}"
-            fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
-            chmod 600 /swapfile 2>/dev/null
-            mkswap /swapfile &>/dev/null
-            swapon /swapfile &>/dev/null
+            if [ -f "/swapfile" ]; then
+                swapon /swapfile 2>/dev/null
+            else
+                echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash on 1GB VPS...${NC}"
+                fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
+                chmod 600 /swapfile 2>/dev/null
+                mkswap /swapfile 2>/dev/null
+                swapon /swapfile 2>/dev/null
+            fi
             echo -e "${GREEN}✅ 2GB Emergency swap memory activated successfully.${NC}"
         fi
     fi
