@@ -1,11 +1,22 @@
 #!/bin/bash
 
-# Prevent git reset --hard from interrupting/corrupting running bash script
-if [ "$1" != "--in-tmp" ]; then
+# Safe exit helper: returns safely if script was sourced, preventing SSH terminal close
+safe_exit() {
+    local code=${1:-0}
+    return $code 2>/dev/null || exit $code
+}
+
+# Prevent git reset --hard from interrupting running bash script without replacing parent shell
+if [ "$1" != "--in-tmp" ] && [ -f "$0" ] && [ -s "$0" ] && [[ "$0" != /dev/fd/* ]]; then
     TMP_INSTALLER="/tmp/sanaei_install_runner_$$_$RANDOM.sh"
-    cp "$0" "$TMP_INSTALLER" 2>/dev/null || cat "$0" > "$TMP_INSTALLER"
-    chmod +x "$TMP_INSTALLER" 2>/dev/null
-    exec bash "$TMP_INSTALLER" "--in-tmp" "$@"
+    cp "$0" "$TMP_INSTALLER" 2>/dev/null
+    if [ -f "$TMP_INSTALLER" ] && [ -s "$TMP_INSTALLER" ]; then
+        chmod +x "$TMP_INSTALLER" 2>/dev/null
+        bash "$TMP_INSTALLER" "--in-tmp" "$@"
+        EXIT_CODE=$?
+        rm -f "$TMP_INSTALLER" 2>/dev/null
+        safe_exit $EXIT_CODE
+    fi
 fi
 
 # Terminal Colors
@@ -26,7 +37,7 @@ echo -e "${CYAN}=============================================${NC}"
 # Check to see if running as root
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}❌ Please run this script as root (e.g., sudo bash install.sh)${NC}"
-  exit 1
+  safe_exit 1
 fi
 
 GIT_URL="https://github.com/meh732/Bot-sana.git"
@@ -44,8 +55,24 @@ show_menu() {
   read -p "Enter choice [1-5]: " CHOICE
 }
 
+# Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
+ensure_swap_and_memory() {
+    SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
+    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -eq 0 ]; then
+        if [ "$EUID" -eq 0 ]; then
+            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 1GB emergency swap file to prevent OOM crash...${NC}"
+            fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 2>/dev/null
+            chmod 600 /swapfile 2>/dev/null
+            mkswap /swapfile &>/dev/null
+            swapon /swapfile &>/dev/null
+            echo -e "${GREEN}✅ Emergency swap memory active.${NC}"
+        fi
+    fi
+}
+
 do_install_dependencies() {
   echo -e "\n${CYAN}>> Checking system dependencies (Node.js, Git, Build Tools)...${NC}"
+  ensure_swap_and_memory
   
   if ! command -v git &> /dev/null || ! command -v curl &> /dev/null; then
     echo -e "${YELLOW}>> Installing Git and Curl...${NC}"
@@ -62,7 +89,7 @@ do_install_dependencies() {
 
   if ! command -v pm2 &> /dev/null; then
     echo -e "${YELLOW}>> Installing PM2 process manager globally...${NC}"
-    npm install -g pm2
+    NODE_OPTIONS="--max-old-space-size=1024" npm install -g pm2
   else
     echo -e "${GREEN}✅ PM2 is already installed ($(pm2 -v)).${NC}"
   fi
@@ -137,10 +164,10 @@ do_fresh_install() {
   if [ ! -d "$DIR_NAME" ]; then
     echo -e "${RED}❌ Error: Failed to clone repository from GitHub.${NC}"
     echo -e "${YELLOW}Please check your internet connection or verify the repository URL: $GIT_URL${NC}"
-    exit 1
+    safe_exit 1
   fi
 
-  cd "$DIR_NAME" || exit 1
+  cd "$DIR_NAME" || safe_exit 1
 
   echo "PORT=$PANEL_PORT" > .env
   echo "NODE_ENV=production" >> .env
@@ -150,11 +177,11 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  npm install
+  NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund --loglevel=error || npm install --no-audit --no-fund
 
   echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
   npm run clean 2>/dev/null
-  npm run build
+  NODE_OPTIONS="--max-old-space-size=1024" npm run build
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
   pm2 delete "sanaei-bot" 2>/dev/null
@@ -174,6 +201,7 @@ do_fresh_install() {
 
 do_update() {
   echo -e "\n${CYAN}>> Starting update process...${NC}"
+  ensure_swap_and_memory
   
   TARGET_DIR=""
   if [ -d "$DIR_NAME" ]; then
@@ -191,7 +219,7 @@ do_update() {
   fi
 
   if [ "$TARGET_DIR" != "." ]; then
-    cd "$TARGET_DIR" || exit 1
+    cd "$TARGET_DIR" || safe_exit 1
   fi
 
   # Secure backup of current database & env
@@ -223,10 +251,11 @@ do_update() {
   fi
 
   echo -e "\n${CYAN}>> Updating dependencies...${NC}"
-  npm install
+  NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund --loglevel=error || npm install --no-audit --no-fund
 
   echo -e "\n${CYAN}>> Rebuilding project...${NC}"
-  npm run build
+  npm run clean 2>/dev/null
+  NODE_OPTIONS="--max-old-space-size=1024" npm run build
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
   if command -v pm2 &> /dev/null && pm2 describe "sanaei-bot" &> /dev/null; then
@@ -274,10 +303,10 @@ case $CHOICE in
     ;;
   5)
     echo -e "${YELLOW}Exiting.${NC}"
-    exit 0
+    safe_exit 0
     ;;
   *)
     echo -e "${RED}❌ Invalid selection. Please enter a number from 1 to 5.${NC}"
-    exit 1
+    safe_exit 1
     ;;
 esac

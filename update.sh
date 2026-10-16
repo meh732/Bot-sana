@@ -1,11 +1,22 @@
 #!/bin/bash
 
-# Prevent git reset --hard from interrupting/corrupting running bash script
-if [ "$1" != "--in-tmp" ]; then
+# Safe exit helper: returns safely if script was sourced, preventing SSH terminal close
+safe_exit() {
+    local code=${1:-0}
+    return $code 2>/dev/null || exit $code
+}
+
+# Prevent git reset --hard from interrupting running bash script without replacing parent shell
+if [ "$1" != "--in-tmp" ] && [ -f "$0" ] && [ -s "$0" ] && [[ "$0" != /dev/fd/* ]]; then
     TMP_UPDATE="/tmp/sanaei_update_runner_$$_$RANDOM.sh"
-    cp "$0" "$TMP_UPDATE" 2>/dev/null || cat "$0" > "$TMP_UPDATE"
-    chmod +x "$TMP_UPDATE" 2>/dev/null
-    exec bash "$TMP_UPDATE" "--in-tmp" "$@"
+    cp "$0" "$TMP_UPDATE" 2>/dev/null
+    if [ -f "$TMP_UPDATE" ] && [ -s "$TMP_UPDATE" ]; then
+        chmod +x "$TMP_UPDATE" 2>/dev/null
+        bash "$TMP_UPDATE" "--in-tmp" "$@"
+        EXIT_CODE=$?
+        rm -f "$TMP_UPDATE" 2>/dev/null
+        safe_exit $EXIT_CODE
+    fi
 fi
 
 # Terminal Colors
@@ -32,7 +43,7 @@ else
     TARGET_DIR="."
 fi
 
-cd "$TARGET_DIR" || exit 1
+cd "$TARGET_DIR" || safe_exit 1
 echo -e "${BLUE}📁 Working Directory: $(pwd)${NC}"
 
 # 1. Critical Database & Config Backup
@@ -74,15 +85,37 @@ if [ -f "/tmp/sanaei_env_backup.env" ]; then
     echo -e "${GREEN}✅ Configuration .env restored successfully.${NC}"
 fi
 
+# Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
+ensure_swap_and_memory() {
+    SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
+    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -eq 0 ]; then
+        if [ "$EUID" -eq 0 ]; then
+            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 1GB emergency swap file to prevent OOM crash...${NC}"
+            fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 2>/dev/null
+            chmod 600 /swapfile 2>/dev/null
+            mkswap /swapfile &>/dev/null
+            swapon /swapfile &>/dev/null
+            echo -e "${GREEN}✅ Emergency swap memory active.${NC}"
+        fi
+    fi
+}
+
 # 4. Install dependencies and build project
 echo -e "\n${YELLOW}🔹 4. Installing dependencies & building project (Vite + esbuild)...${NC}"
-npm install
+ensure_swap_and_memory
+
+NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund --loglevel=error
+if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}⚠️ Retrying npm install...${NC}"
+    npm install --no-audit --no-fund
+fi
+
 npm run clean 2>/dev/null
-npm run build
+NODE_OPTIONS="--max-old-space-size=1024" npm run build
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Build failed! Please inspect compilation errors above.${NC}"
-    exit 1
+    safe_exit 1
 fi
 echo -e "${GREEN}✅ Build completed successfully (dist/server.cjs generated).${NC}"
 

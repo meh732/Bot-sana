@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Safe exit helper: returns safely if script was sourced, preventing SSH terminal close
+safe_exit() {
+    local code=${1:-0}
+    return $code 2>/dev/null || exit $code
+}
+
 # --- Terminal Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -46,7 +52,7 @@ if [ $? -eq 0 ]; then
     echo -e "${GREEN}✅ Project built and compiled successfully.${NC}"
 else
     echo -e "${RED}❌ Build error! Please review the compilation errors above.${NC}"
-    exit 1
+    safe_exit 1
 fi
 
 # 4. Start the application
