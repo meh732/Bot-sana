@@ -58,14 +58,14 @@ show_menu() {
 # Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
 ensure_swap_and_memory() {
     SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
-    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -eq 0 ]; then
+    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -lt 500 ]; then
         if [ "$EUID" -eq 0 ]; then
-            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 1GB emergency swap file to prevent OOM crash...${NC}"
-            fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 2>/dev/null
+            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash on 1GB VPS...${NC}"
+            fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
             chmod 600 /swapfile 2>/dev/null
             mkswap /swapfile &>/dev/null
             swapon /swapfile &>/dev/null
-            echo -e "${GREEN}✅ Emergency swap memory active.${NC}"
+            echo -e "${GREEN}✅ 2GB Emergency swap memory activated successfully.${NC}"
         fi
     fi
 }
@@ -89,7 +89,7 @@ do_install_dependencies() {
 
   if ! command -v pm2 &> /dev/null; then
     echo -e "${YELLOW}>> Installing PM2 process manager globally...${NC}"
-    NODE_OPTIONS="--max-old-space-size=1024" npm install -g pm2
+    NODE_OPTIONS="--max-old-space-size=450" npm install -g pm2
   else
     echo -e "${GREEN}✅ PM2 is already installed ($(pm2 -v)).${NC}"
   fi
@@ -177,11 +177,11 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund --loglevel=error || npm install --no-audit --no-fund
+  NODE_OPTIONS="--max-old-space-size=450" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps --loglevel=error || npm install --no-audit --no-fund
 
   echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
   npm run clean 2>/dev/null
-  NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  NODE_OPTIONS="--max-old-space-size=450" npm run build
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
   pm2 delete "sanaei-bot" 2>/dev/null
@@ -251,11 +251,11 @@ do_update() {
   fi
 
   echo -e "\n${CYAN}>> Updating dependencies...${NC}"
-  NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund --loglevel=error || npm install --no-audit --no-fund
+  NODE_OPTIONS="--max-old-space-size=450" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps --loglevel=error || npm install --no-audit --no-fund
 
   echo -e "\n${CYAN}>> Rebuilding project...${NC}"
   npm run clean 2>/dev/null
-  NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  NODE_OPTIONS="--max-old-space-size=450" npm run build
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
   if command -v pm2 &> /dev/null && pm2 describe "sanaei-bot" &> /dev/null; then

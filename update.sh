@@ -88,14 +88,14 @@ fi
 # Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
 ensure_swap_and_memory() {
     SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
-    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -eq 0 ]; then
+    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -lt 500 ]; then
         if [ "$EUID" -eq 0 ]; then
-            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 1GB emergency swap file to prevent OOM crash...${NC}"
-            fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 2>/dev/null
+            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash on 1GB VPS...${NC}"
+            fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
             chmod 600 /swapfile 2>/dev/null
             mkswap /swapfile &>/dev/null
             swapon /swapfile &>/dev/null
-            echo -e "${GREEN}✅ Emergency swap memory active.${NC}"
+            echo -e "${GREEN}✅ 2GB Emergency swap memory activated successfully.${NC}"
         fi
     fi
 }
@@ -104,14 +104,14 @@ ensure_swap_and_memory() {
 echo -e "\n${YELLOW}🔹 4. Installing dependencies & building project (Vite + esbuild)...${NC}"
 ensure_swap_and_memory
 
-NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund --loglevel=error
+NODE_OPTIONS="--max-old-space-size=450" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps --loglevel=error
 if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ Retrying npm install...${NC}"
-    npm install --no-audit --no-fund
+    echo -e "${YELLOW}⚠️ Retrying npm install with lightweight flags...${NC}"
+    NODE_OPTIONS="--max-old-space-size=450" npm install --no-audit --no-fund
 fi
 
 npm run clean 2>/dev/null
-NODE_OPTIONS="--max-old-space-size=1024" npm run build
+NODE_OPTIONS="--max-old-space-size=450" npm run build
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Build failed! Please inspect compilation errors above.${NC}"
