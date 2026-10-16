@@ -46,6 +46,24 @@ fi
 cd "$TARGET_DIR" || safe_exit 1
 echo -e "${BLUE}📁 Working Directory: $(pwd)${NC}"
 
+# Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
+ensure_swap_and_memory() {
+    SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
+    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -lt 500 ]; then
+        if [ "$EUID" -eq 0 ]; then
+            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash...${NC}"
+            fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
+            chmod 600 /swapfile 2>/dev/null
+            mkswap /swapfile &>/dev/null
+            swapon /swapfile &>/dev/null
+            echo -e "${GREEN}✅ 2GB Emergency swap memory activated successfully.${NC}"
+        fi
+    fi
+}
+
+# Ensure swap memory is active early
+ensure_swap_and_memory
+
 # 1. Critical Database & Config Backup
 echo -e "\n${YELLOW}🔹 1. Protecting and backing up current database & configurations...${NC}"
 if [ -f "db.json" ]; then
@@ -64,6 +82,9 @@ fi
 echo -e "\n${YELLOW}🔹 2. Pulling latest code changes from repository...${NC}"
 git fetch --all
 git reset --hard origin/main || git reset --hard origin/master
+
+# Ensure swap memory remains active after git reset
+ensure_swap_and_memory
 
 # 3. Restore Database & Configs immediately
 echo -e "\n${YELLOW}🔹 3. Restoring database records and credentials...${NC}"
@@ -85,33 +106,19 @@ if [ -f "/tmp/sanaei_env_backup.env" ]; then
     echo -e "${GREEN}✅ Configuration .env restored successfully.${NC}"
 fi
 
-# Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
-ensure_swap_and_memory() {
-    SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
-    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -lt 500 ]; then
-        if [ "$EUID" -eq 0 ]; then
-            echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash on 1GB VPS...${NC}"
-            fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
-            chmod 600 /swapfile 2>/dev/null
-            mkswap /swapfile &>/dev/null
-            swapon /swapfile &>/dev/null
-            echo -e "${GREEN}✅ 2GB Emergency swap memory activated successfully.${NC}"
-        fi
-    fi
-}
-
 # 4. Install dependencies and build project
 echo -e "\n${YELLOW}🔹 4. Installing dependencies & building project (Vite + esbuild)...${NC}"
-ensure_swap_and_memory
+echo -e "${CYAN}⏳ Installing packages (please wait 30–60 seconds)...${NC}"
 
-NODE_OPTIONS="--max-old-space-size=450" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps --loglevel=error
+NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
 if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ Retrying npm install with lightweight flags...${NC}"
-    NODE_OPTIONS="--max-old-space-size=450" npm install --no-audit --no-fund
+    echo -e "${YELLOW}⚠️ Retrying npm install...${NC}"
+    NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
 fi
 
+echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
 npm run clean 2>/dev/null
-NODE_OPTIONS="--max-old-space-size=450" npm run build
+NODE_OPTIONS="--max-old-space-size=256" npm run build
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Build failed! Please inspect compilation errors above.${NC}"

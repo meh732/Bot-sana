@@ -89,7 +89,7 @@ do_install_dependencies() {
 
   if ! command -v pm2 &> /dev/null; then
     echo -e "${YELLOW}>> Installing PM2 process manager globally...${NC}"
-    NODE_OPTIONS="--max-old-space-size=450" npm install -g pm2
+    NODE_OPTIONS="--max-old-space-size=256" npm install -g pm2
   else
     echo -e "${GREEN}✅ PM2 is already installed ($(pm2 -v)).${NC}"
   fi
@@ -177,11 +177,11 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  NODE_OPTIONS="--max-old-space-size=450" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps --loglevel=error || npm install --no-audit --no-fund
+  NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || npm install --no-audit --no-fund
 
   echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
   npm run clean 2>/dev/null
-  NODE_OPTIONS="--max-old-space-size=450" npm run build
+  NODE_OPTIONS="--max-old-space-size=256" npm run build
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
   pm2 delete "sanaei-bot" 2>/dev/null
@@ -235,6 +235,9 @@ do_update() {
   git fetch --all
   git reset --hard origin/main || git reset --hard origin/master
 
+  # Ensure swap memory is active
+  ensure_swap_and_memory
+
   # Restore state database safely
   if [ -f "../db.json.bak" ]; then
     mv ../db.json.bak db.json
@@ -250,12 +253,12 @@ do_update() {
     mv /tmp/.env.bak .env
   fi
 
-  echo -e "\n${CYAN}>> Updating dependencies...${NC}"
-  NODE_OPTIONS="--max-old-space-size=450" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps --loglevel=error || npm install --no-audit --no-fund
+  echo -e "\n${CYAN}>> Updating dependencies (please wait 30–60 seconds)...${NC}"
+  NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || npm install --no-audit --no-fund
 
-  echo -e "\n${CYAN}>> Rebuilding project...${NC}"
+  echo -e "\n${CYAN}>> Rebuilding project with Vite + esbuild...${NC}"
   npm run clean 2>/dev/null
-  NODE_OPTIONS="--max-old-space-size=450" npm run build
+  NODE_OPTIONS="--max-old-space-size=256" npm run build
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
   if command -v pm2 &> /dev/null && pm2 describe "sanaei-bot" &> /dev/null; then
