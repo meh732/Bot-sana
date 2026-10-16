@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Prevent git reset --hard from interrupting/corrupting running bash script
+if [ "$1" != "--in-tmp" ]; then
+    TMP_INSTALLER="/tmp/sanaei_install_runner_$$_$RANDOM.sh"
+    cp "$0" "$TMP_INSTALLER" 2>/dev/null || cat "$0" > "$TMP_INSTALLER"
+    chmod +x "$TMP_INSTALLER" 2>/dev/null
+    exec bash "$TMP_INSTALLER" "--in-tmp" "$@"
+fi
+
 # Terminal Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -72,10 +80,10 @@ do_uninstall() {
     pm2 save --force &> /dev/null
   fi
 
-  # Kill any stray processes matching server.ts, server.cjs or tsx
-  pkill -9 -f "server.ts" 2>/dev/null
-  pkill -9 -f "dist/server.cjs" 2>/dev/null
-  pkill -9 -f "sanaei-bot" 2>/dev/null
+  # Kill any stray processes matching server.ts, server.cjs or tsx (do not match folder name 'sanaei-bot' which kills bash/SSH session)
+  pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null
+  pkill -9 -f "node.*server\.ts" 2>/dev/null
+  pkill -9 -f "tsx.*server\.ts" 2>/dev/null
 
   # Kill any process on default ports or common ports
   for p in 3000 2020 8080; do

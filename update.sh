@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Prevent git reset --hard from interrupting/corrupting running bash script
+if [ "$1" != "--in-tmp" ]; then
+    TMP_UPDATE="/tmp/sanaei_update_runner_$$_$RANDOM.sh"
+    cp "$0" "$TMP_UPDATE" 2>/dev/null || cat "$0" > "$TMP_UPDATE"
+    chmod +x "$TMP_UPDATE" 2>/dev/null
+    exec bash "$TMP_UPDATE" "--in-tmp" "$@"
+fi
+
 # Terminal Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
