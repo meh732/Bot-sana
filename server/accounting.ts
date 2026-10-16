@@ -106,19 +106,75 @@ function getPanelBadgeAndLabel(panelType?: string): { badge: string; label: stri
   }
 }
 
-function getPeriodTimeRange(period: 'today' | 'monthly' | 'all'): { startMs: number; endMs: number; label: string } {
+/**
+ * Calculates the exact 24-hour time range of a Shamsi (Solar Hijri) calendar day in Asia/Tehran timezone.
+ * Returns startMs (00:00:00.000) and endMs (23:59:59.999) of that Shamsi day.
+ */
+export function getTehranShamsiDayRange(targetDate: Date = new Date()): {
+  startMs: number;
+  endMs: number;
+  todayFa: string;
+} {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tehran',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    hour12: false
+  });
+  const parts = formatter.formatToParts(targetDate);
+  const map: Record<string, string> = {};
+  parts.forEach(p => { map[p.type] = p.value; });
+
+  const year = parseInt(map.year, 10);
+  const month = String(parseInt(map.month, 10)).padStart(2, '0');
+  const day = String(parseInt(map.day, 10)).padStart(2, '0');
+
+  // Exact 24-hour Shamsi day from 00:00:00.000 to 23:59:59.999 in Tehran
+  const startMs = new Date(`${year}-${month}-${day}T00:00:00.000+03:30`).getTime();
+  const endMs = new Date(`${year}-${month}-${day}T23:59:59.999+03:30`).getTime();
+  const todayFa = targetDate.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+
+  return { startMs, endMs, todayFa };
+}
+
+export function isTimestampInShamsiDay(ts: number, targetDate: Date = new Date()): boolean {
+  const { startMs, endMs } = getTehranShamsiDayRange(targetDate);
+  return ts >= startMs && ts <= endMs;
+}
+
+export function getPeriodTimeRange(period: 'today' | 'monthly' | 'all'): { startMs: number; endMs: number; label: string; todayFa: string } {
   const now = Date.now();
+  const { startMs: todayStartMs, endMs: todayEndMs, todayFa } = getTehranShamsiDayRange();
+
   if (period === 'today') {
-    // 24 hours window
-    const startMs = now - 24 * 60 * 60 * 1000;
-    return { startMs, endMs: now, label: 'امروز (۲۴ ساعت گذشته)' };
+    // Exact 24 hours of today in the Shamsi calendar (from 00:00:00 to 23:59:59 Tehran time)
+    return {
+      startMs: todayStartMs,
+      endMs: todayEndMs,
+      label: `امروز (${todayFa}) - ۲۴ ساعت شبانه‌روز شمسی (۰۰:۰۰ تا ۲۳:۵۹ به وقت تهران)`,
+      todayFa
+    };
   }
   if (period === 'monthly') {
     // 30 days window
     const startMs = now - 30 * 24 * 60 * 60 * 1000;
-    return { startMs, endMs: now, label: 'ماهانه (۳۰ روز اخیر)' };
+    return {
+      startMs,
+      endMs: now,
+      label: 'ماهانه (۳۰ روز اخیر)',
+      todayFa
+    };
   }
-  return { startMs: 0, endMs: now, label: 'کل دوره (از ابتدا تاکنون)' };
+  return {
+    startMs: 0,
+    endMs: now,
+    label: 'کل دوره (از ابتدا تاکنون)',
+    todayFa
+  };
 }
 
 export function getUserAccountingReport(user: User, period: 'today' | 'monthly' | 'all' = 'today'): UserAccountingReport {
@@ -155,8 +211,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
     totalDiscounts += discount;
 
     const dt = new Date(p.createdAt || Date.now());
-    const dateStr = dt.toLocaleDateString('fa-IR');
-    const timeStr = dt.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+    const dateStr = dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+    const timeStr = dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
     const { badge, label } = getPanelBadgeAndLabel(p.panelType);
 
     return {
@@ -189,8 +245,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
     ledgerRows.push({
       id: `p_${p.id}_${dt.getTime()}`,
       rawDate: p.createdAt || dt.toISOString(),
-      dateStr: dt.toLocaleDateString('fa-IR'),
-      timeStr: dt.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
+      timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }),
       type: 'purchase',
       description: `خرید کانفیگ: ${p.name || p.id} [${volStr}${durStr}]`,
       debit: p.price || 0,
@@ -206,8 +262,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
       ledgerRows.push({
         id: tx.id,
         rawDate: tx.createdAt,
-        dateStr: dt.toLocaleDateString('fa-IR'),
-        timeStr: dt.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+        dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
+        timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }),
         type: tx.type,
         description: tx.description || 'تراکنش مالی',
         debit: tx.direction === 'debit' ? tx.amount : 0,
@@ -221,8 +277,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
     ledgerRows.push({
       id: `agg_pay_${user.chatId}`,
       rawDate: dt.toISOString(),
-      dateStr: dt.toLocaleDateString('fa-IR'),
-      timeStr: dt.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+      dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
+      timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }),
       type: 'payment',
       description: 'مجموع واریزی‌ها و تسویه‌حساب‌های ثبت‌شده',
       debit: 0,
@@ -348,8 +404,8 @@ export function getSystemAccountingReport(period: 'today' | 'monthly' | 'all' = 
           panelLabel: `${badge} ${label}`,
           isPayAsYouGo: !!p.isPayAsYouGo,
           createdAt: p.createdAt,
-          dateStr: dt.toLocaleDateString('fa-IR'),
-          timeStr: dt.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })
+          dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
+          timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' })
         };
 
         recentSales.push({ ...itemDetail, userChatId: u.chatId, userDisplayName: uDisplayName });
@@ -411,7 +467,7 @@ export function formatUserSalesReportTelegram(user: User, period: 'today' | 'mon
     `👤 <b>شخص:</b> <b>${escapeHtml(uName)}</b>\n` +
     `🆔 <b>شناسه عددی:</b> <code>${user.chatId}</code>\n` +
     `⚡ <b>نقش در سیستم:</b> <b>${roleStr}</b>\n` +
-    `📅 <b>تاریخ تهیه گزارش:</b> <code>${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}</code>\n\n`;
+    `📅 <b>تاریخ تهیه گزارش:</b> <code>${new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' })} ${new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' })}</code> (به وقت تهران)\n\n`;
 
   // 1. Detailed Sales List
   if (report.salesItems.length === 0) {
@@ -470,7 +526,7 @@ export function formatAccountingLedgerStatementTelegram(user: User): string {
   let msg = `📑 <b>صورتحساب رسمی حسابداری و دفتر معین</b>\n\n` +
     `👤 <b>طرف حساب:</b> <b>${escapeHtml(uName)}</b> (<code>${user.chatId}</code>)\n` +
     `⚡ <b>وضعیت حساب:</b> <b>${user.isSeller ? 'همکار فروشنده' : 'کاربر عادی'}</b>\n` +
-    `📅 <b>تاریخ صدور:</b> <code>${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}</code>\n\n` +
+    `📅 <b>تاریخ صدور:</b> <code>${new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' })} ${new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' })}</code> (به وقت تهران)\n\n` +
     `📜 <b>گردش دریافت‌ها و پرداخت‌ها (به ترتیب زمان):</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n`;
 
@@ -506,7 +562,7 @@ export function formatSystemSalesReportTelegram(period: 'today' | 'monthly' | 'a
   const rep = getSystemAccountingReport(period);
 
   let msg = `📊 <b>گزارش جامع حسابداری و فروش سیستم (${rep.periodLabel})</b>\n\n` +
-    `📅 تاریخ گزارش: <code>${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}</code>\n\n` +
+    `📅 تاریخ گزارش: <code>${new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' })} ${new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' })}</code> (به وقت تهران)\n\n` +
     `💰 <b>آمار کل فروش در این دوره:</b>\n` +
     `▫️ کل مبلغ فروش سیستم: <b>${rep.summary.totalSalesAmount.toLocaleString()} تومان</b>\n` +
     `▫️ تعداد کل کانفیگ‌های ساخته‌شده: <b>${rep.summary.totalSalesCount} عدد</b>\n` +

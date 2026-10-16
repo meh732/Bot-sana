@@ -603,7 +603,12 @@ function SettingsView() {
         autoBackupPassword: state.autoBackupPassword || '',
         forceJoinEnabled: state.forceJoinEnabled || false,
         forceJoinChannels: state.forceJoinChannels || [],
-        portalDomain: state.portalDomain || ''
+        portalDomain: state.portalDomain || '',
+        customVolumePricePerGb: state.customVolumePricePerGb !== undefined ? Number(state.customVolumePricePerGb) : 3000,
+        customVolumeMinGb: state.customVolumeMinGb !== undefined ? Number(state.customVolumeMinGb) : 1,
+        customVolumeDefaultDays: state.customVolumeDefaultDays !== undefined ? Number(state.customVolumeDefaultDays) : 30,
+        customVolumePanelType: state.customVolumePanelType || 'mrocean',
+        customVolumeEnabled: state.customVolumeEnabled !== false
       })
     });
     const data = await res.json();
@@ -1679,6 +1684,81 @@ function SettingsView() {
                   onChange={e => setState({...state, referralRewardToman: e.target.value})} 
                   className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 text-sm" 
                 />
+              </div>
+            </div>
+
+            {/* Custom Volume Pricing & Configuration for Sellers */}
+            <div className="border border-indigo-100 bg-indigo-50/20 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <span>⚡ تنظیمات سفارش با حجم دلخواه همکاران (فروش بر اساس هر گیگ)</span>
+                    <span className="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold">ویژه همکاران و مستر اوشن</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">امکان ثبت و ساخت آنی کانفیگ با حجم و مدت دلخواه در پورتال و ربات با نرخ ثابت به ازای هر گیگابایت</p>
+                </div>
+                <label className="flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={state.customVolumeEnabled !== false} 
+                    onChange={e => setState({...state, customVolumeEnabled: e.target.checked})} 
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4" 
+                  />
+                  <span className="mr-2 text-xs font-bold text-slate-700">فعال بودن</span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">💰 نرخ هر گیگابایت برای همکار (تومان)</label>
+                  <input 
+                    type="number" 
+                    value={state.customVolumePricePerGb !== undefined ? state.customVolumePricePerGb : 3000} 
+                    onChange={e => setState({...state, customVolumePricePerGb: Number(e.target.value)})} 
+                    placeholder="مثال: ۳۰۰۰"
+                    className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm bg-white" 
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">مبنای محاسبه هزینه سفارشات دلخواه همکار</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">🏢 پنل پیش‌فرض سفارشات دلخواه</label>
+                  <select
+                    value={state.customVolumePanelType || 'mrocean'}
+                    onChange={e => setState({...state, customVolumePanelType: e.target.value})}
+                    className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 text-sm bg-white"
+                  >
+                    <option value="mrocean">🌊 مستر اوشن (Mr Ocean) - پیشنهادی</option>
+                    <option value="sanaei">🔵 سنایی (X-UI)</option>
+                    <option value="rebecca">🟣 ربکا (Rebecca)</option>
+                    <option value="all">🚀 تمام پنل‌ها (ترکیبی)</option>
+                  </select>
+                  <p className="text-[10px] text-slate-500 mt-1">سروری که کانفیگ‌های دلخواه روی آن ساخته می‌شوند</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">⏳ مدت زمان پیش‌فرض (روز)</label>
+                  <input 
+                    type="number" 
+                    value={state.customVolumeDefaultDays !== undefined ? state.customVolumeDefaultDays : 30} 
+                    onChange={e => setState({...state, customVolumeDefaultDays: Number(e.target.value)})} 
+                    placeholder="۳۰"
+                    className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm bg-white" 
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">اعتبار پیش‌فرض به روز</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">📦 حداقل حجم قابل سفارش (گیگابایت)</label>
+                  <input 
+                    type="number" 
+                    value={state.customVolumeMinGb !== undefined ? state.customVolumeMinGb : 1} 
+                    onChange={e => setState({...state, customVolumeMinGb: Number(e.target.value)})} 
+                    placeholder="۱"
+                    className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm bg-white" 
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">کف مجاز ثبت گیگابایت</p>
+                </div>
               </div>
             </div>
 

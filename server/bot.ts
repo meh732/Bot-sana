@@ -9,6 +9,9 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import QRCode from 'qrcode';
+import { getTehranShamsiDayRange, isTimestampInShamsiDay, getUserAccountingReport } from './accounting.js';
+import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions } from './pdfGenerator.js';
+import * as jalaali from 'jalaali-js';
 
 function escapeHtml(text: string): string {
   return (text || '')
@@ -283,6 +286,130 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
   return newPurchase;
 }
 
+export async function executeSellerCustomVolumePurchase(params: {
+  sellerChatId: number;
+  volumeGb: number;
+  durationDays?: number;
+  customName?: string;
+  panelType?: PanelType;
+}) {
+  const { sellerChatId, volumeGb, durationDays, customName, panelType } = params;
+  const user = db.getUser(sellerChatId);
+  if (!user || !user.isSeller) {
+    throw new Error('حساب کاربری همکار معتبر نیست.');
+  }
+
+  const state = db.getState();
+  if (state.customVolumeEnabled === false) {
+    throw new Error('قابلیت سفارش حجم دلخواه در حال حاضر غیرفعال است.');
+  }
+
+  const vol = Math.max(1, Math.round(Number(volumeGb)));
+  const dur = Math.max(1, Math.round(Number(durationDays || state.customVolumeDefaultDays || 30)));
+
+  // Rate per GB
+  const rawRatePerGb = user.customVolumePricePerGb || state.customVolumePricePerGb || 3000;
+  const sellerDiscount = getSellerDiscountForProduct(user);
+  let finalRatePerGb = rawRatePerGb;
+  if (sellerDiscount > 0) {
+    finalRatePerGb = Math.max(0, Math.round(rawRatePerGb * (1 - sellerDiscount / 100)));
+  }
+
+  const finalPrice = Math.round(vol * finalRatePerGb);
+
+  // Check debt limit
+  if (!isSellerUnlimitedLimit(user)) {
+    const currentDebt = user.debt || 0;
+    const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+    if (currentDebt + finalPrice > limit) {
+      throw new Error(`سقف اعتبار مجاز خرید همکار پر شده است! (بدهی فعلی: ${currentDebt.toLocaleString()} تومان / سقف: ${limit.toLocaleString()} تومان)`);
+    }
+  }
+
+  // Panel determination: prefer mrocean, fallback to others or state.activePanelMode
+  let targetPanel: PanelType = panelType || state.customVolumePanelType || 'mrocean';
+  if (!panelType && !state.customVolumePanelType) {
+    if (state.mroceanPanel?.url && state.mroceanPanel?.enabled !== false) {
+      targetPanel = 'mrocean';
+    } else if (state.activePanelMode) {
+      targetPanel = state.activePanelMode === 'xui' ? 'sanaei' : (state.activePanelMode as PanelType);
+    } else {
+      targetPanel = 'sanaei';
+    }
+  }
+
+  const packageName = `سفارش دلخواه ${vol} گیگ (${dur} روز)`;
+
+  const clientResult = await multiPanel.createClientConfig({
+    user,
+    product: {
+      name: packageName,
+      volumeGb: vol,
+      durationDays: dur,
+      panelType: targetPanel
+    },
+    customName
+  });
+
+  const clientEmail = clientResult.clientEmail;
+
+  user.debt = (user.debt || 0) + finalPrice;
+  user.debtVolume = (user.debtVolume || 0) + vol;
+  user.totalSales = (user.totalSales || 0) + finalPrice;
+
+  const newPurchase: any = {
+    id: clientEmail,
+    name: customName ? `${customName} (${vol}GB)` : packageName,
+    price: finalPrice,
+    subId: clientResult.subId,
+    subUrl: clientResult.subUrl,
+    sanaeiSubUrl: clientResult.sanaeiSubUrl,
+    rebeccaSubUrl: clientResult.rebeccaSubUrl,
+    mroceanSubUrl: clientResult.mroceanSubUrl,
+    mroceanPortalUrl: clientResult.mroceanPortalUrl,
+    panelType: clientResult.panelType,
+    volumeGb: vol,
+    durationDays: dur,
+    createdAt: new Date().toISOString(),
+    originalPrice: vol * rawRatePerGb,
+    ratePerGb: finalRatePerGb,
+    discountPercent: sellerDiscount,
+    discountAmount: (vol * rawRatePerGb) - finalPrice,
+    isCustomVolume: true
+  };
+
+  user.purchases = user.purchases || [];
+  user.purchases.push(newPurchase);
+
+  recordUserTransaction(user, {
+    type: 'purchase',
+    amount: finalPrice,
+    direction: 'debit',
+    description: `سفارش حجم دلخواه ${vol} GB (${dur} روز) با نرخ ${finalRatePerGb.toLocaleString()} ت/گیگ`,
+    configName: newPurchase.name,
+    volumeGb: vol,
+    balanceAfter: user.balance,
+    debtAfter: user.debt,
+    createdAt: newPurchase.createdAt
+  });
+
+  db.saveUser(user);
+
+  if (bot) {
+    const notifyMsg = `⚡ <b>سفارش حجم دلخواه همکار ثبت شد</b>\n\n` +
+      `📦 <b>سرویس:</b> ${newPurchase.name}\n` +
+      `📊 <b>حجم:</b> ${vol} گیگابایت (${dur} روز)\n` +
+      `🏷 <b>نرخ هر گیگ:</b> ${finalRatePerGb.toLocaleString()} تومان\n` +
+      `💰 <b>مبلغ ثبت‌شده در بدهی:</b> ${finalPrice.toLocaleString()} تومان\n` +
+      `🏢 <b>پنل:</b> ${targetPanel}\n` +
+      `📉 <b>بدهی جدید:</b> ${(user.debt || 0).toLocaleString()} تومان`;
+    
+    bot.sendMessage(sellerChatId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
+  }
+
+  return newPurchase;
+}
+
 function getProductButtonText(user: any, p: any): string {
   try {
     if (!p) return 'محصول نامعتبر';
@@ -345,6 +472,7 @@ const userSession = new Map<number, {
   amount?: number; 
   productId?: string; 
   couponCode?: string;
+  targetChatId?: number;
   pendingPurchase?: {
     productId: string;
     couponCode?: string;
@@ -1012,11 +1140,12 @@ function getUserReplyKeyboard(user: any, state: any, isAdmin = false) {
 function getSellerReplyKeyboard(): any {
   return {
     keyboard: [
-      [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }],
-      [{ text: '💳 پرداخت بدهی (مبلغ دلخواه)', style: 'success' }, { text: '🌐 پورتال بی‌نام (فروش حضوری)', style: 'primary' }],
+      [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '⚡ سفارش با حجم دلخواه', style: 'success' }],
+      [{ text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }, { text: '💳 پرداخت بدهی (مبلغ دلخواه)', style: 'success' }],
+      [{ text: '🌐 پورتال بی‌نام (فروش حضوری)', style: 'primary' }, { text: '📋 لیست فروش‌های من', style: 'primary' }],
       [{ text: '📅 فروش امروز با جزئیات', style: 'primary' }, { text: '🗓 گزارش فروش ماهانه', style: 'primary' }],
       [{ text: '🧾 صورتحساب حسابداری', style: 'primary' }, { text: '📊 گزارش دقیق عملکرد', style: 'primary' }],
-      [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
+      [{ text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
     ],
     resize_keyboard: true
   };
@@ -1407,14 +1536,13 @@ export async function initBot() {
 
   const getDailyReportText = (): string => {
     const state = db.getState();
-    const now = Date.now();
-    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const { startMs, endMs, todayFa } = getTehranShamsiDayRange();
     
     const totalUsers = state.users.length;
     const newUsersToday = state.users.filter(u => {
       if (!u.registeredAt) return false;
       const regTime = new Date(u.registeredAt).getTime();
-      return (now - regTime) < MS_PER_DAY;
+      return regTime >= startMs && regTime <= endMs;
     }).length;
 
     let totalSalesTodayCount = 0;
@@ -1432,7 +1560,7 @@ export async function initBot() {
       u.purchases.forEach(p => {
         if (!p.createdAt || p.isDeleted) return;
         const purchaseTime = new Date(p.createdAt).getTime();
-        if ((now - purchaseTime) < MS_PER_DAY) {
+        if (purchaseTime >= startMs && purchaseTime <= endMs) {
           totalSalesTodayCount++;
           const price = p.price || 0;
           const vol = p.volumeGb || 0;
@@ -1441,7 +1569,7 @@ export async function initBot() {
 
           const buyerName = u.nickname || (u.username ? '@' + u.username : `کاربر ${u.chatId}`);
           const pName = p.name || 'سرویس';
-          const pTime = new Date(p.createdAt).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+          const pTime = new Date(p.createdAt).toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
           todaySalesList.push(`▫️ <b>${escapeHtml(pName)}</b> (${vol} GB | ${price.toLocaleString()} ت) - ${escapeHtml(buyerName)} [${pTime}]`);
 
           if (u.isSeller) {
@@ -1455,11 +1583,12 @@ export async function initBot() {
       });
     });
 
-    let msg = `📊 <b>گزارش جامع فروش و کاربران سیستم (۲۴ ساعت گذشته)</b>\n\n` +
+    let msg = `📊 <b>گزارش جامع فروش و کاربران سیستم (۲۴ ساعت شبانه‌روز شمسی)</b>\n\n` +
+           `📆 <b>تاریخ امروز شمسی:</b> <code>${todayFa}</code> (از ساعت ۰۰:۰۰ تا ۲۳:۵۹ به وقت تهران)\n\n` +
            `👥 <b>آمار کاربران:</b>\n` +
            `• کل کاربران ثبت‌نامی: <b>${totalUsers.toLocaleString()}</b> کاربر\n` +
-           `• کاربران جدید امروز: <b>${newUsersToday.toLocaleString()}</b> کاربر جدید\n\n` +
-           `💰 <b>آمار و ارقام مالی امروز:</b>\n` +
+           `• کاربران جدید امروز شمسی: <b>${newUsersToday.toLocaleString()}</b> کاربر جدید\n\n` +
+           `💰 <b>آمار و ارقام مالی امروز شمسی:</b>\n` +
            `• کل فروش امروز (بدهکار کل): <b>${totalSalesTodayAmount.toLocaleString()}</b> تومان\n` +
            `• تعداد کل کانفیگ‌های فروخته شده: <b>${totalSalesTodayCount}</b> عدد\n` +
            `• مجموع حجم واگذار شده امروز: <b>${totalSalesTodayGb.toFixed(2)}</b> گیگابایت\n` +
@@ -1472,7 +1601,8 @@ export async function initBot() {
              (todaySalesList.length > 15 ? `\n<i>... و ${todaySalesList.length - 15} مورد دیگر</i>\n\n` : '\n\n');
     }
 
-    msg += `📅 گزارش در تاریخ: <code>${new Date().toLocaleDateString('fa-IR')}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code>`;
+    const nowTimeTehran = new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' });
+    msg += `📅 زمان ثبت گزارش: <code>${todayFa}</code> ساعت <code>${nowTimeTehran}</code> (به وقت تهران)`;
     return msg;
   };
 
@@ -1537,8 +1667,7 @@ export async function initBot() {
 
       // Time filters
       const now = Date.now();
-      const todayFa = new Date().toLocaleDateString('fa-IR');
-      const MS_PER_DAY = 24 * 60 * 60 * 1000;
+      const { startMs: todayStartMs, endMs: todayEndMs, todayFa } = getTehranShamsiDayRange();
       const MS_PER_MONTH = 30 * 24 * 60 * 60 * 1000;
 
       interface EnrichedPurchase {
@@ -1626,9 +1755,9 @@ export async function initBot() {
 
         const pDate = p.createdAt ? new Date(p.createdAt) : new Date();
         const createdTime = isNaN(pDate.getTime()) ? Date.now() : pDate.getTime();
-        const dateStr = pDate.toLocaleDateString('fa-IR');
-        const timeStr = pDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-        const isToday = (dateStr === todayFa) || (now - createdTime < MS_PER_DAY);
+        const dateStr = pDate.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+        const timeStr = pDate.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
+        const isToday = createdTime >= todayStartMs && createdTime <= todayEndMs;
         const isMonth = (now - createdTime <= MS_PER_MONTH);
 
         enrichedPurchases.push({
@@ -1737,9 +1866,9 @@ export async function initBot() {
           if (tx.type === 'purchase') return; // already in purchases
           const tDate = tx.createdAt ? new Date(tx.createdAt) : new Date();
           const tTime = isNaN(tDate.getTime()) ? Date.now() : tDate.getTime();
-          const dStr = tDate.toLocaleDateString('fa-IR');
-          const tmStr = tDate.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-          const isT = (dStr === todayFa) || (now - tTime < MS_PER_DAY);
+          const dStr = tDate.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+          const tmStr = tDate.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
+          const isT = tTime >= todayStartMs && tTime <= todayEndMs;
           const isM = (now - tTime <= MS_PER_MONTH);
 
           allLedgerRows.push({
@@ -1819,8 +1948,9 @@ export async function initBot() {
           }
         }
 
-        reportText = `📅 <b>گزارش فروش روزانه و صورتحساب مالی</b>\n` +
-          `📆 <b>تاریخ امروز:</b> <code>${todayFa}</code> ساعت <code>${new Date().toLocaleTimeString('fa-IR')}</code>\n\n` +
+        reportText = `📅 <b>گزارش فروش روزانه و صورتحساب مالی (۲۴ ساعت شبانه‌روز شمسی)</b>\n` +
+          `📆 <b>تاریخ امروز شمسی:</b> <code>${todayFa}</code> (از ساعت ۰۰:۰۰ تا ۲۳:۵۹:۵۹ به وقت تهران)\n` +
+          `⏰ <b>ساعت ثبت گزارش:</b> <code>${new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' })}</code>\n\n` +
           `👤 <b>مشخصات شخص / طرف‌حساب:</b>\n` +
           `▫️ نام/نیک‌نیم: <b>${escapeHtml(nicknameStr)}</b>\n` +
           `▫️ یوزرنیم: <b>${usernameStr}</b> | شناسه: <code>${targetUser.chatId}</code>\n` +
@@ -1988,11 +2118,19 @@ export async function initBot() {
         [
           { text: `${viewMode === 'statement' ? '🔘' : '🧾'} صورتحساب حسابداری`, callback_data: `user_rep_statement_${targetChatId}` },
           { text: `${viewMode === 'overview' ? '🔘' : '📊'} خلاصه عملکرد`, callback_data: `user_rep_overview_${targetChatId}` }
-        ],
-        [
-          { text: '🔄 به‌روزرسانی لحظه‌ای تراز', callback_data: `user_rep_${viewMode}_${targetChatId}` }
         ]
       ];
+
+      if (viewMode === 'statement') {
+        inline_keyboard.push([
+          { text: '📥 دریافت PDF کامل صورتحساب (همه اسناد)', callback_data: `user_rep_pdf_${targetChatId}` },
+          { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
+        ]);
+      }
+
+      inline_keyboard.push([
+        { text: '🔄 به‌روزرسانی لحظه‌ای تراز', callback_data: `user_rep_${viewMode}_${targetChatId}` }
+      ]);
 
       if (isAdminContext) {
         inline_keyboard.push([
@@ -2058,6 +2196,95 @@ export async function initBot() {
         }).catch(() => {});
       }
     }
+  }
+
+  function getJalaliMonthName(m: number): string {
+    const months = ['فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'];
+    return months[Math.max(0, Math.min(11, m - 1))];
+  }
+
+  async function sendShamsiFilteredReport(
+    chatId: number,
+    targetChatId: number,
+    startMs: number,
+    endMs: number,
+    rangeLabel: string
+  ) {
+    const targetUser = db.getUser(targetChatId);
+    if (!targetUser) {
+      bot!.sendMessage(chatId, '❌ کاربر مورد نظر در سیستم یافت نشد.');
+      return;
+    }
+
+    const fullReport = getUserAccountingReport(targetUser, 'all');
+    const filteredLedger = fullReport.ledgerRows.filter(row => {
+      const t = new Date(row.rawDate).getTime();
+      return t >= startMs && t <= endMs;
+    });
+
+    const rowsAsc = [...filteredLedger].sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
+
+    let rangeDebit = 0;
+    let rangeCredit = 0;
+    rowsAsc.forEach(r => {
+      rangeDebit += (r.debit || 0);
+      rangeCredit += (r.credit || 0);
+    });
+
+    const rangeBalance = rangeDebit - rangeCredit;
+    const balanceStr = rangeBalance > 0 
+      ? `🔴 بدهکار بازه: <b>${rangeBalance.toLocaleString()}</b> تومان` 
+      : (rangeBalance < 0 ? `🟢 بستانکار بازه: <b>${Math.abs(rangeBalance).toLocaleString()}</b> تومان` : `⚪ تراز صفر بازه`);
+
+    let ledgerText = '';
+    if (rowsAsc.length === 0) {
+      ledgerText = '<i>⚠️ در این بازه زمانی هیچ سند یا تراکنشی برای این حساب ثبت نشده است.</i>\n';
+    } else {
+      ledgerText = `📑 <b>اسناد مالی در بازه زمانی انتخاب شده (${rowsAsc.length} سند):</b>\n\n`;
+      const displayRows = [...rowsAsc].reverse().slice(0, 15);
+      displayRows.forEach(row => {
+        const debStr = row.debit > 0 ? `🔴 بدهکار: <b>${row.debit.toLocaleString()}</b> تومان` : '';
+        const credStr = row.credit > 0 ? `🟢 بستانکار: <b>${row.credit.toLocaleString()}</b> تومان` : '';
+        ledgerText += `┌ <b>سند</b> | <code>${row.dateStr} ${row.timeStr}</code>\n` +
+          `├ 📝 <b>شرح:</b> ${escapeHtml(row.description)}\n` +
+          `└ 💰 ${debStr || credStr}\n` +
+          `----------------------------------\n`;
+      });
+
+      if (rowsAsc.length > 15) {
+        ledgerText += `<i>... و ${rowsAsc.length - 15} سند دیگر در این بازه (در فایل PDF کامل قابل دانلود است)</i>\n`;
+      }
+    }
+
+    const uName = targetUser.nickname || (targetUser.username ? `@${targetUser.username}` : `کاربر ${targetUser.chatId}`);
+
+    const msgText = `🧾 <b>صورتحساب مالی در بازه شمسی سفارشی</b>\n\n` +
+      `👤 <b>طرف حساب:</b> <b>${escapeHtml(uName)}</b> (<code>${targetUser.chatId}</code>)\n` +
+      `🗓 <b>بازه تاریخی شمسی:</b> <code>${rangeLabel}</code>\n\n` +
+      `📊 <b>خلاصه تراز در این بازه:</b>\n` +
+      `▫️ 🔴 <b>جمع بدهکار (خریدها):</b> <b>${rangeDebit.toLocaleString()}</b> تومان\n` +
+      `▫️ 🟢 <b>جمع بستانکار (واریزی‌ها):</b> <b>${rangeCredit.toLocaleString()}</b> تومان\n` +
+      `▫️ ⚖️ <b>تراز خالص این بازه:</b> ${balanceStr}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      ledgerText;
+
+    const inline_keyboard = [
+      [
+        { text: '📥 دانلود PDF کامل این بازه تاریخی', callback_data: `user_rep_pdf_${targetChatId}_${startMs}_${endMs}` }
+      ],
+      [
+        { text: '📥 دانلود PDF کل صورتحساب (تمام اسناد)', callback_data: `user_rep_pdf_${targetChatId}` },
+        { text: '🔍 تغییر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
+      ],
+      [
+        { text: '🔙 بازگشت به صورتحساب کلی', callback_data: `user_rep_statement_${targetChatId}` }
+      ]
+    ];
+
+    bot!.sendMessage(chatId, msgText, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard } as any
+    });
   }
 
   async function sendDetailedSellerReport(chatId: number, sellerChatId: number, isAdminContext: boolean = false) {
@@ -2795,7 +3022,7 @@ export async function initBot() {
 
     // If user tapped a standard persistent menu button while having an active session, reset session & proceed to menu
     const isStandardMenuText = [
-      'خرید سرویس', 'خرید سرویس همکار', 'تست رایگان', 'اکانت تست',
+      'خرید سرویس', 'خرید سرویس همکار', 'سفارش با حجم دلخواه', 'سفارش حجم دلخواه', 'تست رایگان', 'اکانت تست',
       'پروفایل و موجودی', 'پروفایل', 'موجودی', 'شارژ حساب', 'افزایش موجودی',
       'لیست خریدهای من', 'خریدهای من', 'سرویس‌های من', 'لیست خریدهای من',
       'زیرمجموعه‌گیری', 'معرفی به دوستان', 'پشتیبانی',
@@ -2867,6 +3094,38 @@ export async function initBot() {
 
     // Process seller debt payment amount input
     const userSg = userSession.get(chatId);
+    if (userSg && userSg.action === 'await_shamsi_range' && text && !text.startsWith('/')) {
+      const targetChatId = userSg.targetChatId || chatId;
+      userSession.delete(chatId);
+
+      const parts = text.split(/تا|-|to|\s+/).filter(Boolean);
+      let startMs: number | null = null;
+      let endMs: number | null = null;
+      let rangeLabel = text.trim();
+
+      if (parts.length >= 2) {
+        startMs = parseShamsiDateToTimestamp(parts[0], false);
+        endMs = parseShamsiDateToTimestamp(parts[parts.length - 1], true);
+      } else if (parts.length === 1) {
+        startMs = parseShamsiDateToTimestamp(parts[0], false);
+        endMs = parseShamsiDateToTimestamp(parts[0], true);
+      }
+
+      if (!startMs || !endMs) {
+        bot!.sendMessage(chatId, '❌ فرمت تاریخ شمسی وارد شده معتبر نیست.\nمثال‌های صحیح:\n`1405/07/01 تا 1405/07/15`\n`1405/07/15`', { parse_mode: 'Markdown' });
+        return;
+      }
+
+      if (startMs > endMs) {
+        const tmp = startMs;
+        startMs = endMs;
+        endMs = tmp;
+      }
+
+      await sendShamsiFilteredReport(chatId, targetChatId, startMs, endMs, rangeLabel);
+      return;
+    }
+
     if (userSg && userSg.action === 'seller_debt_pay_amount' && text && !text.startsWith('/')) {
       const parsed = parseAmountInput(text);
       if (parsed === null || parsed <= 0) {
@@ -2925,6 +3184,30 @@ export async function initBot() {
           ]
         }
       });
+      return;
+    }
+
+    if (userSg && userSg.action === 'seller_custom_volume_gb' && text && !text.startsWith('/')) {
+      const volNum = parseInt(text.replace(/[^0-9]/g, ''));
+      if (isNaN(volNum) || volNum <= 0) {
+        bot!.sendMessage(chatId, '❌ حجم وارد شده نامعتبر است. لطفاً مقدار حجم را به گیگابایت به صورت عددی ارسال فرمایید (مثلاً: 15 یا 25):');
+        return;
+      }
+      userSession.delete(chatId);
+      const loadingMsg = await bot!.sendMessage(chatId, `⏳ در حال ثبت سفارش و ایجاد کانفیگ اختصاصی با حجم ${volNum} گیگابایت...`);
+      try {
+        const newPurchase = await executeSellerCustomVolumePurchase({
+          sellerChatId: chatId,
+          volumeGb: volNum
+        });
+        await sendCleanCustomerConfigMessage(chatId, newPurchase);
+        bot!.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
+      } catch (err: any) {
+        bot!.editMessageText(`❌ خطا در ثبت سفارش حجم دلخواه: ${err.message}`, {
+          chat_id: chatId,
+          message_id: loadingMsg.message_id
+        }).catch(() => {});
+      }
       return;
     }
 
@@ -4198,7 +4481,8 @@ export async function initBot() {
         if (activeProducts.some(p => p && !p.categoryId)) {
           inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
         }
-        bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول مورد نظر را انتخاب کنید:', {
+        inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol' }]);
+        bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول مورد نظر را انتخاب کنید یا حجم دلخواه سفارش دهید:', {
            parse_mode: 'HTML',
            reply_markup: {
              inline_keyboard: inlineKeyboard
@@ -4210,12 +4494,72 @@ export async function initBot() {
       const inlineKeyboard = activeProducts.map(p => ([
         { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
       ]));
+      inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol' }]);
 
       bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
          parse_mode: 'HTML',
          reply_markup: {
            inline_keyboard: inlineKeyboard
          } as any
+      });
+      return;
+    }
+
+    if (cleanText === '⚡ سفارش با حجم دلخواه' || text.includes('سفارش با حجم دلخواه') || cleanText === 'سفارش حجم دلخواه') {
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) return;
+      const stateObj = db.getState();
+      if (stateObj.customVolumeEnabled === false) {
+        bot!.sendMessage(chatId, '❌ قابلیت سفارش با حجم دلخواه در حال حاضر توسط مدیریت غیرفعال شده است.');
+        return;
+      }
+
+      // Check debt limit
+      if (!isSellerUnlimitedLimit(user)) {
+        const currentDebt = user.debt || 0;
+        const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+        if (currentDebt >= limit) {
+          bot!.sendMessage(chatId, `❌ خطا: سقف بدهی مجاز شما به پایان رسیده است!\n\nبدهی شما: ${currentDebt.toLocaleString()} تومان\nسقف مجاز: ${limit.toLocaleString()} تومان\n\nلطفاً جهت تسویه یا افزایش سقف با مدیریت در ارتباط باشید.`);
+          return;
+        }
+      }
+
+      const rawRatePerGb = user.customVolumePricePerGb || stateObj.customVolumePricePerGb || 3000;
+      const sellerDiscount = getSellerDiscountForProduct(user);
+      const finalRatePerGb = sellerDiscount > 0 ? Math.max(0, Math.round(rawRatePerGb * (1 - sellerDiscount / 100))) : rawRatePerGb;
+
+      let msg = `⚡ <b>سفارش آنی سرویس بر اساس حجم دلخواه (ویژه همکاران)</b>\n\n` +
+        `💰 <b>نرخ هر گیگابایت برای شما:</b> <code>${finalRatePerGb.toLocaleString()}</code> تومان` +
+        (sellerDiscount > 0 ? ` <i>(با ${sellerDiscount}٪ تخفیف اختصاصی از نرخ پایه ${rawRatePerGb.toLocaleString()} ت)</i>\n` : `\n`) +
+        `🏢 <b>پنل پیش‌فرض:</b> ${stateObj.mroceanPanel?.url ? 'مستر اوشن (Mr Ocean 🌊 - پیشنهادی)' : 'سنایی (X-UI 🔵)'}\n` +
+        `⏳ <b>مدت اعتبار پیش‌فرض:</b> ${stateObj.customVolumeDefaultDays || 30} روز\n\n` +
+        `👇 لطفاً یکی از بسته‌های سریع زیر را انتخاب کنید یا گزینه <b>ورود حجم دلخواه</b> را لمس نمایید:`;
+
+      const quickGbs = [10, 20, 30, 50, 80, 100];
+      const inlineKeyboard: any[] = [];
+      for (let i = 0; i < quickGbs.length; i += 2) {
+        const row = [];
+        row.push({
+          text: `📦 ${quickGbs[i]} گیگ (${(quickGbs[i] * finalRatePerGb).toLocaleString()} ت)`,
+          callback_data: `seller_cvol_${quickGbs[i]}`
+        });
+        if (i + 1 < quickGbs.length) {
+          row.push({
+            text: `📦 ${quickGbs[i + 1]} گیگ (${(quickGbs[i + 1] * finalRatePerGb).toLocaleString()} ت)`,
+            callback_data: `seller_cvol_${quickGbs[i + 1]}`
+          });
+        }
+        inlineKeyboard.push(row);
+      }
+      inlineKeyboard.push([
+        { text: '✏️ ورود حجم دستی (گیگابایت دلخواه)', callback_data: 'seller_cvol_manual' }
+      ]);
+
+      bot!.sendMessage(chatId, msg, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: inlineKeyboard
+        } as any
       });
       return;
     }
@@ -5235,6 +5579,95 @@ export async function initBot() {
       return;
     }
 
+    if (data === 'seller_open_cvol') {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) {
+        answerQuery({ text: 'دسترسی همکار ندارید', show_alert: true });
+        return;
+      }
+      answerQuery();
+      const stateObj = db.getState();
+      const rawRatePerGb = userObj.customVolumePricePerGb || stateObj.customVolumePricePerGb || 3000;
+      const sellerDiscount = getSellerDiscountForProduct(userObj);
+      const finalRatePerGb = sellerDiscount > 0 ? Math.max(0, Math.round(rawRatePerGb * (1 - sellerDiscount / 100))) : rawRatePerGb;
+
+      let msg = `⚡ <b>سفارش آنی سرویس بر اساس حجم دلخواه (ویژه همکاران)</b>\n\n` +
+        `💰 <b>نرخ هر گیگابایت برای شما:</b> <code>${finalRatePerGb.toLocaleString()}</code> تومان` +
+        (sellerDiscount > 0 ? ` <i>(با ${sellerDiscount}٪ تخفیف از نرخ پایه ${rawRatePerGb.toLocaleString()} ت)</i>\n` : `\n`) +
+        `🏢 <b>پنل پیش‌فرض:</b> ${stateObj.mroceanPanel?.url ? 'مستر اوشن (Mr Ocean 🌊 - پیشنهادی)' : 'سنایی (X-UI 🔵)'}\n` +
+        `⏳ <b>مدت اعتبار پیش‌فرض:</b> ${stateObj.customVolumeDefaultDays || 30} روز\n\n` +
+        `👇 لطفاً یکی از بسته‌های سریع زیر را انتخاب کنید یا گزینه <b>ورود حجم دلخواه</b> را لمس نمایید:`;
+
+      const quickGbs = [10, 20, 30, 50, 80, 100];
+      const inlineKeyboard: any[] = [];
+      for (let i = 0; i < quickGbs.length; i += 2) {
+        const row = [];
+        row.push({
+          text: `📦 ${quickGbs[i]} گیگ (${(quickGbs[i] * finalRatePerGb).toLocaleString()} ت)`,
+          callback_data: `seller_cvol_${quickGbs[i]}`
+        });
+        if (i + 1 < quickGbs.length) {
+          row.push({
+            text: `📦 ${quickGbs[i + 1]} گیگ (${(quickGbs[i + 1] * finalRatePerGb).toLocaleString()} ت)`,
+            callback_data: `seller_cvol_${quickGbs[i + 1]}`
+          });
+        }
+        inlineKeyboard.push(row);
+      }
+      inlineKeyboard.push([
+        { text: '✏️ ورود حجم دستی (گیگابایت دلخواه)', callback_data: 'seller_cvol_manual' }
+      ]);
+
+      bot!.sendMessage(chatId, msg, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: inlineKeyboard
+        } as any
+      });
+      return;
+    }
+
+    if (data && data.startsWith('seller_cvol_')) {
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) {
+        answerQuery({ text: 'دسترسی همکار ندارید', show_alert: true });
+        return;
+      }
+      if (data === 'seller_cvol_manual') {
+        userSession.set(chatId, { action: 'seller_custom_volume_gb' });
+        answerQuery();
+        bot!.sendMessage(chatId, `✏️ <b>ورود حجم دستی (ویژه همکار)</b>:\n\nلطفاً میزان حجم مد نظر خود را به <b>گیگابایت</b> ارسال فرمایید:\n(مثلاً: <code>15</code> یا <code>25</code> یا <code>70</code>)`, {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[{ text: '❌ انصراف', callback_data: 'cancel_purchase' }]]
+          }
+        });
+        return;
+      }
+
+      const volNum = parseInt(data.replace('seller_cvol_', ''));
+      if (isNaN(volNum) || volNum <= 0) {
+        answerQuery({ text: 'حجم نامعتبر است', show_alert: true });
+        return;
+      }
+      answerQuery({ text: `در حال ساخت کانفیگ ${volNum} گیگابایت...` });
+      const loadingMsg = await bot!.sendMessage(chatId, `⏳ در حال ساخت آنی کانفیگ ${volNum} گیگابایت برای همکار...`);
+      try {
+        const newPurchase = await executeSellerCustomVolumePurchase({
+          sellerChatId: chatId,
+          volumeGb: volNum
+        });
+        await sendCleanCustomerConfigMessage(chatId, newPurchase);
+        bot!.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
+      } catch (err: any) {
+        bot!.editMessageText(`❌ خطا در ایجاد سرویس: ${err.message}`, {
+          chat_id: chatId,
+          message_id: loadingMsg.message_id
+        }).catch(() => {});
+      }
+      return;
+    }
+
     if (data === 'admin_users_menu') {
       if (!isAdmin) {
         answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
@@ -5306,6 +5739,147 @@ export async function initBot() {
         bot!.sendMessage(chatId, `✨ <b>حالت فروش حضوری در ربات:</b> ${statusStr}\n\nاکنون هنگام زدن دکمه خرید سرویس همکار، قیمت‌های خرید و درصد تخفیفات از منوی لیست پکیج‌های ربات حذف شده‌اند.`);
       }
       return;
+    }
+
+    if (data && data.startsWith('user_rep_pdf_')) {
+      const parts = data.replace('user_rep_pdf_', '').split('_');
+      const targetChatId = parseInt(parts[0], 10);
+      const startMs = parts[1] ? parseInt(parts[1], 10) : undefined;
+      const endMs = parts[2] ? parseInt(parts[2], 10) : undefined;
+
+      const targetUser = db.getUser(targetChatId);
+      if (!targetUser) {
+        answerQuery({ text: '❌ کاربر مورد نظر یافت نشد.', show_alert: true });
+        return;
+      }
+
+      answerQuery({ text: '⏳ در حال ساخت فایل PDF صورتحساب...' });
+      bot!.sendMessage(chatId, '⏳ در حال خروجی گرفتن و ساخت فایل PDF صورتحساب کامل... لطفاً چند لحظه شکیبا باشید.');
+
+      try {
+        let options: PdfRangeOptions = {};
+        if (startMs && endMs) {
+          const startDateStr = new Date(startMs).toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+          const endDateStr = new Date(endMs).toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+          options = { startMs, endMs, startDateStr, endDateStr };
+        }
+
+        const pdfBuffer = await generateUserStatementPdf(targetUser, options);
+        const fileName = `Statement_${targetUser.chatId}_${Date.now()}.pdf`;
+
+        await bot!.sendDocument(
+          chatId,
+          pdfBuffer,
+          {
+            caption: `📄 <b>فایل رسمی PDF صورتحساب حسابداری و دفتر معین</b>\n\n` +
+                     `👤 <b>طرف حساب:</b> ${escapeHtml(targetUser.nickname || targetUser.username || String(targetUser.chatId))}\n` +
+                     `🆔 <b>شناسه عددی:</b> <code>${targetUser.chatId}</code>\n` +
+                     `📅 <b>تاریخ صدور:</b> <code>${new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' })}</code>`
+          },
+          { filename: fileName, contentType: 'application/pdf' }
+        );
+      } catch (err: any) {
+        console.error('[PDF Generation Error]', err);
+        bot!.sendMessage(chatId, `❌ خطایی هنگام ساخت فایل PDF رخ داد: ${err.message}`);
+      }
+      return;
+    }
+
+    if (data && data.startsWith('user_rep_filter_shamsi_')) {
+      const targetChatId = parseInt(data.replace('user_rep_filter_shamsi_', ''), 10);
+      const targetUser = db.getUser(targetChatId);
+      if (!targetUser) {
+        answerQuery({ text: '❌ کاربر مورد نظر یافت نشد.', show_alert: true });
+        return;
+      }
+
+      const menuText = `🔍 <b>جستجو و فیلتر صورتحساب بر اساس بازه تاریخی شمسی</b>\n\n` +
+        `👤 <b>طرف حساب:</b> <b>${escapeHtml(targetUser.nickname || targetUser.username || String(targetUser.chatId))}</b> (<code>${targetUser.chatId}</code>)\n\n` +
+        `لطفاً یکی از بازه‌های پیشنهادی شمسی را انتخاب نموده یا گزینه <b>«✍️ ورود دستی بازه شمسی»</b> را انتخاب کنید:`;
+
+      const inline_keyboard = [
+        [
+          { text: '🗓 این ماه شمسی (از ۱ ام تا امروز)', callback_data: `shamsi_preset_this_${targetChatId}` }
+        ],
+        [
+          { text: '🗓 ماه گذشته شمسی', callback_data: `shamsi_preset_last_${targetChatId}` },
+          { text: '🗓 ۳ ماه اخیر شمسی', callback_data: `shamsi_preset_3m_${targetChatId}` }
+        ],
+        [
+          { text: '✍️ ورود دستی بازه شمسی (مثلاً ۱۴۰۵/۰۷/۰۱ تا ۱۴۰۵/۰۷/۱۵)', callback_data: `shamsi_preset_manual_${targetChatId}` }
+        ],
+        [
+          { text: '📑 کل صورتحساب (بدون فیلتر)', callback_data: `user_rep_statement_${targetChatId}` }
+        ]
+      ];
+
+      bot!.sendMessage(chatId, menuText, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard } as any
+      });
+      answerQuery();
+      return;
+    }
+
+    if (data && data.startsWith('shamsi_preset_')) {
+      const parts = data.replace('shamsi_preset_', '').split('_');
+      const presetType = parts[0]; // 'this', 'last', '3m', 'manual'
+      const targetChatId = parseInt(parts[1], 10);
+
+      const targetUser = db.getUser(targetChatId);
+      if (!targetUser) {
+        answerQuery({ text: '❌ کاربر مورد نظر یافت نشد.', show_alert: true });
+        return;
+      }
+
+      const now = new Date();
+      const g = jalaali.toJalaali(now);
+
+      if (presetType === 'this') {
+        const startMs = parseShamsiDateToTimestamp(`${g.jy}/${g.jm}/01`, false) || Date.now();
+        const endMs = Date.now();
+        const monthName = getJalaliMonthName(g.jm);
+        await sendShamsiFilteredReport(chatId, targetChatId, startMs, endMs, `از ۱ ${monthName} ${g.jy} تا امروز`);
+        answerQuery();
+        return;
+      }
+
+      if (presetType === 'last') {
+        let lastJy = g.jy;
+        let lastJm = g.jm - 1;
+        if (lastJm < 1) {
+          lastJm = 12;
+          lastJy--;
+        }
+        const lastDays = jalaali.jalaaliMonthLength(lastJy, lastJm);
+        const startMs = parseShamsiDateToTimestamp(`${lastJy}/${lastJm}/01`, false) || Date.now();
+        const endMs = parseShamsiDateToTimestamp(`${lastJy}/${lastJm}/${lastDays}`, true) || Date.now();
+        const monthName = getJalaliMonthName(lastJm);
+        await sendShamsiFilteredReport(chatId, targetChatId, startMs, endMs, `ماه ${monthName} ${lastJy}`);
+        answerQuery();
+        return;
+      }
+
+      if (presetType === '3m') {
+        let startJy = g.jy;
+        let startJm = g.jm - 3;
+        if (startJm < 1) {
+          startJm += 12;
+          startJy--;
+        }
+        const startMs = parseShamsiDateToTimestamp(`${startJy}/${startJm}/01`, false) || Date.now();
+        const endMs = Date.now();
+        await sendShamsiFilteredReport(chatId, targetChatId, startMs, endMs, `۳ ماه اخیر (از ۱ ${getJalaliMonthName(startJm)} ${startJy} تا امروز)`);
+        answerQuery();
+        return;
+      }
+
+      if (presetType === 'manual') {
+        userSession.set(chatId, { action: 'await_shamsi_range', targetChatId });
+        bot!.sendMessage(chatId, '✍️ <b>ورود دستی بازه تاریخی شمسی</b>\n\nلطفاً بازه تاریخی مد نظر خود را وارد و ارسال نمایید:\n\nمثال بازه دو تاریخی:\n<code>1405/07/01 تا 1405/07/15</code>\n\nمثال تک تاریخ (صورتحساب یک روز مشخص):\n<code>1405/07/15</code>', { parse_mode: 'HTML' });
+        answerQuery();
+        return;
+      }
     }
 
     if (data && data.startsWith('user_rep_')) {
@@ -6533,31 +7107,40 @@ export async function initBot() {
     }
   });
 
-  // Start daily sales and user report worker
+  // Start daily sales and user report worker (runs every 15 minutes to accurately catch end-of-Shamsi-day 23:45+ or interval)
   activeIntervals.push(setInterval(async () => {
     try {
       const state = db.getState();
       if (state.adminIds.length > 0) {
+        const { todayFa } = getTehranShamsiDayRange();
+        const tehranHour = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tehran', hour: 'numeric', hour12: false }).format(new Date()), 10);
+        const tehranMin = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tehran', minute: 'numeric' }).format(new Date()), 10);
+        
+        const lastSentDate = (state as any).lastDailyReportDate;
         const lastSent = state.lastDailyReportSent || 0;
         const now = Date.now();
-        const intervalMs = 24 * 60 * 60 * 1000; // 24 hours
+        const intervalMs = 24 * 60 * 60 * 1000;
         
-        if (now - lastSent >= intervalMs) {
+        // Auto-send towards the end of the Shamsi day (23:40 - 23:59 Tehran time) for today's 24 hours, or fallback to 24h interval
+        const isEndOfShamsiDay = (tehranHour === 23 && tehranMin >= 40 && lastSentDate !== todayFa);
+        const isIntervalDue = (now - lastSent >= intervalMs);
+
+        if (isEndOfShamsiDay || isIntervalDue) {
           const reportText = getDailyReportText();
           for (const adminId of state.adminIds) {
             try {
-              await bot!.sendMessage(adminId, `🔔 <b>گزارش روزانه خودکار سیستم</b>\n\n` + reportText, { parse_mode: 'HTML' });
+              await bot!.sendMessage(adminId, `🔔 <b>گزارش روزانه خودکار سیستم (۲۴ ساعت شبانه‌روز شمسی)</b>\n\n` + reportText, { parse_mode: 'HTML' });
             } catch (err: any) {
               console.error(`[Daily Report Worker] Failed to send report to admin ${adminId}:`, err.message);
             }
           }
-          db.updateState({ lastDailyReportSent: now });
+          db.updateState({ lastDailyReportSent: now, lastDailyReportDate: todayFa } as any);
         }
       }
     } catch (e: any) {
       console.error('[Daily Report Worker Error]', e.message);
     }
-  }, 30 * 60 * 1000)); // Check every 30 minutes
+  }, 15 * 60 * 1000)); // Check every 15 minutes
 
   // Start auto-backup worker
   activeIntervals.push(setInterval(async () => {

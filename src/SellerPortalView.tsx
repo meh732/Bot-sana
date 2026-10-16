@@ -25,7 +25,13 @@ import {
   Trash2,
   Gift,
   Upload,
-  ExternalLink
+  ExternalLink,
+  Server,
+  TrendingUp,
+  Plus,
+  Minus,
+  Layers,
+  Download
 } from 'lucide-react';
 
 interface SellerPortalProps {
@@ -61,6 +67,10 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [activeTab, setActiveTab] = useState<'store' | 'debt' | 'purchases' | 'ledger' | 'reports'>('store');
   const [reportPeriod, setReportPeriod] = useState<'today' | 'monthly' | 'all'>('today');
 
+  // Custom Shamsi Date Search
+  const [shamsiStart, setShamsiStart] = useState('');
+  const [shamsiEnd, setShamsiEnd] = useState('');
+
   // Bank Info for debt payments
   const [bankInfo, setBankInfo] = useState<{ cardNumber: string; cardHolder: string }>({ cardNumber: '', cardHolder: '' });
   const [showDebtPaymentModal, setShowDebtPaymentModal] = useState(false);
@@ -69,7 +79,39 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [submittingDebtPayment, setSubmittingDebtPayment] = useState(false);
   const [debtPaymentSuccessMsg, setDebtPaymentSuccessMsg] = useState('');
 
-  // Store filters
+  // Store filters & Custom volume order states
+  const [storeMode, setStoreMode] = useState<'custom_volume' | 'packages'>('custom_volume');
+  const [customVolumeInfo, setCustomVolumeInfo] = useState<{
+    enabled: boolean;
+    pricePerGb: number;
+    finalPricePerGb: number;
+    sellerDiscount: number;
+    minGb: number;
+    defaultDays: number;
+    defaultPanel: string;
+    availablePanels: { id: string; name: string }[];
+  }>({
+    enabled: true,
+    pricePerGb: 3000,
+    finalPricePerGb: 3000,
+    sellerDiscount: 0,
+    minGb: 1,
+    defaultDays: 30,
+    defaultPanel: 'mrocean',
+    availablePanels: [
+      { id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊 - پیشنهادی' },
+      { id: 'sanaei', name: 'سنایی (X-UI) 🔵' }
+    ]
+  });
+
+  const [customVolGb, setCustomVolGb] = useState<number>(20);
+  const [customDurDays, setCustomDurDays] = useState<number>(30);
+  const [customSelectedPanel, setCustomSelectedPanel] = useState<string>('mrocean');
+  const [customClientRemark, setCustomClientRemark] = useState<string>('');
+  const [customClientSellingPrice, setCustomClientSellingPrice] = useState<string>('');
+  const [orderingCustomVolume, setOrderingCustomVolume] = useState<boolean>(false);
+  const [customVolumeError, setCustomVolumeError] = useState<string>('');
+
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -131,6 +173,15 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         setCategories(data.categories || []);
         setProducts(data.products || []);
         if (data.freeTest) setFreeTestInfo(data.freeTest);
+        if (data.customVolume) {
+          setCustomVolumeInfo(data.customVolume);
+          if (data.customVolume.defaultPanel) {
+            setCustomSelectedPanel(data.customVolume.defaultPanel);
+          }
+          if (data.customVolume.defaultDays) {
+            setCustomDurDays(data.customVolume.defaultDays);
+          }
+        }
         setCustomPrices(data.seller.customDisplayPrices || {});
         setShowCustomPricesOnly(data.seller.showCustomPricesOnly ?? true);
         if (data.bankInfo) setBankInfo(data.bankInfo);
@@ -229,6 +280,65 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       alert('خطا در ثبت سفارش: ' + err.message);
     } finally {
       setPurchasing(false);
+    }
+  };
+
+  const handleOrderCustomVolume = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setCustomVolumeError('');
+
+    const vol = Math.max(1, Number(customVolGb));
+    if (isNaN(vol) || vol <= 0) {
+      setCustomVolumeError('لطفاً میزان حجم معتبری به گیگابایت وارد فرمایید.');
+      return;
+    }
+
+    if (vol < (customVolumeInfo.minGb || 1)) {
+      setCustomVolumeError(`حداقل حجم مجاز برای سفارش ${customVolumeInfo.minGb} گیگابایت می‌باشد.`);
+      return;
+    }
+
+    const dur = Math.max(1, Number(customDurDays || 30));
+
+    setOrderingCustomVolume(true);
+    try {
+      const res = await fetch(`/api/seller-portal/buy-custom-volume/${chatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          volumeGb: vol,
+          durationDays: dur,
+          customName: customClientRemark.trim() || undefined,
+          panelType: customSelectedPanel || undefined
+        })
+      });
+      const data = await res.json();
+      if (data.success && data.purchase) {
+        setPurchaseResult({
+          purchase: data.purchase,
+          qrCodeDataUrl: data.qrCodeDataUrl,
+          cleanMessage: data.cleanMessage
+        });
+        if (sellerData) {
+          const updatedPurchases = [data.purchase, ...(sellerData.purchases || [])];
+          const newDebt = (sellerData.debt || 0) + (data.purchase.price || 0);
+          setSellerData({
+            ...sellerData,
+            purchases: updatedPurchases,
+            debt: newDebt,
+            debtVolume: (sellerData.debtVolume || 0) + vol
+          });
+        }
+        setCustomClientRemark('');
+        setCustomClientSellingPrice('');
+        fetchPortalInfo(chatId);
+      } else {
+        setCustomVolumeError(data.message || 'خطا در ثبت سفارش حجم دلخواه.');
+      }
+    } catch (err: any) {
+      setCustomVolumeError(err.message || 'خطا در برقراری ارتباط با سرور.');
+    } finally {
+      setOrderingCustomVolume(false);
     }
   };
 
@@ -658,126 +768,471 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
               </div>
             )}
 
-            {/* Search & Categories */}
-            <div className="space-y-3">
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="جستجوی پکیج آماده فروش..."
-                  className="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500/60 transition"
-                />
-                {searchQuery && (
-                  <button onClick={() => setSearchQuery('')} className="absolute left-3 top-3 text-slate-500 hover:text-slate-300">
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
+            {/* Mode Switcher */}
+            <div className="bg-slate-900/90 backdrop-blur-md p-1.5 rounded-2xl border border-slate-800 flex items-center gap-2 shadow-lg">
+              <button
+                type="button"
+                onClick={() => setStoreMode('custom_volume')}
+                className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${
+                  storeMode === 'custom_volume'
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 shadow-lg shadow-emerald-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Sliders className="w-4 h-4" />
+                <span>⚡ سفارش با حجم دلخواه (نرخ هر گیگ)</span>
+                <span className="text-[10px] bg-slate-950/40 text-emerald-950 px-2 py-0.5 rounded-full font-bold">
+                  {customVolumeInfo.finalPricePerGb.toLocaleString()} ت/گیگ
+                </span>
+              </button>
 
-              {/* Categories Scroll */}
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
-                <button
-                  onClick={() => setSelectedCategory('all')}
-                  className={`px-4 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition ${
-                    selectedCategory === 'all'
-                      ? 'bg-emerald-500 text-slate-950 font-bold shadow-lg shadow-emerald-500/20'
-                      : 'bg-slate-900 text-slate-400 hover:bg-slate-850 border border-slate-800'
-                  }`}
-                >
-                  همه محصولات آماده فروش ({products.length})
-                </button>
-
-                {categories.map((cat) => (
-                  <button
-                    key={cat.id}
-                    onClick={() => setSelectedCategory(cat.id)}
-                    className={`px-4 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition ${
-                      selectedCategory === cat.id
-                        ? 'bg-emerald-500 text-slate-950 font-bold shadow-lg shadow-emerald-500/20'
-                        : 'bg-slate-900 text-slate-400 hover:bg-slate-850 border border-slate-800'
-                    }`}
-                  >
-                    {cat.name}
-                  </button>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => setStoreMode('packages')}
+                className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${
+                  storeMode === 'packages'
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 shadow-lg shadow-emerald-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <ShoppingBag className="w-4 h-4" />
+                <span>📦 لیست پکیج‌های آماده فروش ({products.length})</span>
+              </button>
             </div>
 
-            {/* Product Cards */}
-            {filteredProducts.length === 0 ? (
-              <div className="text-center py-12 bg-slate-900/50 border border-slate-800/80 rounded-3xl p-6">
-                <ShoppingBag className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                <p className="text-slate-400 text-sm font-medium">هیچ محصول آماده فروشی در این بخش موجود نیست.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredProducts.map((product) => {
-                  const displayPrice = product.customDisplayPrice;
-                  const hasCustomPrice = displayPrice !== null && displayPrice !== undefined;
+            {/* SUB-TAB 1: CUSTOM VOLUME ORDERING */}
+            {storeMode === 'custom_volume' && (
+              <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-5 sm:p-7 shadow-2xl space-y-6">
+                {/* Header */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-5 border-b border-slate-800/80">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                      <Sliders className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h2 className="text-base sm:text-lg font-bold text-slate-100 flex items-center gap-2">
+                        <span>سفارش کانفیگ بر اساس حجم دلخواه</span>
+                        <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-semibold">
+                          تحویل لحظه‌ای
+                        </span>
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        تعیین دقیق گیگابایت و مدت زمان با نرخ ثابت هر گیگابایت برای همکار
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-slate-800/90 rounded-2xl p-3 text-left sm:text-right w-full sm:w-auto">
+                    <div className="text-[11px] text-slate-400">نرخ هر گیگابایت برای شما:</div>
+                    <div className="text-base font-extrabold text-emerald-400 font-mono">
+                      {customVolumeInfo.finalPricePerGb.toLocaleString()} <span className="text-xs font-normal text-slate-400">تومان</span>
+                    </div>
+                    {customVolumeInfo.sellerDiscount > 0 && (
+                      <div className="text-[10px] text-teal-300">
+                        ({customVolumeInfo.sellerDiscount}٪ تخفیف از {customVolumeInfo.pricePerGb.toLocaleString()} ت)
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {customVolumeError && (
+                  <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl flex items-center gap-3 text-rose-400 text-xs leading-relaxed">
+                    <AlertCircle className="w-5 h-5 shrink-0" />
+                    <span>{customVolumeError}</span>
+                  </div>
+                )}
+
+                {/* 1. Panel Choice */}
+                <div className="space-y-2.5">
+                  <label className="block text-xs font-bold text-slate-200">
+                    🏢 انتخاب پنل سرور (پیشنهادی: مستر اوشن):
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div
+                      onClick={() => setCustomSelectedPanel('mrocean')}
+                      className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between space-y-2 ${
+                        customSelectedPanel === 'mrocean'
+                          ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
+                          : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
+                          <span>🌊 مستر اوشن (Mr Ocean)</span>
+                        </span>
+                        <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                          پیشنهادی ⭐
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">مناسب‌ترین پنل برای ساخت و مدیریت حجم‌های اختصاصی با سرعت بالا</p>
+                    </div>
+
+                    <div
+                      onClick={() => setCustomSelectedPanel('sanaei')}
+                      className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between space-y-2 ${
+                        customSelectedPanel === 'sanaei'
+                          ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
+                          : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
+                          <span>🔵 سنایی (X-UI)</span>
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">ساخت بر روی سرور سنایی با پروتکل‌های V2Ray</p>
+                    </div>
+
+                    <div
+                      onClick={() => setCustomSelectedPanel('rebecca')}
+                      className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between space-y-2 ${
+                        customSelectedPanel === 'rebecca'
+                          ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
+                          : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
+                          <span>🟣 ربکا (Rebecca)</span>
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">ساخت بر روی سرورهای پنل ربکا</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Volume Selection */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-200">
+                      📦 حجم مورد نظر (گیگابایت):
+                    </label>
+                    <span className="text-xs text-emerald-400 font-mono font-bold">
+                      {customVolGb} GB
+                    </span>
+                  </div>
+
+                  {/* Fast Volume Chips */}
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                    {[10, 20, 30, 50, 80, 100, 150, 200].map((gb) => (
+                      <button
+                        key={gb}
+                        type="button"
+                        onClick={() => setCustomVolGb(gb)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold font-mono transition whitespace-nowrap ${
+                          customVolGb === gb
+                            ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                            : 'bg-slate-950/60 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                        }`}
+                      >
+                        {gb} GB
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Stepper + Input */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCustomVolGb((prev) => Math.max(customVolumeInfo.minGb || 1, prev - 5))}
+                      className="p-3 bg-slate-950 hover:bg-slate-850 text-slate-300 rounded-2xl border border-slate-800 transition cursor-pointer"
+                      title="کاهش ۵ گیگ"
+                    >
+                      <Minus className="w-4 h-4" />
+                    </button>
+
+                    <div className="relative flex-1">
+                      <input
+                        type="number"
+                        min={customVolumeInfo.minGb || 1}
+                        max={1000}
+                        value={customVolGb}
+                        onChange={(e) => setCustomVolGb(Math.max(1, Number(e.target.value) || 1))}
+                        className="w-full px-4 py-3 bg-slate-950/90 border border-slate-800 rounded-2xl text-slate-100 text-center font-mono font-bold text-lg focus:outline-none focus:border-emerald-500 transition"
+                      />
+                      <span className="absolute left-4 top-3.5 text-xs text-slate-500 font-mono">GB</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setCustomVolGb((prev) => prev + 5)}
+                      className="p-3 bg-slate-950 hover:bg-slate-850 text-slate-300 rounded-2xl border border-slate-800 transition cursor-pointer"
+                      title="افزایش ۵ گیگ"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Range slider */}
+                  <input
+                    type="range"
+                    min={customVolumeInfo.minGb || 1}
+                    max={200}
+                    value={customVolGb}
+                    onChange={(e) => setCustomVolGb(Number(e.target.value))}
+                    className="w-full accent-emerald-500 bg-slate-800 h-2 rounded-lg cursor-pointer"
+                  />
+                </div>
+
+                {/* 3. Duration Selection */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-200">
+                      ⏳ مدت زمان اعتبار (روز):
+                    </label>
+                    <span className="text-xs text-teal-400 font-mono font-bold">
+                      {customDurDays} روز
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                    {[30, 60, 90, 180, 365].map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        onClick={() => setCustomDurDays(days)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap ${
+                          customDurDays === days
+                            ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                            : 'bg-slate-950/60 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                        }`}
+                      >
+                        {days} روزه
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={customDurDays}
+                      onChange={(e) => setCustomDurDays(Math.max(1, Number(e.target.value) || 30))}
+                      className="w-full px-4 py-2.5 bg-slate-950/90 border border-slate-800 rounded-2xl text-slate-100 text-sm font-mono focus:outline-none focus:border-teal-500 transition"
+                      placeholder="تعداد روز دلخواه..."
+                    />
+                    <span className="absolute left-4 top-3 text-xs text-slate-500">روز</span>
+                  </div>
+                </div>
+
+                {/* 4. Customer Name / Remark */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-200">
+                    👤 نام یا عنوان سرویس برای مشتری (اختیاری):
+                  </label>
+                  <input
+                    type="text"
+                    value={customClientRemark}
+                    onChange={(e) => setCustomClientRemark(e.target.value)}
+                    placeholder="مثال: گوشی علی، شرکت، لپ‌تاپ (جهت شناسایی در لیست)"
+                    className="w-full px-4 py-3 bg-slate-950/90 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition"
+                  />
+                </div>
+
+                {/* 5. Live Financial Summary & Optional Client Retail Price */}
+                {(() => {
+                  const wholesaleCost = Math.round(customVolGb * customVolumeInfo.finalPricePerGb);
+                  const retailPriceNum = Number(customClientSellingPrice) || 0;
+                  const estimatedProfit = retailPriceNum > 0 ? (retailPriceNum - wholesaleCost) : 0;
 
                   return (
-                    <div
-                      key={product.id}
-                      className="bg-slate-900/90 border border-slate-800 hover:border-emerald-500/40 rounded-3xl p-5 flex flex-col justify-between space-y-4 transition-all duration-200 shadow-lg hover:shadow-emerald-500/5 group"
-                    >
-                      <div className="space-y-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <h3 className="font-bold text-slate-100 text-base group-hover:text-emerald-400 transition">
-                            {product.name}
-                          </h3>
-                          {product.isPayAsYouGo ? (
-                            <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
-                              مصرف آزاد
-                            </span>
-                          ) : (
-                            <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
-                              آماده فروش
-                            </span>
-                          )}
+                    <div className="bg-slate-950/80 border border-slate-800/90 rounded-2xl p-4 sm:p-5 space-y-4">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                        <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800/60">
+                          <span className="text-[11px] text-slate-400 block mb-1">حجم سفارش:</span>
+                          <span className="font-bold font-mono text-slate-100 text-sm">{customVolGb} GB</span>
                         </div>
-
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/80 text-xs text-slate-300">
-                          <div className="flex items-center gap-1.5 bg-slate-950/60 p-2 rounded-xl">
-                            <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>{product.isPayAsYouGo ? 'نامحدود' : `${product.volumeGb} GB`}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 bg-slate-950/60 p-2 rounded-xl">
-                            <Clock className="w-3.5 h-3.5 text-teal-400" />
-                            <span>{product.isPayAsYouGo ? 'نامحدود' : `${product.durationDays} روز`}</span>
-                          </div>
+                        <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800/60">
+                          <span className="text-[11px] text-slate-400 block mb-1">نرخ هر گیگابایت:</span>
+                          <span className="font-bold font-mono text-emerald-400 text-sm">{customVolumeInfo.finalPricePerGb.toLocaleString()} ت</span>
+                        </div>
+                        <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800/60 col-span-2 sm:col-span-1">
+                          <span className="text-[11px] text-slate-400 block mb-1">مبلغ ثبت در بدهی:</span>
+                          <span className="font-extrabold font-mono text-emerald-400 text-base">{wholesaleCost.toLocaleString()} ت</span>
                         </div>
                       </div>
 
-                      <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                        <div>
-                          {showCustomPricesOnly && hasCustomPrice ? (
-                            <div>
-                              <span className="text-[10px] text-slate-500 block">قیمت مشتری:</span>
-                              <span className="text-base font-extrabold text-slate-100 font-mono">
-                                {displayPrice.toLocaleString()} <span className="text-xs font-normal text-slate-400">تومان</span>
-                              </span>
-                            </div>
-                          ) : (
-                            <div>
-                              <span className="text-[10px] text-slate-500 block">قیمت مشتری:</span>
-                              <span className="text-sm font-semibold text-emerald-400">توافقی / تماس</span>
-                            </div>
+                      {/* Optional Retail Price Input */}
+                      <div className="pt-3 border-t border-slate-800/80 space-y-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <label className="text-xs text-slate-300 font-medium">
+                            💰 قیمت فروش پیشنهادی شما به مشتری (جهت محاسبه سود):
+                          </label>
+                          {retailPriceNum > 0 && (
+                            <span className={`text-xs font-bold px-2.5 py-1 rounded-xl border ${
+                              estimatedProfit >= 0
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                            }`}>
+                              {estimatedProfit >= 0 ? `✨ سود شما: ${estimatedProfit.toLocaleString()} تومان` : `ضرر: ${Math.abs(estimatedProfit).toLocaleString()} تومان`}
+                            </span>
                           )}
                         </div>
-
-                        <button
-                          onClick={() => setSelectedProduct(product)}
-                          className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-2xl shadow-md shadow-emerald-500/10 transition flex items-center gap-1.5"
-                        >
-                          <span>ثبت و ساخت آنی</span>
-                          <Zap className="w-3.5 h-3.5 fill-current" />
-                        </button>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            value={customClientSellingPrice}
+                            onChange={(e) => setCustomClientSellingPrice(e.target.value)}
+                            placeholder="مثال: ۱۲۰۰۰۰ (تومان)"
+                            className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                          />
+                          <span className="absolute left-3 top-2.5 text-[11px] text-slate-500">تومان</span>
+                        </div>
                       </div>
                     </div>
                   );
-                })}
+                })()}
+
+                {/* Submit Button */}
+                <button
+                  type="button"
+                  onClick={handleOrderCustomVolume}
+                  disabled={orderingCustomVolume}
+                  className="w-full py-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 disabled:opacity-50 text-slate-950 font-bold text-sm rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {orderingCustomVolume ? (
+                    <>
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      <span>در حال ساخت و ثبت آنی کانفیگ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-5 h-5 fill-current" />
+                      <span>
+                        ثبت سفارش و تحویل آنی کانفیگ ({Math.round(customVolGb * customVolumeInfo.finalPricePerGb).toLocaleString()} تومان)
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {/* SUB-TAB 2: READY PACKAGES LIST */}
+            {storeMode === 'packages' && (
+              <div className="space-y-6">
+                {/* Search & Categories */}
+                <div className="space-y-3">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="جستجوی پکیج آماده فروش..."
+                      className="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500/60 transition"
+                    />
+                    {searchQuery && (
+                      <button onClick={() => setSearchQuery('')} className="absolute left-3 top-3 text-slate-500 hover:text-slate-300">
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Categories Scroll */}
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                    <button
+                      onClick={() => setSelectedCategory('all')}
+                      className={`px-4 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition ${
+                        selectedCategory === 'all'
+                          ? 'bg-emerald-500 text-slate-950 font-bold shadow-lg shadow-emerald-500/20'
+                          : 'bg-slate-900 text-slate-400 hover:bg-slate-850 border border-slate-800'
+                      }`}
+                    >
+                      همه محصولات آماده فروش ({products.length})
+                    </button>
+
+                    {categories.map((cat) => (
+                      <button
+                        key={cat.id}
+                        onClick={() => setSelectedCategory(cat.id)}
+                        className={`px-4 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition ${
+                          selectedCategory === cat.id
+                            ? 'bg-emerald-500 text-slate-950 font-bold shadow-lg shadow-emerald-500/20'
+                            : 'bg-slate-900 text-slate-400 hover:bg-slate-850 border border-slate-800'
+                        }`}
+                      >
+                        {cat.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Product Cards */}
+                {filteredProducts.length === 0 ? (
+                  <div className="text-center py-12 bg-slate-900/50 border border-slate-800/80 rounded-3xl p-6">
+                    <ShoppingBag className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+                    <p className="text-slate-400 text-sm font-medium">هیچ محصول آماده فروشی در این بخش موجود نیست.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredProducts.map((product) => {
+                      const displayPrice = product.customDisplayPrice;
+                      const hasCustomPrice = displayPrice !== null && displayPrice !== undefined;
+
+                      return (
+                        <div
+                          key={product.id}
+                          className="bg-slate-900/90 border border-slate-800 hover:border-emerald-500/40 rounded-3xl p-5 flex flex-col justify-between space-y-4 transition-all duration-200 shadow-lg hover:shadow-emerald-500/5 group"
+                        >
+                          <div className="space-y-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <h3 className="font-bold text-slate-100 text-base group-hover:text-emerald-400 transition">
+                                {product.name}
+                              </h3>
+                              {product.isPayAsYouGo ? (
+                                <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
+                                  مصرف آزاد
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
+                                  آماده فروش
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/80 text-xs text-slate-300">
+                              <div className="flex items-center gap-1.5 bg-slate-950/60 p-2 rounded-xl">
+                                <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>{product.isPayAsYouGo ? 'نامحدود' : `${product.volumeGb} GB`}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 bg-slate-950/60 p-2 rounded-xl">
+                                <Clock className="w-3.5 h-3.5 text-teal-400" />
+                                <span>{product.isPayAsYouGo ? 'نامحدود' : `${product.durationDays} روز`}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
+                            <div>
+                              {showCustomPricesOnly && hasCustomPrice ? (
+                                <div>
+                                  <span className="text-[10px] text-slate-500 block">قیمت مشتری:</span>
+                                  <span className="text-base font-extrabold text-slate-100 font-mono">
+                                    {displayPrice.toLocaleString()} <span className="text-xs font-normal text-slate-400">تومان</span>
+                                  </span>
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className="text-[10px] text-slate-500 block">قیمت مشتری:</span>
+                                  <span className="text-sm font-semibold text-emerald-400">توافقی / تماس</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              onClick={() => setSelectedProduct(product)}
+                              className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-2xl shadow-md shadow-emerald-500/10 transition flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <span>ثبت و ساخت آنی</span>
+                              <Zap className="w-3.5 h-3.5 fill-current" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1061,37 +1516,91 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         {activeTab === 'ledger' && (
           <div className="space-y-6">
             <div className="flex items-center justify-between bg-slate-900 p-4 rounded-3xl border border-slate-800 flex-wrap gap-3">
-              <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
-                <Receipt className="w-5 h-5 text-emerald-400" />
-                <span>دفترکل و صورتحساب تراکنش‌های مالی همکار</span>
-              </h3>
-
-              <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 text-xs">
-                <button
-                  onClick={() => setReportPeriod('today')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
-                    reportPeriod === 'today' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  امروز
-                </button>
-                <button
-                  onClick={() => setReportPeriod('monthly')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
-                    reportPeriod === 'monthly' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  این ماه
-                </button>
-                <button
-                  onClick={() => setReportPeriod('all')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
-                    reportPeriod === 'all' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  کل دوره
-                </button>
+              <div>
+                <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+                  <Receipt className="w-5 h-5 text-emerald-400" />
+                  <span>دفترکل و صورتحساب تراکنش‌های مالی همکار</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1">مشاهده ریز تمام اسناد بدهکار و بستانکار همراه با امکان فیلتر بازه شمسی و خروجی PDF</p>
               </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <a
+                  href={`/api/seller-portal/download-pdf/${sellerData?.chatId || ''}${shamsiStart || shamsiEnd ? `?shamsiStart=${encodeURIComponent(shamsiStart)}&shamsiEnd=${encodeURIComponent(shamsiEnd)}` : ''}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-slate-950 font-bold rounded-xl transition flex items-center gap-1.5 shadow-md shadow-emerald-500/20 text-xs shrink-0"
+                >
+                  <Download className="w-4 h-4 text-slate-950" />
+                  <span>دانلود PDF صورتحساب {shamsiStart || shamsiEnd ? 'بازه' : 'کامل'}</span>
+                </a>
+
+                <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 text-xs">
+                  <button
+                    onClick={() => { setReportPeriod('today'); setShamsiStart(''); setShamsiEnd(''); }}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                      reportPeriod === 'today' && !shamsiStart && !shamsiEnd ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    امروز (۲۴ساعت)
+                  </button>
+                  <button
+                    onClick={() => { setReportPeriod('monthly'); setShamsiStart(''); setShamsiEnd(''); }}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                      reportPeriod === 'monthly' && !shamsiStart && !shamsiEnd ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    این ماه
+                  </button>
+                  <button
+                    onClick={() => { setReportPeriod('all'); setShamsiStart(''); setShamsiEnd(''); }}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                      reportPeriod === 'all' && !shamsiStart && !shamsiEnd ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    کل اسناد
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Custom Shamsi Search Bar */}
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-3xl flex items-center justify-between flex-wrap gap-3 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-slate-300 font-bold flex items-center gap-1.5">
+                  <Search className="w-4 h-4 text-emerald-400" />
+                  <span>جستجو و فیلتر بازه تاریخی شمسی:</span>
+                </span>
+                <input
+                  type="text"
+                  placeholder="از تاریخ (۱۴۰۵/۰۷/۰۱)"
+                  value={shamsiStart}
+                  onChange={(e) => setShamsiStart(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 w-36 font-mono text-center"
+                />
+                <span className="text-slate-500">تا</span>
+                <input
+                  type="text"
+                  placeholder="تا تاریخ (۱۴۰۵/۰۷/۱۵)"
+                  value={shamsiEnd}
+                  onChange={(e) => setShamsiEnd(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 w-36 font-mono text-center"
+                />
+                {(shamsiStart || shamsiEnd) && (
+                  <button
+                    onClick={() => { setShamsiStart(''); setShamsiEnd(''); }}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-[11px]"
+                  >
+                    پاک‌سازی فیلتر
+                  </button>
+                )}
+              </div>
+
+              {shamsiStart || shamsiEnd ? (
+                <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-xl text-[11px] font-medium">
+                  فیلتر فعال: از {shamsiStart || 'ابتدا'} تا {shamsiEnd || 'اکنون'}
+                </span>
+              ) : null}
             </div>
 
             {/* Ledger Table */}
@@ -1141,6 +1650,45 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         {/* TAB 5: SALES REPORTS & ANALYTICS */}
         {activeTab === 'reports' && (
           <div className="space-y-6">
+            <div className="flex items-center justify-between bg-slate-900 p-4 rounded-3xl border border-slate-800 flex-wrap gap-3">
+              <div>
+                <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-emerald-400" />
+                  <span>گزارش جامع فروش و آمار عملکرد همکار</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  {currentReport.periodLabel ? currentReport.periodLabel : (reportPeriod === 'today' ? '۲۴ ساعت شبانه‌روز شمسی (۰۰:۰۰ تا ۲۳:۵۹)' : reportPeriod === 'monthly' ? '۳۰ روز اخیر' : 'کل دوره')}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 text-xs">
+                <button
+                  onClick={() => setReportPeriod('today')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                    reportPeriod === 'today' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  امروز (۲۴ساعت شمسی)
+                </button>
+                <button
+                  onClick={() => setReportPeriod('monthly')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                    reportPeriod === 'monthly' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  این ماه
+                </button>
+                <button
+                  onClick={() => setReportPeriod('all')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                    reportPeriod === 'all' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  کل دوره
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
               <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1">
                 <span className="text-slate-400">تعداد خریدهای بازه:</span>

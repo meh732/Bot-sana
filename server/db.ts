@@ -107,6 +107,8 @@ export interface Purchase {
   expiryDate?: string;
   isDeleted?: boolean;
   disabled?: boolean;
+  isCustomVolume?: boolean;
+  ratePerGb?: number;
 }
 
 export interface UserTransaction {
@@ -146,6 +148,7 @@ export interface User {
   isUnlimitedLimit?: boolean;
   totalSales?: number;
   totalPayments?: number;
+  customVolumePricePerGb?: number;
   purchases?: Purchase[];
   transactions?: UserTransaction[];
 }
@@ -203,6 +206,11 @@ export interface AppState {
   cardHolder?: string;
   supportUsername?: string;
   coupons: Coupon[];
+  customVolumePricePerGb?: number;
+  customVolumeMinGb?: number;
+  customVolumeDefaultDays?: number;
+  customVolumePanelType?: PanelType;
+  customVolumeEnabled?: boolean;
   autoBackupIntervalHours?: number;
   autoBackupPassword?: string;
   lastAutoBackupSent?: number;
@@ -236,7 +244,12 @@ const defaultState: AppState = {
   cardNumber: '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸',
   cardHolder: 'نام مدیر حساب',
   supportUsername: '',
-  coupons: []
+  coupons: [],
+  customVolumePricePerGb: 3000,
+  customVolumeMinGb: 1,
+  customVolumeDefaultDays: 30,
+  customVolumePanelType: 'mrocean',
+  customVolumeEnabled: true
 };
 
 class Database {

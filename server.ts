@@ -7,8 +7,9 @@ import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import { createServer as createViteServer } from "vite";
 import { db, recordUserTransaction } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, getSellerDiscountForProduct } from "./server/bot.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
+import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions } from "./server/pdfGenerator.js";
 import { xui } from "./server/xui.js";
 import { rebecca } from "./server/rebecca.js";
 import { mrocean } from "./server/mrocean.js";
@@ -110,7 +111,12 @@ async function startServer() {
       autoBackupIntervalHours,
       autoBackupPassword,
       forceJoinEnabled,
-      forceJoinChannels
+      forceJoinChannels,
+      customVolumePricePerGb,
+      customVolumeMinGb,
+      customVolumeDefaultDays,
+      customVolumePanelType,
+      customVolumeEnabled
     } = req.body;
     
     const updates: any = { 
@@ -130,6 +136,11 @@ async function startServer() {
     if (autoBackupPassword !== undefined) updates.autoBackupPassword = autoBackupPassword;
     if (forceJoinEnabled !== undefined) updates.forceJoinEnabled = Boolean(forceJoinEnabled);
     if (forceJoinChannels !== undefined) updates.forceJoinChannels = forceJoinChannels;
+    if (customVolumePricePerGb !== undefined) updates.customVolumePricePerGb = Number(customVolumePricePerGb);
+    if (customVolumeMinGb !== undefined) updates.customVolumeMinGb = Number(customVolumeMinGb);
+    if (customVolumeDefaultDays !== undefined) updates.customVolumeDefaultDays = Number(customVolumeDefaultDays);
+    if (customVolumePanelType !== undefined) updates.customVolumePanelType = customVolumePanelType;
+    if (customVolumeEnabled !== undefined) updates.customVolumeEnabled = Boolean(customVolumeEnabled);
     if (freeTestRebeccaInbounds !== undefined) updates.freeTestRebeccaInbounds = freeTestRebeccaInbounds;
     if (freeTestRebeccaTags !== undefined) updates.freeTestRebeccaTags = freeTestRebeccaTags;
     if (freeTestInboundId !== undefined) {
@@ -1120,9 +1131,62 @@ async function startServer() {
         volumeGb: state.freeTestVolumeGb !== undefined ? Number(state.freeTestVolumeGb) : 1,
         durationDays: state.freeTestDurationDays !== undefined ? Number(state.freeTestDurationDays) : 3
       },
+      customVolume: {
+        enabled: state.customVolumeEnabled !== false,
+        pricePerGb: user.customVolumePricePerGb || state.customVolumePricePerGb || 3000,
+        sellerDiscount: user.sellerDiscount || 0,
+        finalPricePerGb: Math.max(0, Math.round((user.customVolumePricePerGb || state.customVolumePricePerGb || 3000) * (1 - (user.sellerDiscount || 0) / 100))),
+        minGb: state.customVolumeMinGb || 1,
+        defaultDays: state.customVolumeDefaultDays || 30,
+        defaultPanel: state.customVolumePanelType || 'mrocean',
+        availablePanels: [
+          ...(state.mroceanPanel?.url ? [{ id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊 - پیشنهادی' }] : [{ id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊' }]),
+          ...(state.panel?.url ? [{ id: 'sanaei', name: 'سنایی (X-UI) 🔵' }] : []),
+          ...(state.rebeccaPanel?.url ? [{ id: 'rebecca', name: 'ربکا (Rebecca) 🟣' }] : [])
+        ]
+      },
       categories: activeCategories,
       products
     });
+  });
+
+  api.get("/seller-portal/download-pdf/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user) {
+        return res.status(404).send("User not found");
+      }
+
+      const { startMs, endMs, startDateStr, endDateStr, shamsiStart, shamsiEnd } = req.query;
+
+      let options: PdfRangeOptions = {};
+
+      if (startMs && endMs) {
+        options.startMs = Number(startMs);
+        options.endMs = Number(endMs);
+        options.startDateStr = startDateStr ? String(startDateStr) : undefined;
+        options.endDateStr = endDateStr ? String(endDateStr) : undefined;
+      } else if (shamsiStart || shamsiEnd) {
+        const sMs = shamsiStart ? parseShamsiDateToTimestamp(String(shamsiStart), false) : undefined;
+        const eMs = shamsiEnd ? parseShamsiDateToTimestamp(String(shamsiEnd), true) : undefined;
+        if (sMs || eMs) {
+          options.startMs = sMs || 0;
+          options.endMs = eMs || Date.now();
+          options.startDateStr = String(shamsiStart || '');
+          options.endDateStr = String(shamsiEnd || '');
+        }
+      }
+
+      const pdfBuffer = await generateUserStatementPdf(user, options);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename=Statement_${user.chatId}.pdf`);
+      res.send(pdfBuffer);
+    } catch (e: any) {
+      console.error("[PDF Download Route Error]", e);
+      res.status(500).send("Error generating PDF: " + e.message);
+    }
   });
 
   api.post("/seller-portal/submit-debt-payment/:chatId", async (req, res) => {
@@ -1248,6 +1312,63 @@ async function startServer() {
       });
     } catch (e: any) {
       res.status(400).json({ success: false, message: e.message || 'خطا در ثبت سفارش پورتال' });
+    }
+  });
+
+  api.post("/seller-portal/buy-custom-volume/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const { volumeGb, durationDays, customName, panelType } = req.body;
+      const volNum = Number(volumeGb);
+      if (isNaN(volNum) || volNum <= 0) {
+        return res.status(400).json({ success: false, message: 'لطفاً میزان حجم معتبری به گیگابایت وارد فرمایید.' });
+      }
+
+      const purchase = await executeSellerCustomVolumePurchase({
+        sellerChatId: chatId,
+        volumeGb: volNum,
+        durationDays: durationDays ? Number(durationDays) : 30,
+        customName: customName ? String(customName).trim() : undefined,
+        panelType: panelType || undefined
+      });
+
+      let qrCodeDataUrl = '';
+      const mainSub = purchase.mroceanSubUrl || purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || '';
+      if (mainSub) {
+        try {
+          qrCodeDataUrl = await QRCode.toDataURL(mainSub, { width: 400, margin: 2 });
+        } catch (e) {}
+      }
+
+      const volStr = `${purchase.volumeGb || volNum} گیگابایت`;
+      const durStr = `${purchase.durationDays || 30} روز`;
+
+      let cleanMessage = `🚀 <b>سرویس اختصاصی شما با حجم انتخابی آماده است</b>\n\n` +
+        `👤 <b>عنوان سرویس:</b> <code>${customName || purchase.name}</code>\n` +
+        `📊 <b>حجم کل:</b> ${volStr}\n` +
+        `⏳ <b>مدت اعتبار:</b> ${durStr}\n\n`;
+
+      if (purchase.mroceanSubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.mroceanSubUrl}</code>\n\n`;
+      } else if (purchase.sanaeiSubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.sanaeiSubUrl}</code>\n\n`;
+      } else if (purchase.rebeccaSubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.rebeccaSubUrl}</code>\n\n`;
+      } else if (purchase.subUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.subUrl}</code>\n\n`;
+      }
+
+      cleanMessage += `⚡ <i>جهت اتصال کافیست لینک فوق را کپی و در نرم‌افزار V2Ray / Mahsa / Shadowrocket / Nekobox وارد نمایید.</i>`;
+
+      res.json({
+        success: true,
+        purchase,
+        qrCodeDataUrl,
+        cleanMessage,
+        message: 'کانفیگ با حجم دلخواه با موفقیت ساخته شد.'
+      });
+    } catch (e: any) {
+      res.status(400).json({ success: false, message: e.message || 'خطا در ثبت سفارش با حجم دلخواه' });
     }
   });
 
