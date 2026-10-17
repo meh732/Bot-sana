@@ -87,7 +87,92 @@ export class Panel4Client {
       }
     }
 
-    // 1. API Key Auth
+    // 1. Username/Password Login Auth (FastAPI / Panel 4 / Marzban / 3x-ui standard)
+    if (hasUserPass) {
+      if (!this.cookie) {
+        const loginPaths = ['/api/admins/token', '/login', '/panel/login'];
+        let loginSuccess = false;
+        let lastLoginError = '';
+
+        for (const path of loginPaths) {
+          try {
+            // Form-encoded (FastAPI / Panel 4 standard)
+            const params = new URLSearchParams();
+            params.append('grant_type', 'password');
+            params.append('username', panel.username.trim());
+            params.append('password', panel.password.trim());
+
+            let res = await this.client.post(`${baseURL}${path}`, params, {
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              validateStatus: () => true,
+              timeout: 10000
+            });
+
+            if (res.data?.token || res.data?.access_token) {
+              this.cookie = res.data.token || res.data.access_token;
+              loginSuccess = true;
+              break;
+            }
+
+            // JSON mode
+            res = await this.client.post(`${baseURL}${path}`, {
+              username: panel.username.trim(),
+              password: panel.password.trim()
+            }, {
+              headers: { 'Content-Type': 'application/json' },
+              validateStatus: () => true,
+              timeout: 10000
+            });
+
+            if (res.data?.token || res.data?.access_token) {
+              this.cookie = res.data.token || res.data.access_token;
+              loginSuccess = true;
+              break;
+            } else if (res.data?.success || res.status === 200) {
+              const rawCookies = res.headers['set-cookie'];
+              if (rawCookies && rawCookies.length > 0) {
+                this.cookie = rawCookies.map((c: string) => c.split(';')[0]).join('; ');
+                loginSuccess = true;
+                break;
+              }
+            }
+          } catch (e: any) {
+            lastLoginError = e.message;
+          }
+        }
+
+        if (!loginSuccess && !this.cookie && hasApiKey) {
+          const apiKey = panel.apiKey.trim();
+          const authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
+          return {
+            baseURL,
+            headers: {
+              'Api-Key': apiKey,
+              'X-Api-Key': apiKey,
+              'X-API-Key': apiKey,
+              'Authorization': authHeader,
+              'Accept': 'application/json'
+            }
+          };
+        }
+
+        if (!loginSuccess && !this.cookie) {
+          throw new Error(`عدم موفقیت در ورود به پنل ۴. لطفاً آدرس، نام کاربری و رمز عبور را بررسی فرمایید: ${lastLoginError}`);
+        }
+      }
+
+      const authHeader = this.cookie.startsWith('Bearer ') ? this.cookie : (this.cookie.includes('.') ? `Bearer ${this.cookie}` : this.cookie);
+      return {
+        baseURL,
+        headers: {
+          'Authorization': authHeader,
+          'Cookie': this.cookie,
+          'Accept': 'application/json'
+        }
+      };
+    }
+
+    // 2. Pure API Key Auth
     if (hasApiKey) {
       const apiKey = panel.apiKey.trim();
       const authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
@@ -102,74 +187,6 @@ export class Panel4Client {
         } 
       };
     }
-
-    // 2. Bearer Token Auth via Login (/api/admins/token) or Cookie Session
-    if (!this.cookie) {
-      const loginPaths = ['/api/admins/token', '/login', '/panel/login'];
-      let loginSuccess = false;
-      let lastLoginError = '';
-
-      for (const path of loginPaths) {
-        try {
-          // Form-encoded (FastAPI / Panel 4 standard)
-          const params = new URLSearchParams();
-          params.append('grant_type', 'password');
-          params.append('username', panel.username.trim());
-          params.append('password', panel.password.trim());
-
-          let res = await this.client.post(`${baseURL}${path}`, params, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            validateStatus: () => true,
-            timeout: 10000
-          });
-
-          if (res.data?.token || res.data?.access_token) {
-            this.cookie = res.data.token || res.data.access_token;
-            loginSuccess = true;
-            break;
-          }
-
-          // JSON mode
-          res = await this.client.post(`${baseURL}${path}`, {
-            username: panel.username.trim(),
-            password: panel.password.trim()
-          }, {
-            headers: { 'Content-Type': 'application/json' },
-            validateStatus: () => true,
-            timeout: 10000
-          });
-
-          if (res.data?.token || res.data?.access_token) {
-            this.cookie = res.data.token || res.data.access_token;
-            loginSuccess = true;
-            break;
-          } else if (res.data?.success || res.status === 200) {
-            const rawCookies = res.headers['set-cookie'];
-            if (rawCookies && rawCookies.length > 0) {
-              this.cookie = rawCookies.map((c: string) => c.split(';')[0]).join('; ');
-              loginSuccess = true;
-              break;
-            }
-          }
-        } catch (e: any) {
-          lastLoginError = e.message;
-        }
-      }
-
-      if (!loginSuccess && !this.cookie) {
-        throw new Error(`عدم موفقیت در ورود به پنل ۴. لطفاً آدرس، نام کاربری و رمز عبور را بررسی فرمایید: ${lastLoginError}`);
-      }
-    }
-
-    const authHeader = this.cookie.startsWith('Bearer ') ? this.cookie : (this.cookie.includes('.') ? `Bearer ${this.cookie}` : this.cookie);
-    return {
-      baseURL,
-      headers: {
-        'Authorization': authHeader,
-        'Cookie': this.cookie,
-        'Accept': 'application/json'
-      }
-    };
   }
 
   public async testConnection(panelOverride?: any): Promise<{ success: boolean; message: string; inboundsCount?: number }> {
@@ -339,10 +356,14 @@ export class Panel4Client {
       const targetIb = inbounds.find((ib: any) => String(ib.id) === String(ibId));
       if (!targetIb) continue;
 
+      const limitExpireSeconds = durationDays > 0 ? Math.floor((Date.now() + durationDays * 86400000) / 1000) : 0;
       const subPayload: any = {
         username: cleanEmail,
         services: [Number(ibId) || ibId],
-        usage_limit: totalBytes,
+        limit_usage: totalBytes > 0 ? totalBytes : undefined,
+        limit_expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
+        usage_limit: totalBytes > 0 ? totalBytes : undefined,
+        data_limit: totalBytes > 0 ? totalBytes : undefined,
         expire_days: durationDays > 0 ? durationDays : undefined,
         note: sellerGroupName || ''
       };

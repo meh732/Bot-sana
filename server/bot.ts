@@ -3330,7 +3330,7 @@ export async function initBot() {
     if (userSg && userSg.action === 'awaiting_custom_config_name' && text && !text.startsWith('/')) {
       const { productId, couponCode } = userSg;
       
-      const customName = text.trim();
+      const customName = text.trim().toLowerCase();
       if (!/^[a-zA-Z0-9_-]+$/.test(customName)) {
         bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً فقط از حروف انگلیسی، اعداد، خط تیره (-) و زیرخط (_) استفاده کنید و فاصله نگذارید (یا برای انصراف دکمه زیر را بزنید):', {
           reply_markup: {

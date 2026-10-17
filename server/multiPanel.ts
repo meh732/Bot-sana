@@ -97,11 +97,9 @@ export class MultiPanelService {
     // Generate unique identifier / email
     let clientEmail = '';
     if (customName && customName.trim() !== '') {
-      const cleanCustom = customName.trim().replace(/[^a-zA-Z0-9_]/g, '_');
-      const uniqueSuffix = Date.now().toString().slice(-4);
-      clientEmail = `${cleanCustom}_${uniqueSuffix}`;
+      clientEmail = customName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
     } else {
-      const cleanUsername = user.username ? user.username.trim().replace(/[^a-zA-Z0-9_]/g, '') : '';
+      const cleanUsername = user.username ? user.username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '') : '';
       const emailPrefix = cleanUsername || String(user.chatId);
       const uniqueSuffix = Date.now().toString().slice(-6);
       clientEmail = `${emailPrefix}_${uniqueSuffix}`;
