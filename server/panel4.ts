@@ -346,7 +346,7 @@ export class Panel4Client {
     const expireSeconds = durationDays > 0 ? Math.floor(expiryTime / 1000) : 0;
 
     let cleanEmail = clientEmail.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    if (cleanEmail.length < 3) cleanEmail = `user_${cleanEmail}_${Date.now().toString().slice(-4)}`;
+    if (cleanEmail.length < 2) cleanEmail = `user_${cleanEmail}_${Date.now().toString().slice(-4)}`;
 
     let createdSubUrl = '';
     let addedToAny = false;
@@ -409,25 +409,6 @@ export class Panel4Client {
       } catch (e) {}
 
       if (addedToAny) break;
-    }
-
-    // Apply actions (usage & expire days) on Panel 4 / GoGuard
-    if (addedToAny) {
-      if (volumeGb > 0) {
-        try {
-          await this.client.post(`${auth.baseURL}/api/actions/usage/${volumeGb}?usernames=${cleanEmail}`, {
-            usernames: [cleanEmail]
-          }, { headers: auth.headers, timeout: 6000, validateStatus: () => true });
-        } catch (e) {}
-      }
-
-      if (durationDays > 0) {
-        try {
-          await this.client.post(`${auth.baseURL}/api/actions/expire/${durationDays}?usernames=${cleanEmail}`, {
-            usernames: [cleanEmail]
-          }, { headers: auth.headers, timeout: 6000, validateStatus: () => true });
-        } catch (e) {}
-      }
     }
 
     // 2. Try fetching subscription link directly if created
@@ -521,8 +502,8 @@ export class Panel4Client {
     }
 
     return {
-      id: clientEmail,
-      email: clientEmail,
+      id: cleanEmail,
+      email: cleanEmail,
       uuid,
       subId,
       subUrl,
@@ -536,19 +517,26 @@ export class Panel4Client {
 
   public async renewClient(email: string, volumeGb: number, durationDays: number): Promise<void> {
     const auth = await this.getAuthOptions();
+    const totalBytes = volumeGb > 0 ? Math.round(volumeGb * 1024 * 1024 * 1024) : 0;
+    const limitExpireSeconds = durationDays > 0 ? Math.floor((Date.now() + durationDays * 86400000) / 1000) : 0;
 
-    // Try Panel 4 actions API
+    // Reset & update subscription in Panel 4 / GoGuard
     try {
-      if (volumeGb > 0) {
-        await this.client.post(`${auth.baseURL}/api/actions/usage/${volumeGb}`, {
-          usernames: [email]
-        }, { headers: auth.headers, validateStatus: () => true });
-      }
-      if (durationDays > 0) {
-        await this.client.post(`${auth.baseURL}/api/actions/expire/${durationDays}`, {
-          usernames: [email]
-        }, { headers: auth.headers, validateStatus: () => true });
-      }
+      await this.client.post(`${auth.baseURL}/api/subscriptions/reset`, {
+        usernames: [email]
+      }, { headers: auth.headers, validateStatus: () => true });
+
+      await this.client.put(`${auth.baseURL}/api/subscriptions`, {
+        usernames: [email],
+        data_limit: totalBytes > 0 ? totalBytes : undefined,
+        usage_limit: totalBytes > 0 ? totalBytes : undefined,
+        limit_usage: totalBytes > 0 ? totalBytes : undefined,
+        data_limit_gb: volumeGb > 0 ? volumeGb : undefined,
+        expire_days: durationDays > 0 ? durationDays : undefined,
+        expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
+        limit_expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
+        status: 'active'
+      }, { headers: auth.headers, validateStatus: () => true });
     } catch (e) {}
 
     // Also try 3x-ui style renewal
