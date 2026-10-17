@@ -277,22 +277,31 @@ class XuiClient {
         '/panel/api/inbounds/list',
         '/api/inbounds/list',
         '/xui/api/inbounds/list',
-        '/panel/inbounds/list'
+        '/panel/inbounds/list',
+        '/xui/api/inbound/list',
+        '/api/inbound/list',
+        '/api/inbounds',
+        '/api/v1/inbounds'
       ];
       
       for (const path of paths) {
         try {
           const res = await this.client.get(`${opts.baseURL}${path}`, {
             headers: opts.headers,
-            validateStatus: () => true
+            validateStatus: () => true,
+            timeout: 8000
           });
-          if (res.data?.success || (res.status === 200 && Array.isArray(res.data?.obj))) {
-            const idx = path.indexOf('/inbounds/list');
-            if (idx !== -1) {
-              this.workingApiPrefix = path.substring(0, idx);
-              console.log(`[X-UI] Successfully fetched inbounds. Cached working API prefix: ${this.workingApiPrefix}`);
+          if (res.status === 200 && res.data) {
+            const data = res.data;
+            const items = Array.isArray(data) ? data : (data.obj || data.data || data.items || data.inbounds || data.result);
+            if (Array.isArray(items) && items.length > 0) {
+              const idx = path.indexOf('/inbounds');
+              if (idx !== -1) {
+                this.workingApiPrefix = path.substring(0, idx);
+                console.log(`[X-UI] Successfully fetched inbounds. Cached working API prefix: ${this.workingApiPrefix}`);
+              }
+              return items;
             }
-            return res.data.obj || [];
           }
         } catch (e) {
           // Continue

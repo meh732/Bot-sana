@@ -90,14 +90,18 @@ export class RebeccaClient {
     // 1. If API Key / Token is specified directly:
     if (hasApiKey) {
       const apiKey = panel.apiKey.trim();
-      const tokenHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
+      const authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
+      const headers: Record<string, string> = {
+        'Authorization': authHeader,
+        'X-API-Key': apiKey,
+        'X-Api-Key': apiKey,
+        'Api-Key': apiKey,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      };
       return {
         baseURL,
-        headers: {
-          'Authorization': tokenHeader,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
+        headers
       };
     }
 
@@ -275,21 +279,28 @@ export class RebeccaClient {
       if (!state.rebeccaPanel?.url) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders();
-      const res = await this.client.get(`${baseURL}/api/v2/services`, {
-        headers,
-        validateStatus: () => true,
-        timeout: 8000
-      });
+      const servicePaths = ['/api/services', '/api/v2/services', '/api/v1/services', '/api/admins/current'];
 
-      if (res.status >= 200 && res.status < 300 && res.data) {
-        if (Array.isArray(res.data)) {
-          return res.data;
-        } else if (res.data.services && Array.isArray(res.data.services)) {
-          return res.data.services;
-        } else if (res.data.items && Array.isArray(res.data.items)) {
-          return res.data.items;
-        }
+      for (const p of servicePaths) {
+        try {
+          const res = await this.client.get(`${baseURL}${p}`, {
+            headers,
+            validateStatus: () => true,
+            timeout: 8000
+          });
+
+          if (res.status >= 200 && res.status < 300 && res.data) {
+            if (Array.isArray(res.data)) {
+              return res.data;
+            } else if (res.data.services && Array.isArray(res.data.services)) {
+              return res.data.services;
+            } else if (res.data.items && Array.isArray(res.data.items)) {
+              return res.data.items;
+            }
+          }
+        } catch (e) {}
       }
+
       return [];
     } catch (e: any) {
       console.error('[Rebecca] getServices error:', e.message);
@@ -305,54 +316,107 @@ export class RebeccaClient {
       if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders();
-      const res = await this.client.get(`${baseURL}/api/inbounds`, {
-        headers,
-        validateStatus: () => true,
-        timeout: 8000
-      });
+      const inboundsList: RebeccaInboundItem[] = [];
 
-      if (res.status === 200 && res.data) {
-        const inboundsList: RebeccaInboundItem[] = [];
-        const data = res.data;
+      // 1. First check services (/api/services or /api/admins/current)
+      const services = await this.getServices().catch(() => []);
+      if (services && services.length > 0) {
+        for (const s of services) {
+          const tag = s.name || s.tag || `Service #${s.id}`;
+          inboundsList.push({
+            tag,
+            protocol: 'Service',
+            port: Number(s.id) || undefined
+          });
+        }
+      }
 
-        // If data is an object with protocol keys e.g. { "VMess TCP": [...], "VLESS TCP": [...] }
-        if (typeof data === 'object' && !Array.isArray(data)) {
-          for (const [key, val] of Object.entries(data)) {
-            if (Array.isArray(val)) {
-              for (const item of val) {
-                inboundsList.push({
-                  tag: item.tag || key,
-                  protocol: item.protocol || key,
-                  network: item.network,
-                  tls: item.tls,
-                  port: item.port
-                });
+      // 2. Also check /api/inbounds endpoints
+      const inboundsPaths = [
+        '/api/inbounds',
+        '/api/v1/inbounds',
+        '/api/v2/inbounds',
+        '/api/hosts',
+        '/api/nodes',
+        '/api/system',
+        '/api/inbound/list',
+        '/api/inbounds/list',
+        '/panel/api/inbounds/list',
+        '/xui/api/inbounds/list',
+        '/api/admin/inbounds',
+        '/api/admin/hosts'
+      ];
+
+      for (const ep of inboundsPaths) {
+        try {
+          const res = await this.client.get(`${baseURL}${ep}`, {
+            headers,
+            validateStatus: () => true,
+            timeout: 8000
+          });
+
+          if (res.status === 200 && res.data) {
+            const data = res.data;
+            if (typeof data === 'object' && !Array.isArray(data)) {
+              // First check nested array fields
+              const possibleArrays = [data.obj, data.data, data.items, data.inbounds, data.hosts, data.nodes, data.services, data.result];
+              let foundArray = false;
+              for (const arr of possibleArrays) {
+                if (Array.isArray(arr) && arr.length > 0) {
+                  foundArray = true;
+                  for (const item of arr) {
+                    const tag = typeof item === 'string' ? item : (item.tag || item.remark || item.name || item.title || item.host || item.address || item.serviceName || item.protocol || String(item.id || ''));
+                    if (tag && !inboundsList.some(i => i.tag === tag)) {
+                      inboundsList.push({
+                        tag,
+                        protocol: typeof item === 'object' && item.protocol ? item.protocol : 'vless',
+                        network: typeof item === 'object' ? item.network : undefined,
+                        tls: typeof item === 'object' ? item.tls : undefined,
+                        port: typeof item === 'object' ? item.port : undefined
+                      });
+                    }
+                  }
+                }
               }
-            } else if (typeof val === 'object' && val !== null) {
-              const item = val as any;
-              inboundsList.push({
-                tag: item.tag || key,
-                protocol: item.protocol || key,
-                network: item.network,
-                tls: item.tls,
-                port: item.port
-              });
+
+              // If no nested array field, check protocol key-value map
+              if (!foundArray) {
+                for (const [key, val] of Object.entries(data)) {
+                  if (Array.isArray(val)) {
+                    for (const item of val) {
+                      const tag = typeof item === 'string' ? item : (item.tag || item.remark || item.name || item.title || key);
+                      if (tag && !inboundsList.some(i => i.tag === tag)) {
+                        inboundsList.push({
+                          tag,
+                          protocol: typeof item === 'object' && item.protocol ? item.protocol : key,
+                          network: typeof item === 'object' ? item.network : undefined,
+                          tls: typeof item === 'object' ? item.tls : undefined,
+                          port: typeof item === 'object' ? item.port : undefined
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (Array.isArray(data)) {
+              for (const item of data) {
+                const tag = typeof item === 'string' ? item : (item.tag || item.name || item.remark || item.title || item.host || String(item.id || ''));
+                if (tag && !inboundsList.some(i => i.tag === tag)) {
+                  inboundsList.push({
+                    tag,
+                    protocol: typeof item === 'object' && item.protocol ? item.protocol : 'vless',
+                    network: typeof item === 'object' ? item.network : undefined,
+                    tls: typeof item === 'object' ? item.tls : undefined,
+                    port: typeof item === 'object' ? item.port : undefined
+                  });
+                }
+              }
             }
           }
-        } else if (Array.isArray(data)) {
-          for (const item of data) {
-            inboundsList.push({
-              tag: item.tag || item.name || item.remark || item.id,
-              protocol: item.protocol || item.type || 'vless',
-              network: item.network,
-              tls: item.tls,
-              port: item.port
-            });
-          }
-        }
-        return inboundsList;
+        } catch (e) {}
       }
-      return [];
+
+      return inboundsList;
     } catch (e: any) {
       console.warn('[Rebecca] getInbounds note:', e.message);
       return [];

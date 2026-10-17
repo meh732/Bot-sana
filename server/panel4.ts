@@ -90,12 +90,14 @@ export class Panel4Client {
     // 1. API Key Auth
     if (hasApiKey) {
       const apiKey = panel.apiKey.trim();
+      const authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
       return { 
         baseURL, 
         headers: { 
           'Api-Key': apiKey, 
           'X-Api-Key': apiKey, 
-          'Authorization': `Bearer ${apiKey}`, 
+          'X-API-Key': apiKey,
+          'Authorization': authHeader, 
           'Accept': 'application/json' 
         } 
       };
@@ -172,21 +174,43 @@ export class Panel4Client {
       const auth = await this.getAuthOptions(panelOverride);
       const prefixes = this.workingApiPrefix 
         ? [this.workingApiPrefix] 
-        : ['/panel/api/inbounds', '/xui/api/inbounds', '/api/inbounds', '/inbounds'];
+        : [
+            '/panel/api/inbounds',
+            '/xui/api/inbounds',
+            '/api/inbounds',
+            '/inbounds',
+            '/api/v1/inbounds',
+            '/api/v2/inbounds',
+            '/api/inbound',
+            '/panel/inbounds'
+          ];
 
       for (const prefix of prefixes) {
         try {
-          const res = await this.client.get(`${auth.baseURL}${prefix}/list`, {
+          let res = await this.client.get(`${auth.baseURL}${prefix}/list`, {
             headers: auth.headers,
-            timeout: 8000
+            timeout: 8000,
+            validateStatus: () => true
           });
 
-          if (res.data?.success && Array.isArray(res.data.obj)) {
-            this.workingApiPrefix = prefix;
-            return res.data.obj;
-          } else if (Array.isArray(res.data)) {
-            this.workingApiPrefix = prefix;
-            return res.data;
+          if (res.status !== 200 || !res.data) {
+            res = await this.client.get(`${auth.baseURL}${prefix}`, {
+              headers: auth.headers,
+              timeout: 8000,
+              validateStatus: () => true
+            });
+          }
+
+          if (res.status === 200 && res.data) {
+            const data = res.data;
+            const items = Array.isArray(data) 
+              ? data 
+              : (data.obj || data.data || data.items || data.inbounds || data.hosts || data.nodes || data.services || data.result);
+            
+            if (Array.isArray(items) && items.length > 0) {
+              this.workingApiPrefix = prefix;
+              return items;
+            }
           }
         } catch (err: any) {
           // continue to next prefix
