@@ -81,7 +81,7 @@ ensure_swap_and_memory() {
             echo "" >> /etc/ssh/sshd_config
             echo "ClientAliveInterval 30" >> /etc/ssh/sshd_config
             echo "ClientAliveCountMax 10" >> /etc/ssh/sshd_config
-            systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+            systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
         fi
     fi
 }
