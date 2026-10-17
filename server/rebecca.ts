@@ -273,13 +273,20 @@ export class RebeccaClient {
     }
   }
 
-  public async getServices(): Promise<Array<{ id: number | string; name: string; description?: string; host_count?: number; user_count?: number; [key: string]: any }>> {
+  public async getServices(overrideConfig?: any): Promise<Array<{ id: number | string; name: string; description?: string; host_count?: number; user_count?: number; [key: string]: any }>> {
     try {
       const state = db.getState();
-      if (!state.rebeccaPanel?.url) return [];
+      const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
+      if (!panel.url) return [];
 
-      const { baseURL, headers } = await this.getAuthHeaders();
-      const servicePaths = ['/api/services', '/api/v2/services', '/api/v1/services', '/api/admins/current'];
+      const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
+      const servicePaths = [
+        '/api/services',
+        '/api/v2/services',
+        '/api/v1/services',
+        '/api/admins/current',
+        '/api/admins/current/links'
+      ];
 
       for (const p of servicePaths) {
         try {
@@ -290,13 +297,22 @@ export class RebeccaClient {
           });
 
           if (res.status >= 200 && res.status < 300 && res.data) {
-            if (Array.isArray(res.data)) {
-              return res.data;
-            } else if (res.data.services && Array.isArray(res.data.services)) {
-              return res.data.services;
-            } else if (res.data.items && Array.isArray(res.data.items)) {
-              return res.data.items;
+            const data = res.data;
+            let items: any[] = [];
+            if (Array.isArray(data)) {
+              items = data;
+            } else if (data.items && Array.isArray(data.items)) {
+              items = data.items;
+            } else if (data.services && Array.isArray(data.services)) {
+              items = data.services;
+            } else if (data.data && Array.isArray(data.data)) {
+              items = data.data;
+            } else if (data.obj && Array.isArray(data.obj)) {
+              items = data.obj;
+            } else if (data.result && Array.isArray(data.result)) {
+              items = data.result;
             }
+            if (items.length > 0) return items;
           }
         } catch (e) {}
       }
@@ -308,25 +324,26 @@ export class RebeccaClient {
     }
   }
 
-  public async getInbounds(): Promise<RebeccaInboundItem[]> {
+  public async getInbounds(overrideConfig?: any): Promise<RebeccaInboundItem[]> {
     try {
       const state = db.getState();
-      const panel = state.rebeccaPanel || {};
+      const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
       if (!panel.url || panel.enabled === false) return [];
       if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
 
-      const { baseURL, headers } = await this.getAuthHeaders();
+      const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
       const inboundsList: RebeccaInboundItem[] = [];
 
       // 1. First check services (/api/services or /api/admins/current)
-      const services = await this.getServices().catch(() => []);
+      const services = await this.getServices(overrideConfig).catch(() => []);
       if (services && services.length > 0) {
         for (const s of services) {
-          const tag = s.name || s.tag || `Service #${s.id}`;
+          const tag = s.name || s.title || s.remark || s.tag || s.service_name || `Service #${s.id}`;
+          const servicePort = Number(s.id) || undefined;
           inboundsList.push({
-            tag,
-            protocol: 'Service',
-            port: Number(s.id) || undefined
+            tag: String(tag),
+            protocol: s.protocol || 'Service',
+            port: servicePort
           });
         }
       }
@@ -498,6 +515,7 @@ export class RebeccaClient {
       console.log(`[Rebecca 0.3.0] Creating user ${cleanUser} with payload:`, JSON.stringify(rebeccaPayload));
 
       const endpoints = [
+        `${baseURL}/api/subscriptions`,
         `${baseURL}/api/v2/users`,
         `${baseURL}/api/user`,
         `${baseURL}/api/user/`

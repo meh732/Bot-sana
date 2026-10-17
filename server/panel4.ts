@@ -172,6 +172,44 @@ export class Panel4Client {
       if (panel.url.includes('test-') || panel.url.includes('example.com')) return [];
 
       const auth = await this.getAuthOptions(panelOverride);
+      const inboundsList: any[] = [];
+
+      // 1. Check Panel 4 native Services API (/api/services or /api/admins/current)
+      const servicePaths = ['/api/services', '/api/v2/services', '/api/v1/services', '/api/admins/current', '/api/admins/current/links'];
+      for (const sp of servicePaths) {
+        try {
+          const res = await this.client.get(`${auth.baseURL}${sp}`, {
+            headers: auth.headers,
+            timeout: 8000,
+            validateStatus: () => true
+          });
+
+          if (res.status === 200 && res.data) {
+            const data = res.data;
+            const items = Array.isArray(data) 
+              ? data 
+              : (data.items || data.services || data.data || data.obj || data.result);
+            
+            if (Array.isArray(items) && items.length > 0) {
+              for (const s of items) {
+                const id = s.id !== undefined ? s.id : (s.service_id || s.tag || s.name);
+                const remark = s.name || s.title || s.remark || s.tag || `Service #${id}`;
+                if (id !== undefined && !inboundsList.some(i => String(i.id) === String(id))) {
+                  inboundsList.push({
+                    id,
+                    remark,
+                    protocol: s.protocol || 'Service',
+                    enable: s.enable !== false,
+                    ...s
+                  });
+                }
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
+      // 2. Check X-UI / 3x-ui style inbounds prefixes
       const prefixes = this.workingApiPrefix 
         ? [this.workingApiPrefix] 
         : [
@@ -209,15 +247,25 @@ export class Panel4Client {
             
             if (Array.isArray(items) && items.length > 0) {
               this.workingApiPrefix = prefix;
-              return items;
+              for (const ib of items) {
+                const id = ib.id !== undefined ? ib.id : ib.tag;
+                if (id !== undefined && !inboundsList.some(i => String(i.id) === String(id))) {
+                  inboundsList.push({
+                    id,
+                    remark: ib.remark || ib.tag || ib.name || `Inbound ${id}`,
+                    protocol: ib.protocol || 'vless',
+                    ...ib
+                  });
+                }
+              }
             }
           }
         } catch (err: any) {
-          // continue to next prefix
+          // continue
         }
       }
 
-      return [];
+      return inboundsList;
     } catch (e: any) {
       console.warn('[Panel4] getInbounds note:', e.message);
       return [];
@@ -239,7 +287,7 @@ export class Panel4Client {
 
     const inbounds = await this.getInbounds();
     if (!inbounds || inbounds.length === 0) {
-      throw new Error('هیچ اینباندی روی پنل ۴ یافت نشد. ابتدا یک اینباند ایجاد کنید.');
+      throw new Error('هیچ اینباند یا سرویسی روی پنل ۴ یافت نشد. ابتدا یک اینباند یا سرویس ایجاد کنید.');
     }
 
     let inboundIds = targetInboundIds && targetInboundIds.length > 0 
@@ -254,40 +302,111 @@ export class Panel4Client {
     const subId = Math.random().toString(36).substring(2, 18);
     const totalBytes = volumeGb > 0 ? Math.round(volumeGb * 1024 * 1024 * 1024) : 0;
     const expiryTime = durationDays > 0 ? Date.now() + Math.round(durationDays * 86400000) : 0;
+    const expireSeconds = durationDays > 0 ? Math.floor(expiryTime / 1000) : 0;
 
-    const prefix = this.workingApiPrefix || '/panel/api/inbounds';
+    let cleanEmail = clientEmail.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    if (cleanEmail.length < 3) cleanEmail = `user_${cleanEmail}_${Date.now().toString().slice(-4)}`;
+
+    let createdSubUrl = '';
     let addedToAny = false;
 
+    // 1. Try Panel 4 Native Subscriptions API (POST /api/subscriptions)
     for (const ibId of inboundIds) {
       const targetIb = inbounds.find((ib: any) => String(ib.id) === String(ibId));
       if (!targetIb) continue;
 
-      const clientPayload = {
-        id: uuid,
-        email: clientEmail,
-        limitIp: limitIp || 0,
-        totalGB: totalBytes,
-        expiryTime: expiryTime,
-        enable: true,
-        tgId: chatId ? String(chatId) : '',
-        subId: subId,
-        flow: targetIb.protocol === 'vless' ? '' : undefined,
-        comment: sellerGroupName || ''
+      const subPayload: any = {
+        username: cleanEmail,
+        service_id: Number(ibId) || ibId,
+        service_ids: [Number(ibId) || ibId],
+        services: [Number(ibId) || ibId],
+        data_limit: totalBytes,
+        expire: expireSeconds,
+        status: 'active',
+        note: sellerGroupName || ''
       };
 
       try {
-        const res = await this.client.post(`${auth.baseURL}${prefix}/addClient`, {
-          id: targetIb.id,
-          settings: JSON.stringify({ clients: [clientPayload] })
-        }, {
-          headers: auth.headers
+        const subEndpoints = [
+          `${auth.baseURL}/api/subscriptions`,
+          `${auth.baseURL}/api/v2/users`,
+          `${auth.baseURL}/api/user`
+        ];
+
+        for (const ep of subEndpoints) {
+          const res = await this.client.post(ep, subPayload, {
+            headers: auth.headers,
+            timeout: 10000,
+            validateStatus: () => true
+          });
+
+          if (res.status >= 200 && res.status < 300 && res.data) {
+            addedToAny = true;
+            createdSubUrl = res.data.subscription_url || res.data.url || res.data.link || '';
+            break;
+          }
+        }
+      } catch (e) {}
+
+      if (addedToAny) break;
+    }
+
+    // 2. Try fetching subscription link directly if created
+    if (addedToAny && !createdSubUrl) {
+      try {
+        const linkRes = await this.client.get(`${auth.baseURL}/api/subscriptions/${cleanEmail}/links`, {
+          headers: auth.headers,
+          timeout: 6000,
+          validateStatus: () => true
         });
 
-        if (res.data?.success) {
-          addedToAny = true;
+        if (linkRes.status === 200 && linkRes.data) {
+          if (typeof linkRes.data === 'string') {
+            createdSubUrl = linkRes.data;
+          } else if (Array.isArray(linkRes.data) && linkRes.data.length > 0) {
+            createdSubUrl = typeof linkRes.data[0] === 'string' ? linkRes.data[0] : (linkRes.data[0].url || linkRes.data[0].link || '');
+          } else if (linkRes.data.links && Array.isArray(linkRes.data.links) && linkRes.data.links.length > 0) {
+            createdSubUrl = typeof linkRes.data.links[0] === 'string' ? linkRes.data.links[0] : (linkRes.data.links[0].url || linkRes.data.links[0].link || '');
+          }
         }
-      } catch (err: any) {
-        console.error(`[Panel 4] Error adding client to inbound ${ibId}:`, err.message);
+      } catch (e) {}
+    }
+
+    // 3. Fallback to 3x-ui / X-UI style addClient if native subscriptions failed
+    if (!addedToAny) {
+      const prefix = this.workingApiPrefix || '/panel/api/inbounds';
+
+      for (const ibId of inboundIds) {
+        const targetIb = inbounds.find((ib: any) => String(ib.id) === String(ibId));
+        if (!targetIb) continue;
+
+        const clientPayload = {
+          id: uuid,
+          email: clientEmail,
+          limitIp: limitIp || 0,
+          totalGB: totalBytes,
+          expiryTime: expiryTime,
+          enable: true,
+          tgId: chatId ? String(chatId) : '',
+          subId: subId,
+          flow: targetIb.protocol === 'vless' ? '' : undefined,
+          comment: sellerGroupName || ''
+        };
+
+        try {
+          const res = await this.client.post(`${auth.baseURL}${prefix}/addClient`, {
+            id: targetIb.id,
+            settings: JSON.stringify({ clients: [clientPayload] })
+          }, {
+            headers: auth.headers
+          });
+
+          if (res.data?.success) {
+            addedToAny = true;
+          }
+        } catch (err: any) {
+          console.error(`[Panel 4] Error adding client to inbound ${ibId}:`, err.message);
+        }
       }
     }
 
@@ -295,13 +414,15 @@ export class Panel4Client {
       throw new Error('ایجاد کلاینت روی اینباندهای مشخص شده پنل ۴ با خطا مواجه شد.');
     }
 
-    let subUrl = '';
-    if (panel.subUrlBase && panel.subUrlBase.trim() !== '') {
-      let base = panel.subUrlBase.trim();
-      if (!base.endsWith('/')) base += '/';
-      subUrl = `${base}${subId}`;
-    } else {
-      subUrl = `${auth.baseURL}/sub/${subId}`;
+    let subUrl = createdSubUrl;
+    if (!subUrl) {
+      if (panel.subUrlBase && panel.subUrlBase.trim() !== '') {
+        let base = panel.subUrlBase.trim();
+        if (!base.endsWith('/')) base += '/';
+        subUrl = `${base}${subId}`;
+      } else {
+        subUrl = `${auth.baseURL}/sub/${subId}`;
+      }
     }
 
     return {
@@ -320,11 +441,26 @@ export class Panel4Client {
 
   public async renewClient(email: string, volumeGb: number, durationDays: number): Promise<void> {
     const auth = await this.getAuthOptions();
-    const inbounds = await this.getInbounds();
+
+    // Try Panel 4 actions API
+    try {
+      if (volumeGb > 0) {
+        await this.client.post(`${auth.baseURL}/api/actions/usage/${volumeGb}`, {
+          usernames: [email]
+        }, { headers: auth.headers, validateStatus: () => true });
+      }
+      if (durationDays > 0) {
+        await this.client.post(`${auth.baseURL}/api/actions/expire/${durationDays}`, {
+          usernames: [email]
+        }, { headers: auth.headers, validateStatus: () => true });
+      }
+    } catch (e) {}
+
+    // Also try 3x-ui style renewal
+    const inbounds = await this.getInbounds().catch(() => []);
     const prefix = this.workingApiPrefix || '/panel/api/inbounds';
 
     let found = false;
-
     for (const ib of inbounds) {
       if (!ib.settings) continue;
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
@@ -340,7 +476,6 @@ export class Panel4Client {
         const addBytes = volumeGb > 0 ? Math.round(volumeGb * 1024 * 1024 * 1024) : 0;
         const addMs = durationDays > 0 ? Math.round(durationDays * 86400000) : 0;
 
-        // Reset traffic counters
         clientObj.up = 0;
         clientObj.down = 0;
         clientObj.totalGB = addBytes;
@@ -350,20 +485,24 @@ export class Panel4Client {
         await this.client.post(`${auth.baseURL}${prefix}/updateClient/${clientObj.id}`, {
           id: ib.id,
           settings: JSON.stringify({ clients: [clientObj] })
-        }, {
-          headers: auth.headers
-        });
+        }, { headers: auth.headers }).catch(() => null);
       }
-    }
-
-    if (!found) {
-      throw new Error(`کاربر با ایمیل ${email} روی هیچ‌یک از اینباندهای پنل ۴ یافت نشد.`);
     }
   }
 
   public async updateClientEnable(email: string, enable: boolean): Promise<void> {
     const auth = await this.getAuthOptions();
-    const inbounds = await this.getInbounds();
+
+    // Try Panel 4 bulk enable/disable
+    try {
+      const actionEp = enable ? '/api/subscriptions/enable' : '/api/subscriptions/disable';
+      await this.client.post(`${auth.baseURL}${actionEp}`, {
+        usernames: [email]
+      }, { headers: auth.headers, validateStatus: () => true });
+    } catch (e) {}
+
+    // Fallback to 3x-ui
+    const inbounds = await this.getInbounds().catch(() => []);
     const prefix = this.workingApiPrefix || '/panel/api/inbounds';
 
     for (const ib of inbounds) {
@@ -381,16 +520,29 @@ export class Panel4Client {
         await this.client.post(`${auth.baseURL}${prefix}/updateClient/${clientObj.id}`, {
           id: ib.id,
           settings: JSON.stringify({ clients: [clientObj] })
-        }, {
-          headers: auth.headers
-        });
+        }, { headers: auth.headers }).catch(() => null);
       }
     }
   }
 
   public async delClient(email: string): Promise<void> {
     const auth = await this.getAuthOptions();
-    const inbounds = await this.getInbounds();
+
+    // Try Panel 4 subscriptions DELETE
+    try {
+      await this.client.delete(`${auth.baseURL}/api/subscriptions`, {
+        data: { usernames: [email] },
+        headers: auth.headers,
+        validateStatus: () => true
+      });
+      await this.client.delete(`${auth.baseURL}/api/subscriptions/${email}`, {
+        headers: auth.headers,
+        validateStatus: () => true
+      });
+    } catch (e) {}
+
+    // Fallback to 3x-ui
+    const inbounds = await this.getInbounds().catch(() => []);
     const prefix = this.workingApiPrefix || '/panel/api/inbounds';
 
     for (const ib of inbounds) {
@@ -406,9 +558,7 @@ export class Panel4Client {
       if (clientObj) {
         await this.client.post(`${auth.baseURL}${prefix}/delClient/${clientObj.id}`, {
           id: ib.id
-        }, {
-          headers: auth.headers
-        }).catch(() => null);
+        }, { headers: auth.headers }).catch(() => null);
       }
     }
   }
@@ -420,9 +570,51 @@ export class Panel4Client {
       if (!panel.url || panel.enabled === false) return [];
       if (panel.url.includes('test-') || panel.url.includes('example.com')) return [];
 
-      const inbounds = await this.getInbounds().catch(() => []);
+      const auth = await this.getAuthOptions();
       const results: any[] = [];
 
+      // 1. Try Panel 4 native Subscriptions API (/api/subscriptions or /api/stats/subscriptions)
+      const subEndpoints = ['/api/subscriptions', '/api/stats/subscriptions', '/api/subscriptions/stats'];
+      for (const ep of subEndpoints) {
+        try {
+          const res = await this.client.get(`${auth.baseURL}${ep}`, {
+            headers: auth.headers,
+            timeout: 8000,
+            validateStatus: () => true
+          });
+
+          if (res.status === 200 && res.data) {
+            const data = res.data;
+            const items = Array.isArray(data) 
+              ? data 
+              : (data.items || data.subscriptions || data.data || data.obj || data.result);
+
+            if (Array.isArray(items) && items.length > 0) {
+              for (const sub of items) {
+                const username = sub.username || sub.email || sub.id;
+                if (!username) continue;
+
+                results.push({
+                  id: username,
+                  email: username,
+                  subId: sub.sub_id || sub.subId || username,
+                  up: sub.up || sub.upload || 0,
+                  down: sub.down || sub.download || 0,
+                  totalUsed: sub.used_traffic !== undefined ? sub.used_traffic : ((sub.up || 0) + (sub.down || 0)),
+                  total: sub.data_limit || sub.total || 0,
+                  expiryTime: sub.expire ? sub.expire * 1000 : (sub.expiryTime || 0),
+                  enable: sub.status === 'active' || sub.enable !== false,
+                  panel: 'panel4'
+                });
+              }
+              if (results.length > 0) return results;
+            }
+          }
+        } catch (e) {}
+      }
+
+      // 2. Fallback to 3x-ui inbounds clientStats
+      const inbounds = await this.getInbounds().catch(() => []);
       for (const ib of inbounds) {
         if (!ib.clientStats && !ib.settings) continue;
         
