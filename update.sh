@@ -6,61 +6,42 @@ safe_exit() {
     return $code 2>/dev/null || exit $code
 }
 
-# Prevent git reset --hard from interrupting running bash script without replacing parent shell
-if [ "$1" != "--in-tmp" ] && [ -f "$0" ] && [ -s "$0" ] && [[ "$0" != /dev/fd/* ]]; then
-    TMP_UPDATE="/tmp/sanaei_update_runner_$$_$RANDOM.sh"
-    cp "$0" "$TMP_UPDATE" 2>/dev/null
-    if [ -f "$TMP_UPDATE" ] && [ -s "$TMP_UPDATE" ]; then
-        chmod +x "$TMP_UPDATE" 2>/dev/null
-        bash "$TMP_UPDATE" "--in-tmp" "$@"
-        EXIT_CODE=$?
-        rm -f "$TMP_UPDATE" 2>/dev/null
-        safe_exit $EXIT_CODE
-    fi
-fi
+# Ignore SIGHUP so SSH terminal disconnects never kill the update process
+trap '' HUP 2>/dev/null
 
-# Terminal Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-clear
-echo -e "${CYAN}====================================================${NC}"
-echo -e "${GREEN}      Sanaei Telegram Bot Safe Update Utility       ${NC}"
-echo -e "${CYAN}====================================================${NC}"
-
-# Navigate to project directory
-if [ -f "server.ts" ]; then
-    TARGET_DIR="."
-elif [ -d "/root/sanaei-bot" ]; then
-    TARGET_DIR="/root/sanaei-bot"
-elif [ -d "$HOME/sanaei-bot" ]; then
-    TARGET_DIR="$HOME/sanaei-bot"
-else
-    TARGET_DIR="."
-fi
-
-cd "$TARGET_DIR" || safe_exit 1
-echo -e "${BLUE}📁 Working Directory: $(pwd)${NC}"
-
-# Helper to ensure swap exists on low-RAM servers to prevent OOM killer crashes
+# Helper to ensure swap exists and configure SSH keepalive to prevent disconnects on 1GB VPS
 ensure_swap_and_memory() {
-    SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
-    if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -lt 500 ]; then
-        if [ "$EUID" -eq 0 ]; then
-            if [ -f "/swapfile" ]; then
-                swapon /swapfile 2>/dev/null
-            else
-                echo -e "${YELLOW}ℹ️ Low swap memory detected. Setting up 2GB emergency swap file to prevent OOM crash...${NC}"
-                fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
-                chmod 600 /swapfile 2>/dev/null
-                mkswap /swapfile 2>/dev/null
-                swapon /swapfile 2>/dev/null
-            fi
-            echo -e "${GREEN}✅ 2GB Emergency swap memory activated successfully.${NC}"
+    # Check if /swapfile is already active
+    if swapon --show 2>/dev/null | grep -q "/swapfile"; then
+        return 0
+    fi
+
+    # Check total swap in /proc/meminfo
+    SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    if [ -n "$SWAP_KB" ] && [ "$SWAP_KB" -gt 500000 ]; then
+        return 0
+    fi
+
+    if [ "$EUID" -eq 0 ]; then
+        if [ -f "/swapfile" ]; then
+            swapon /swapfile 2>/dev/null || true
+        else
+            echo -e "${YELLOW}ℹ️ Setting up 2GB swap file to guarantee smooth build on 1GB VPS...${NC}"
+            dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null || fallocate -l 2G /swapfile 2>/dev/null
+            chmod 600 /swapfile 2>/dev/null
+            mkswap /swapfile 2>/dev/null
+            swapon /swapfile 2>/dev/null || true
+        fi
+        echo -e "${GREEN}✅ Emergency swap memory activated successfully.${NC}"
+    fi
+
+    # Configure SSH keepalive on VPS server so SSH clients (Bitvise/PuTTY) never time out
+    if [ "$EUID" -eq 0 ] && [ -f "/etc/ssh/sshd_config" ]; then
+        if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config; then
+            echo "" >> /etc/ssh/sshd_config
+            echo "ClientAliveInterval 30" >> /etc/ssh/sshd_config
+            echo "ClientAliveCountMax 10" >> /etc/ssh/sshd_config
+            systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
         fi
     fi
 }
@@ -114,15 +95,15 @@ fi
 echo -e "\n${YELLOW}🔹 4. Installing dependencies & building project (Vite + esbuild)...${NC}"
 echo -e "${CYAN}⏳ Installing packages (please wait 30–60 seconds)...${NC}"
 
-NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
 if [ $? -ne 0 ]; then
     echo -e "${YELLOW}⚠️ Retrying npm install...${NC}"
-    NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
 fi
 
 echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
 npm run clean 2>/dev/null
-NODE_OPTIONS="--max-old-space-size=256" npm run build
+nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm run build
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Build failed! Please inspect compilation errors above.${NC}"
