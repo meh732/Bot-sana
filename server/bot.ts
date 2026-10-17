@@ -3,6 +3,7 @@ import { db, PanelType, recordUserTransaction } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
 import { mrocean } from './mrocean.js';
+import { panel4 } from './panel4.js';
 import { multiPanel } from './multiPanel.js';
 import { encryptData, decryptData } from './crypto.js';
 import fs from 'fs';
@@ -418,8 +419,9 @@ function getProductButtonText(user: any, p: any): string {
     let badge = '';
     if (p.panelType === 'all') badge = '🚀 ';
     else if (p.panelType === 'both' || p.panelType === 'sanaei_rebecca') badge = '⚡️ ';
-    else if (p.panelType === 'sanaei_mrocean') badge = '⚡️ ';
-    else if (p.panelType === 'rebecca_mrocean') badge = '⚡️ ';
+    else if (p.panelType === 'sanaei_mrocean' || p.panelType === 'rebecca_mrocean') badge = '⚡️ ';
+    else if (p.panelType === 'sanaei_panel4' || p.panelType === 'rebecca_panel4' || p.panelType === 'mrocean_panel4') badge = '⚡️ ';
+    else if (p.panelType === 'panel4') badge = '🔸 ';
     else if (p.panelType === 'mrocean') badge = '🌊 ';
     else if (p.panelType === 'rebecca') badge = '🟣 ';
     else if (p.panelType === 'sanaei') badge = '🔵 ';
@@ -918,6 +920,9 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     if (purchase.mroceanSubUrl) {
       linksText += `🌊 <b>لینک سابسکریپشن مستر اوشن:</b>\n<code>${escapeHtml(purchase.mroceanSubUrl)}</code>\n\n`;
     }
+    if (purchase.panel4SubUrl) {
+      linksText += `🔸 <b>لینک سابسکریپشن پنل ۴:</b>\n<code>${escapeHtml(purchase.panel4SubUrl)}</code>\n\n`;
+    }
 
     if (!linksText && subUrl) {
       linksText = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n<code>${escapeHtml(subUrl)}</code>\n\n`;
@@ -1031,6 +1036,9 @@ export async function sendCleanCustomerConfigMessage(chatId: number, purchase: a
     if (purchase.mroceanSubUrl) {
       subLinks += `🌊 <b>لینک اتصال سرور ۳:</b>\n<code>${escapeHtml(purchase.mroceanSubUrl)}</code>\n\n`;
     }
+    if (purchase.panel4SubUrl) {
+      subLinks += `🔸 <b>لینک اتصال سرور ۴ (پنل ۴):</b>\n<code>${escapeHtml(purchase.panel4SubUrl)}</code>\n\n`;
+    }
 
     if (!subLinks && purchase.subUrl) {
       subLinks = `🔗 <b>لینک اختصاصی سابسکریپشن:</b>\n<code>${escapeHtml(purchase.subUrl)}</code>\n\n`;
@@ -1048,7 +1056,7 @@ export async function sendCleanCustomerConfigMessage(chatId: number, purchase: a
       `💡 <i>(این پیام فاقد هرگونه نام ربات یا ادمین است و می‌توانید آن را مستقیماً برای مشتری ارسال فرمایید.)</i>`;
 
     let photoSent = false;
-    const primarySubUrl = purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || purchase.mroceanSubUrl;
+    const primarySubUrl = purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || purchase.mroceanSubUrl || purchase.panel4SubUrl;
     if (primarySubUrl) {
       try {
         const buffer = await QRCode.toBuffer(primarySubUrl, { width: 450, margin: 2 });
@@ -2296,11 +2304,15 @@ export async function initBot() {
       case 'sanaei': return '🔵 فقط سنایی (X-UI)';
       case 'rebecca': return '🟣 فقط ربکا (Rebecca)';
       case 'mrocean': return '🌊 فقط مستر اوشن (MR OCEAN)';
+      case 'panel4': return '🔸 فقط پنل ۴ (Panel 4)';
       case 'sanaei_rebecca':
       case 'both': return '🌐 سنایی + ربکا (دوگانه)';
       case 'sanaei_mrocean': return '🌐 سنایی + مستر اوشن';
       case 'rebecca_mrocean': return '🌐 ربکا + مستر اوشن';
-      case 'all': return '🚀 همه ۳ پنل همزمان (سنایی + ربکا + مستر اوشن)';
+      case 'sanaei_panel4': return '🌐 سنایی + پنل ۴';
+      case 'rebecca_panel4': return '🌐 ربکا + پنل ۴';
+      case 'mrocean_panel4': return '🌐 مستر اوشن + پنل ۴';
+      case 'all': return '🚀 همه ۴ پنل همزمان (سنایی + ربکا + مستر اوشن + پنل ۴)';
       default: return '🔵 فقط سنایی (X-UI)';
     }
   };
@@ -2320,22 +2332,26 @@ export async function initBot() {
             { text: `${currentMode === 'mrocean' ? '🔘' : '⚪️'} فقط مستر اوشن`, callback_data: 'admin_set_mode_mrocean' }
           ],
           [
+            { text: `${currentMode === 'panel4' ? '🔘' : '⚪️'} فقط پنل ۴`, callback_data: 'admin_set_mode_panel4' },
             { text: `${currentMode === 'sanaei_rebecca' || currentMode === 'both' ? '🔘' : '⚪️'} سنایی + ربکا`, callback_data: 'admin_set_mode_sanaei_rebecca' },
-            { text: `${currentMode === 'sanaei_mrocean' ? '🔘' : '⚪️'} سنایی + اوشن`, callback_data: 'admin_set_mode_sanaei_mrocean' },
-            { text: `${currentMode === 'rebecca_mrocean' ? '🔘' : '⚪️'} ربکا + اوشن`, callback_data: 'admin_set_mode_rebecca_mrocean' }
+            { text: `${currentMode === 'sanaei_mrocean' ? '🔘' : '⚪️'} سنایی + اوشن`, callback_data: 'admin_set_mode_sanaei_mrocean' }
           ],
           [
-            { text: `${currentMode === 'all' ? '🔘' : '⚪️'} 🚀 همه ۳ پنل به صورت همزمان (All Panels)`, callback_data: 'admin_set_mode_all' }
+            { text: `${currentMode === 'sanaei_panel4' ? '🔘' : '⚪️'} سنایی + پنل ۴`, callback_data: 'admin_set_mode_sanaei_panel4' },
+            { text: `${currentMode === 'all' ? '🔘' : '⚪️'} 🚀 همه ۴ پنل همزمان (All Panels)`, callback_data: 'admin_set_mode_all' }
           ],
           [
             { text: '🔵 تنظیمات سنایی (X-UI)', callback_data: 'admin_panel_menu' },
-            { text: '🟣 تنظیمات ربکا (Rebecca)', callback_data: 'admin_rebecca_menu' },
-            { text: '🌊 تنظیمات مستر اوشن (MR OCEAN)', callback_data: 'admin_mrocean_menu' }
+            { text: '🟣 تنظیمات ربکا (Rebecca)', callback_data: 'admin_rebecca_menu' }
+          ],
+          [
+            { text: '🌊 تنظیمات مستر اوشن (MR OCEAN)', callback_data: 'admin_mrocean_menu' },
+            { text: '🔸 تنظیمات پنل ۴ (Panel 4)', callback_data: 'admin_panel4_menu' }
           ],
           [{ text: '🎁 هدیه/تست رایگان', callback_data: 'admin_test_menu' }, { text: '💳 شماره کارت پرداخت', callback_data: 'admin_card_menu' }],
           [{ text: '📦 مدیریت محصولات', callback_data: 'admin_products_menu' }, { text: '🎟 کدهای تخفیف', callback_data: 'admin_coupons_menu' }],
           [{ text: '👥 مدیریت جامع کاربران و همکاران', callback_data: 'admin_users_menu' }],
-          [{ text: '🌐 آمار کاربران آنلاین پنل‌ها (سنایی / ربکا / مستر اوشن)', callback_data: 'admin_online_users_all' }],
+          [{ text: '🌐 آمار کاربران آنلاین پنل‌ها (سنایی / ربکا / مستر اوشن / پنل ۴)', callback_data: 'admin_online_users_all' }],
           [{ text: '📊 گزارش فروش و کاربران (امروز)', callback_data: 'admin_daily_report' }],
           [{ text: '📢 ارسال پیام همگانی', callback_data: 'admin_broadcast' }, { text: '📞 پشتیبانی', callback_data: 'admin_set_support_id' }],
           [{ text: '⚙️ تنظیمات بکاپ خودکار', callback_data: 'admin_auto_backup_menu' }],
@@ -2345,7 +2361,7 @@ export async function initBot() {
     });
   };
 
-  const sendOnlineUsersMenu = async (chatId: number, targetPanel: 'all' | 'sanaei' | 'rebecca' | 'mrocean' = 'all', editMessageId?: number) => {
+  const sendOnlineUsersMenu = async (chatId: number, targetPanel: 'all' | 'sanaei' | 'rebecca' | 'mrocean' | 'panel4' = 'all', editMessageId?: number) => {
     try {
       const waitMsg = editMessageId ? null : await bot!.sendMessage(chatId, '⏳ در حال واکشی آمار زنده و وضعیت آنلاین کاربران از سرورها...');
       const targetMsgId = editMessageId || waitMsg?.message_id;
@@ -2367,6 +2383,9 @@ export async function initBot() {
           `🌊 <b>پنل مستر اوشن (MR OCEAN):</b>\n` +
           `▫️ آنلاین: <b>${onlineStats.mrocean.onlineCount}</b> نفر\n` +
           `▫️ کل کاربران: ${onlineStats.mrocean.totalUsers} اکانت\n\n` +
+          `🔸 <b>پنل ۴ (Panel 4):</b>\n` +
+          `▫️ آنلاین: <b>${onlineStats.panel4.onlineCount}</b> نفر\n` +
+          `▫️ کل کاربران: ${onlineStats.panel4.totalUsers} اکانت\n\n` +
           `💡 <i>جهت مشاهده لیست نام و جزئیات افراد آنلاین در هر سرور، از دکمه‌های زیر استفاده فرمایید:</i>`;
 
         inline_keyboard = [
@@ -2378,6 +2397,9 @@ export async function initBot() {
           ],
           [
             { text: `🌊 لیست آنلاین‌های مستر اوشن (${onlineStats.mrocean.onlineCount} نفر)`, callback_data: 'admin_online_mrocean' }
+          ],
+          [
+            { text: `🔸 لیست آنلاین‌های پنل ۴ (${onlineStats.panel4.onlineCount} نفر)`, callback_data: 'admin_online_panel4' }
           ],
           [
             { text: '🔄 بروزرسانی زنده', callback_data: 'admin_online_users_all' },
@@ -2449,6 +2471,29 @@ export async function initBot() {
         inline_keyboard = [
           [
             { text: '🔄 بروزرسانی مستر اوشن', callback_data: 'admin_online_mrocean' },
+            { text: '🔙 بازگشت به آمار کل پنل‌ها', callback_data: 'admin_online_users_all' }
+          ]
+        ];
+      } else if (targetPanel === 'panel4') {
+        const users = onlineStats.panel4.users || [];
+        text = `🔸 <b>لیست کاربران آنلاین در پنل ۴ (Panel 4)</b>:\n\n` +
+          `▫️ تعداد آنلاین فعلی: <b>${onlineStats.panel4.onlineCount}</b> نفر\n` +
+          `▫️ کل کاربران ثبت‌شده: <b>${onlineStats.panel4.totalUsers}</b> اکانت\n\n`;
+
+        if (users.length === 0) {
+          text += `❌ در حال حاضر هیچ کاربری در پنل ۴ آنلاین نیست یا اتصالی ثبت نشده است.\n`;
+        } else {
+          users.forEach((u: any, idx: number) => {
+            const email = u.email || u.username || 'کاربر';
+            const ipStr = u.ip ? ` | IP: <code>${escapeHtml(u.ip)}</code>` : '';
+            const lastOnStr = u.lastOnline ? ` (آخرین اتصال: ${escapeHtml(u.lastOnline)})` : '';
+            text += `<b>${idx + 1}-</b> 👤 <code>${escapeHtml(email)}</code>${ipStr}${lastOnStr}\n`;
+          });
+        }
+
+        inline_keyboard = [
+          [
+            { text: '🔄 بروزرسانی پنل ۴', callback_data: 'admin_online_panel4' },
             { text: '🔙 بازگشت به آمار کل پنل‌ها', callback_data: 'admin_online_users_all' }
           ]
         ];

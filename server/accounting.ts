@@ -1,4 +1,25 @@
 import { User, Purchase, UserTransaction, db } from './db.js';
+import * as jalaali from 'jalaali-js';
+
+export function formatShamsiDate(dt: Date): string {
+  try {
+    const gy = dt.getFullYear();
+    const gm = dt.getMonth() + 1;
+    const gd = dt.getDate();
+    const j = jalaali.toJalaali(gy, gm, gd);
+    return `${j.jy}/${String(j.jm).padStart(2, '0')}/${String(j.jd).padStart(2, '0')}`;
+  } catch (e) {
+    return dt.toISOString().split('T')[0];
+  }
+}
+
+export function formatShamsiTime(dt: Date): string {
+  try {
+    return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+  } catch (e) {
+    return '00:00';
+  }
+}
 
 export interface SalesItemDetail {
   index: number;
@@ -97,11 +118,15 @@ function getPanelBadgeAndLabel(panelType?: string): { badge: string; label: stri
     case 'sanaei': return { badge: '🔵', label: 'سنایی (X-UI)' };
     case 'rebecca': return { badge: '🟣', label: 'ربکا (Rebecca)' };
     case 'mrocean': return { badge: '🌊', label: 'مستر اوشن (MR OCEAN)' };
+    case 'panel4': return { badge: '🔸', label: 'پنل ۴ (Panel 4)' };
     case 'sanaei_rebecca':
     case 'both': return { badge: '⚡️', label: 'سنایی + ربکا' };
     case 'sanaei_mrocean': return { badge: '⚡️', label: 'سنایی + مستر اوشن' };
     case 'rebecca_mrocean': return { badge: '⚡️', label: 'ربکا + مستر اوشن' };
-    case 'all': return { badge: '🚀', label: 'همه ۳ پنل همزمان' };
+    case 'sanaei_panel4': return { badge: '⚡️', label: 'سنایی + پنل ۴' };
+    case 'rebecca_panel4': return { badge: '⚡️', label: 'ربکا + پنل ۴' };
+    case 'mrocean_panel4': return { badge: '⚡️', label: 'مستر اوشن + پنل ۴' };
+    case 'all': return { badge: '🚀', label: 'همه ۴ پنل همزمان' };
     default: return { badge: '🔵', label: 'سنایی' };
   }
 }
@@ -211,8 +236,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
     totalDiscounts += discount;
 
     const dt = new Date(p.createdAt || Date.now());
-    const dateStr = dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
-    const timeStr = dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
+    const dateStr = formatShamsiDate(dt);
+    const timeStr = formatShamsiTime(dt);
     const { badge, label } = getPanelBadgeAndLabel(p.panelType);
 
     return {
@@ -240,15 +265,17 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
   // 1. Add all purchases as DEBITS (بدهکار)
   purchases.forEach(p => {
     const dt = new Date(p.createdAt || Date.now());
-    const volStr = p.isPayAsYouGo ? 'مصرف آزاد' : `${p.volumeGb || 0}GB`;
-    const durStr = p.isPayAsYouGo ? '' : ` (${p.durationDays || 0} روز)`;
+    const volPart = p.isPayAsYouGo ? 'مصرف آزاد' : (p.volumeGb ? `${p.volumeGb} گیگ` : '');
+    const durPart = p.durationDays ? `${p.durationDays} روزه` : '';
+    const extraParts = [durPart, volPart].filter(Boolean).join(' - ');
+    const extraStr = extraParts ? ` - ${extraParts}` : '';
     ledgerRows.push({
       id: `p_${p.id}_${dt.getTime()}`,
       rawDate: p.createdAt || dt.toISOString(),
-      dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
-      timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }),
+      dateStr: formatShamsiDate(dt),
+      timeStr: formatShamsiTime(dt),
       type: 'purchase',
-      description: `خرید کانفیگ: ${p.name || p.id} [${volStr}${durStr}]`,
+      description: `خرید کانفیگ: ${p.name || p.id}${extraStr}`,
       debit: p.price || 0,
       credit: 0,
       runningBalance: 0
@@ -262,8 +289,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
       ledgerRows.push({
         id: tx.id,
         rawDate: tx.createdAt,
-        dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
-        timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }),
+        dateStr: formatShamsiDate(dt),
+        timeStr: formatShamsiTime(dt),
         type: tx.type,
         description: tx.description || 'تراکنش مالی',
         debit: tx.direction === 'debit' ? tx.amount : 0,
@@ -277,8 +304,8 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
     ledgerRows.push({
       id: `agg_pay_${user.chatId}`,
       rawDate: dt.toISOString(),
-      dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
-      timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }),
+      dateStr: formatShamsiDate(dt),
+      timeStr: formatShamsiTime(dt),
       type: 'payment',
       description: 'مجموع واریزی‌ها و تسویه‌حساب‌های ثبت‌شده',
       debit: 0,
@@ -404,8 +431,8 @@ export function getSystemAccountingReport(period: 'today' | 'monthly' | 'all' = 
           panelLabel: `${badge} ${label}`,
           isPayAsYouGo: !!p.isPayAsYouGo,
           createdAt: p.createdAt,
-          dateStr: dt.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }),
-          timeStr: dt.toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' })
+          dateStr: formatShamsiDate(dt),
+          timeStr: formatShamsiTime(dt)
         };
 
         recentSales.push({ ...itemDetail, userChatId: u.chatId, userDisplayName: uDisplayName });

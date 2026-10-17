@@ -13,6 +13,7 @@ import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions }
 import { xui } from "./server/xui.js";
 import { rebecca } from "./server/rebecca.js";
 import { mrocean } from "./server/mrocean.js";
+import { panel4 } from "./server/panel4.js";
 import { multiPanel } from "./server/multiPanel.js";
 import { encryptData, decryptData } from "./server/crypto.js";
 
@@ -86,6 +87,10 @@ async function startServer() {
       mroceanPanel: state.mroceanPanel ? {
         ...state.mroceanPanel,
         password: state.mroceanPanel.password ? '********' : ''
+      } : undefined,
+      panel4: state.panel4 ? {
+        ...state.panel4,
+        password: state.panel4.password ? '********' : ''
       } : undefined
     };
     res.json(safeState);
@@ -282,6 +287,58 @@ async function startServer() {
       res.json({ success: true, inbounds });
     } catch (e: any) {
       res.json({ success: false, message: e.message, inbounds: [] });
+    }
+  });
+
+  // ----- Panel 4 Endpoints ----- //
+  api.post("/update-panel4", async (req, res) => {
+    const { url, username, password, apiKey, inboundId, inboundIds, subUrlBase, enabled, panelType } = req.body;
+    const currentState = db.getState();
+    const newPanel4 = { ...(currentState.panel4 || {}) };
+    if (url !== undefined) newPanel4.url = url;
+    if (username !== undefined) newPanel4.username = username;
+    if (password && password !== '********') newPanel4.password = password;
+    if (apiKey !== undefined) newPanel4.apiKey = apiKey;
+    if (subUrlBase !== undefined) newPanel4.subUrlBase = subUrlBase;
+    if (enabled !== undefined) newPanel4.enabled = Boolean(enabled);
+    if (panelType !== undefined) newPanel4.panelType = panelType;
+    if (inboundId !== undefined) newPanel4.inboundId = parseInboundId(inboundId);
+    if (inboundIds !== undefined) newPanel4.inboundIds = parseInboundIds(inboundIds);
+
+    db.updateState({ panel4: newPanel4 });
+    res.json({ success: true });
+  });
+
+  api.post("/test-panel4-connection", async (req, res) => {
+    try {
+      const { url, username, password, apiKey } = req.body;
+      let result;
+      if (url && (username || apiKey)) {
+        result = await panel4.testConnection({ url, username, password, apiKey });
+      } else {
+        result = await panel4.testConnection();
+      }
+      res.json(result);
+    } catch (e: any) {
+      res.json({ success: false, message: e.message });
+    }
+  });
+
+  api.get("/panel4-inbounds", async (req, res) => {
+    try {
+      const inbounds = await panel4.getInbounds();
+      res.json({ success: true, inbounds: inbounds || [] });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message, inbounds: [] });
+    }
+  });
+
+  api.get("/panel4-online", async (req, res) => {
+    try {
+      const stats = await panel4.getOnlineUsers();
+      res.json({ success: true, ...stats });
+    } catch (e: any) {
+      res.json({ success: false, message: e.message, onlineCount: 0, totalUsers: 0, users: [] });
     }
   });
 

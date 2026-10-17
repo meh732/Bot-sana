@@ -38,6 +38,18 @@ export interface MrOceanPanelConfig {
   _apiBase?: string;
 }
 
+export interface Panel4Config {
+  url?: string;
+  username?: string;
+  password?: string;
+  inboundId?: number | string;
+  inboundIds?: (number | string)[];
+  apiKey?: string;
+  subUrlBase?: string;
+  enabled?: boolean;
+  panelType?: 'xui' | 'rebecca' | 'mrocean' | 'custom' | string;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -48,9 +60,13 @@ export type PanelType =
   | 'sanaei' 
   | 'rebecca' 
   | 'mrocean' 
+  | 'panel4'
   | 'sanaei_rebecca' 
   | 'sanaei_mrocean' 
+  | 'sanaei_panel4'
   | 'rebecca_mrocean' 
+  | 'rebecca_panel4'
+  | 'mrocean_panel4'
   | 'all' 
   | 'both';
 
@@ -66,6 +82,8 @@ export interface Product {
   inboundIds?: (number | string)[];
   rebeccaInboundTags?: string[];
   rebeccaServiceId?: number | string;
+  panel4InboundId?: number | string;
+  panel4InboundIds?: (number | string)[];
   limitIp?: number;
   disabled?: boolean;
   isPayAsYouGo?: boolean;
@@ -87,6 +105,8 @@ export interface Purchase {
   rebeccaSubUrl?: string;
   mroceanSubUrl?: string;
   mroceanPortalUrl?: string;
+  panel4SubUrl?: string;
+  panel4Details?: any;
   panelType?: PanelType | string;
   volumeGb: number;
   durationDays: number;
@@ -186,6 +206,7 @@ export interface AppState {
   panel: PanelConfig;
   rebeccaPanel?: RebeccaPanelConfig;
   mroceanPanel?: MrOceanPanelConfig;
+  panel4?: Panel4Config;
   categories?: Category[];
   products: Product[];
   users: User[];
@@ -198,6 +219,7 @@ export interface AppState {
   freeTestInboundIds?: (number | string)[];
   freeTestRebeccaInbounds?: string[];
   freeTestRebeccaTags?: string[];
+  freeTestPanel4InboundIds?: (number | string)[];
   forceJoinEnabled?: boolean;
   forceJoinChannels?: { id: string; name: string; url: string }[];
   adminIds: number[];
@@ -231,6 +253,12 @@ const defaultState: AppState = {
     password: 'Mo!RgElMrGlPlNIKFIQX8xN9MopPeuIcVZ9',
     apiKey: 'rk_-itJXBc5_vWntoQxC9QflcAQ8jRIF9H6zULsm3KHJpI',
     serviceId: 347,
+    enabled: true
+  },
+  panel4: {
+    url: '',
+    username: '',
+    password: '',
     enabled: true
   },
   products: [],

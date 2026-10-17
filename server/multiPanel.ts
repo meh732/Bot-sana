@@ -1,18 +1,23 @@
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
 import { mrocean } from './mrocean.js';
+import { panel4 } from './panel4.js';
 import { db, User, Product, Purchase, PanelType } from './db.js';
 
 export function isSanaeiPanel(panelType?: PanelType | string): boolean {
-  return ['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'all'].includes(panelType || '');
+  return ['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'sanaei_panel4', 'all'].includes(panelType || '');
 }
 
 export function isRebeccaPanel(panelType?: PanelType | string): boolean {
-  return ['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'all'].includes(panelType || '');
+  return ['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'rebecca_panel4', 'all'].includes(panelType || '');
 }
 
 export function isMrOceanPanel(panelType?: PanelType | string): boolean {
-  return ['mrocean', 'sanaei_mrocean', 'rebecca_mrocean', 'all'].includes(panelType || '');
+  return ['mrocean', 'sanaei_mrocean', 'rebecca_mrocean', 'mrocean_panel4', 'all'].includes(panelType || '');
+}
+
+export function isPanel4(panelType?: PanelType | string): boolean {
+  return ['panel4', 'sanaei_panel4', 'rebecca_panel4', 'mrocean_panel4', 'all'].includes(panelType || '');
 }
 
 export interface UnifiedClientCreationResult {
@@ -24,9 +29,11 @@ export interface UnifiedClientCreationResult {
   rebeccaSubUrl?: string;
   mroceanSubUrl?: string;
   mroceanPortalUrl?: string;
+  panel4SubUrl?: string;
   sanaeiDetails?: any;
   rebeccaDetails?: any;
   mroceanDetails?: any;
+  panel4Details?: any;
 }
 
 export interface UnifiedTrafficClient {
@@ -42,7 +49,7 @@ export interface UnifiedTrafficClient {
   total: number;
   expiryTime: number;
   enable: boolean;
-  panel: 'sanaei' | 'rebecca' | 'mrocean';
+  panel: 'sanaei' | 'rebecca' | 'mrocean' | 'panel4';
 }
 
 export class MultiPanelService {
@@ -61,6 +68,8 @@ export class MultiPanelService {
       inboundId?: number | string;
       inboundIds?: (number | string)[];
       rebeccaInboundTags?: string[];
+      panel4InboundId?: number | string;
+      panel4InboundIds?: (number | string)[];
       limitIp?: number;
     };
     customName?: string;
@@ -83,6 +92,7 @@ export class MultiPanelService {
     const useSanaei = isSanaeiPanel(panelType);
     const useRebecca = isRebeccaPanel(panelType);
     const useMrOcean = isMrOceanPanel(panelType);
+    const usePanel4 = isPanel4(panelType);
 
     // Generate unique identifier / email
     let clientEmail = '';
@@ -105,6 +115,10 @@ export class MultiPanelService {
       ? product.inboundIds
       : (product.inboundId ? [product.inboundId] : undefined);
 
+    const selectedPanel4Inbounds = (product.panel4InboundIds && product.panel4InboundIds.length > 0)
+      ? product.panel4InboundIds
+      : (product.panel4InboundId ? [product.panel4InboundId] : undefined);
+
     const targetServiceId = (product as any).rebeccaServiceId || state.rebeccaPanel?.serviceId;
 
     const rebeccaInbounds = product.rebeccaInboundTags && product.rebeccaInboundTags.length > 0
@@ -119,13 +133,16 @@ export class MultiPanelService {
     let rebeccaSubUrl = '';
     let mroceanSubUrl = '';
     let mroceanPortalUrl = '';
+    let panel4SubUrl = '';
     let sanaeiDetails: any = null;
     let rebeccaDetails: any = null;
     let mroceanDetails: any = null;
+    let panel4Details: any = null;
 
     let sanaeiErr: string | null = null;
     let rebeccaErr: string | null = null;
     let mroceanErr: string | null = null;
+    let panel4Err: string | null = null;
 
     // 1. Sanaei Panel Creation
     if (useSanaei) {
@@ -200,22 +217,47 @@ export class MultiPanelService {
       }
     }
 
+    // 4. Panel 4 Creation
+    if (usePanel4) {
+      try {
+        const p4Client = await panel4.addClient(
+          clientEmail,
+          volGb,
+          durDays,
+          selectedPanel4Inbounds,
+          product.limitIp || 0,
+          String(user.chatId),
+          sellerGroupName
+        );
+        panel4SubUrl = p4Client.subUrl || '';
+        panel4Details = p4Client;
+        console.log(`[MultiPanel] Created Panel 4 client: ${clientEmail}`);
+      } catch (err: any) {
+        panel4Err = err.message || 'خطا در اتصال به پنل ۴';
+        console.error(`[MultiPanel Error] Panel 4 creation failed for ${clientEmail}:`, panel4Err);
+        if (panelType === 'panel4') {
+          throw new Error(`خطا در ایجاد سرویس در پنل ۴: ${panel4Err}`);
+        }
+      }
+    }
+
     // Verify at least one link produced for multi-panel setups
-    const isMultiPanel = [useSanaei, useRebecca, useMrOcean].filter(Boolean).length > 1;
+    const isMultiPanel = [useSanaei, useRebecca, useMrOcean, usePanel4].filter(Boolean).length > 1;
     if (isMultiPanel) {
-      const createdCount = [sanaeiSubUrl, rebeccaSubUrl, mroceanSubUrl].filter(Boolean).length;
+      const createdCount = [sanaeiSubUrl, rebeccaSubUrl, mroceanSubUrl, panel4SubUrl].filter(Boolean).length;
       if (createdCount === 0) {
         const errDetails = [
           useSanaei && `• سنایی: ${sanaeiErr || 'ناموفق'}`,
           useRebecca && `• ربکا: ${rebeccaErr || 'ناموفق'}`,
-          useMrOcean && `• مستر اوشن: ${mroceanErr || 'ناموفق'}`
+          useMrOcean && `• مستر اوشن: ${mroceanErr || 'ناموفق'}`,
+          usePanel4 && `• پنل ۴: ${panel4Err || 'ناموفق'}`
         ].filter(Boolean).join('\n');
         throw new Error(`خطا در ایجاد اکانت روی پنل‌های انتخابی:\n${errDetails}`);
       }
     }
 
     // Determine primary subUrl
-    const primarySubUrl = sanaeiSubUrl || rebeccaSubUrl || mroceanSubUrl || mroceanPortalUrl;
+    const primarySubUrl = sanaeiSubUrl || rebeccaSubUrl || mroceanSubUrl || mroceanPortalUrl || panel4SubUrl;
     if (!primarySubUrl) {
       throw new Error('هیچ لینک اتصالی از پنل‌های انتخاب شده تولید نشد. لطفاً از اتصال پنل به ربات اطمینان حاصل فرمایید.');
     }
@@ -223,7 +265,8 @@ export class MultiPanelService {
     const sanaeiSubId = sanaeiDetails?.subId || '';
     const rebeccaSubId = rebeccaDetails?.subId || rebeccaDetails?.token || (rebeccaDetails?.subUrl ? rebecca.extractSubToken(rebeccaDetails.subUrl) : '');
     const mroceanSubId = clientEmail;
-    const primarySubId = sanaeiSubId || rebeccaSubId || mroceanSubId || '';
+    const panel4SubId = panel4Details?.subId || '';
+    const primarySubId = sanaeiSubId || rebeccaSubId || mroceanSubId || panel4SubId || '';
 
     return {
       panelType,
@@ -234,9 +277,11 @@ export class MultiPanelService {
       rebeccaSubUrl: rebeccaSubUrl || undefined,
       mroceanSubUrl: mroceanSubUrl || undefined,
       mroceanPortalUrl: mroceanPortalUrl || undefined,
+      panel4SubUrl: panel4SubUrl || undefined,
       sanaeiDetails,
       rebeccaDetails,
-      mroceanDetails
+      mroceanDetails,
+      panel4Details
     };
   }
 
@@ -307,6 +352,25 @@ export class MultiPanelService {
       }
     } catch (e) {}
 
+    // Panel 4 clients
+    try {
+      const p4Clients = await panel4.getAllClientsWithTraffic().catch(() => []);
+      for (const cl of p4Clients) {
+        results.push({
+          id: cl.id || cl.email,
+          email: cl.email,
+          subId: cl.subId || cl.id,
+          up: cl.up || 0,
+          down: cl.down || 0,
+          totalUsed: cl.totalUsed || ((cl.up || 0) + (cl.down || 0)),
+          total: cl.total || 0,
+          expiryTime: cl.expiryTime || 0,
+          enable: cl.enable !== false,
+          panel: 'panel4'
+        });
+      }
+    } catch (e) {}
+
     return results;
   }
 
@@ -356,6 +420,14 @@ export class MultiPanelService {
         console.error(`[MultiPanel] updateClientEnable error Mr Ocean for ${email}:`, e.message);
       }
     }
+
+    if (isPanel4(pType) || purchase.panel4SubUrl) {
+      try {
+        await panel4.updateClientEnable(email, enable);
+      } catch (e: any) {
+        console.error(`[MultiPanel] updateClientEnable error Panel 4 for ${email}:`, e.message);
+      }
+    }
   }
 
   /**
@@ -393,6 +465,16 @@ export class MultiPanelService {
       } catch (e: any) {
         console.error(`[MultiPanel] renewClient error Mr Ocean for ${email}:`, e.message);
         if (pType === 'mrocean') throw e;
+      }
+    }
+
+    if (isPanel4(pType) || purchase.panel4SubUrl) {
+      try {
+        await panel4.renewClient(email, volumeGb, durationDays);
+        anySuccess = true;
+      } catch (e: any) {
+        console.error(`[MultiPanel] renewClient error Panel 4 for ${email}:`, e.message);
+        if (pType === 'panel4') throw e;
       }
     }
 
@@ -446,35 +528,47 @@ export class MultiPanelService {
         console.error(`[MultiPanel] delClient error Mr Ocean for ${email}:`, e.message);
       }
     }
+
+    if (isPanel4(pType) || purchase.panel4SubUrl) {
+      try {
+        await panel4.delClient(email);
+      } catch (e: any) {
+        console.error(`[MultiPanel] delClient error Panel 4 for ${email}:`, e.message);
+      }
+    }
   }
 
   /**
-   * Fetches real-time online statistics across Sanaei, Rebecca, and Mr Ocean separately
+   * Fetches real-time online statistics across Sanaei, Rebecca, Mr Ocean, and Panel 4 separately
    */
   public async getOnlineStats(): Promise<{
     sanaei: { onlineCount: number; totalClients: number; clients: any[] };
     rebecca: { onlineCount: number; totalUsers: number; users: any[] };
     mrocean: { onlineCount: number; totalUsers: number; users: any[] };
+    panel4: { onlineCount: number; totalUsers: number; users: any[] };
     totalOnline: number;
     totalAll: number;
   }> {
-    const [sanaeiRes, rebeccaRes, mroceanRes] = await Promise.allSettled([
+    const [sanaeiRes, rebeccaRes, mroceanRes, panel4Res] = await Promise.allSettled([
       xui.getOnlineClients(),
       rebecca.getOnlineUsers(),
-      mrocean.getOnlineUsers()
+      mrocean.getOnlineUsers(),
+      panel4.getOnlineUsers()
     ]);
 
     const sanaei = sanaeiRes.status === 'fulfilled' ? sanaeiRes.value : { onlineCount: 0, totalClients: 0, clients: [] };
     const reb = rebeccaRes.status === 'fulfilled' ? rebeccaRes.value : { onlineCount: 0, totalUsers: 0, users: [] };
     const mro = mroceanRes.status === 'fulfilled' ? mroceanRes.value : { onlineCount: 0, totalUsers: 0, users: [] };
+    const p4 = panel4Res.status === 'fulfilled' ? panel4Res.value : { onlineCount: 0, totalUsers: 0, users: [] };
 
-    const totalOnline = (sanaei.onlineCount || 0) + (reb.onlineCount || 0) + (mro.onlineCount || 0);
-    const totalAll = (sanaei.totalClients || 0) + (reb.totalUsers || 0) + (mro.totalUsers || 0);
+    const totalOnline = (sanaei.onlineCount || 0) + (reb.onlineCount || 0) + (mro.onlineCount || 0) + (p4.onlineCount || 0);
+    const totalAll = (sanaei.totalClients || 0) + (reb.totalUsers || 0) + (mro.totalUsers || 0) + (p4.totalUsers || 0);
 
     return {
       sanaei,
       rebecca: reb,
       mrocean: mro,
+      panel4: p4,
       totalOnline,
       totalAll
     };

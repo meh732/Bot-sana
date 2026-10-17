@@ -300,7 +300,9 @@ export class RebeccaClient {
   public async getInbounds(): Promise<RebeccaInboundItem[]> {
     try {
       const state = db.getState();
-      if (!state.rebeccaPanel?.url) return [];
+      const panel = state.rebeccaPanel || {};
+      if (!panel.url || panel.enabled === false) return [];
+      if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders();
       const res = await this.client.get(`${baseURL}/api/inbounds`, {
@@ -352,7 +354,7 @@ export class RebeccaClient {
       }
       return [];
     } catch (e: any) {
-      console.error('[Rebecca] getInbounds error:', e.message);
+      console.warn('[Rebecca] getInbounds note:', e.message);
       return [];
     }
   }
@@ -864,7 +866,9 @@ export class RebeccaClient {
   }>> {
     try {
       const state = db.getState();
-      if (!state.rebeccaPanel?.url) return [];
+      const panel = state.rebeccaPanel || {};
+      if (!panel.url || panel.enabled === false) return [];
+      if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders();
       // Try Rebecca 0.3.0 endpoint first: /api/v2/users
@@ -915,7 +919,7 @@ export class RebeccaClient {
       }
       return [];
     } catch (e: any) {
-      console.error('[Rebecca] getAllClientsWithTraffic error:', e.message);
+      console.warn('[Rebecca] getAllClientsWithTraffic note:', e.message);
       return [];
     }
   }
@@ -933,7 +937,8 @@ export class RebeccaClient {
   }> {
     try {
       const state = db.getState();
-      if (!state.rebeccaPanel?.url) {
+      const panel = state.rebeccaPanel || {};
+      if (!panel.url || panel.enabled === false || panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) {
         return { onlineCount: 0, totalUsers: 0, users: [] };
       }
 

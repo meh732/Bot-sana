@@ -7,18 +7,26 @@ import * as jalaali from 'jalaali-js';
 import { User, Purchase } from './db.js';
 import { getUserAccountingReport } from './accounting.js';
 
-function fixRTL(str: string | number | null | undefined): string {
+export function fixRTL(str: string | number | null | undefined): string {
   if (str === null || str === undefined) return '';
   const s = String(str).trim();
   if (!s) return '';
   
-  // Reshape Persian/Arabic characters to contextual joined glyphs
   try {
     const reshaped = apr.PersianShaper.convertArabic(s);
-    // Reverse character order so LTR PDF renderer prints RTL right
-    return reshaped.split('').reverse().join('');
+
+    // Tokenize preserving:
+    // 1. Whitespace
+    // 2. Parentheses, brackets, braces, quotes
+    // 3. Latin words, numbers, codes, usernames, URLs, dates (e.g. 1405/07/25, 1,072,056, @user, BG001)
+    // 4. Persian/Arabic words (including ZWNJ \u200C) and any trailing punctuation attached (:, ., ،, ؟, !)
+    // 5. Any other characters
+    const tokenRegex = /(\s+|[\(\)\[\]\{\}«»]|[a-zA-Z0-9\+\-\/\@\%\#\_]+(?:[\:\,\.\/][a-zA-Z0-9\+\-\/\@\%\#\_]+)*|[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C]+(?:[\:\,\.\،\؟\!]*)?|[^\s\w\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\(\)\[\]\{\}«»]+)/g;
+
+    const tokens = reshaped.match(tokenRegex) || [reshaped];
+    return tokens.reverse().join('');
   } catch (e) {
-    return s.split('').reverse().join('');
+    return String(str);
   }
 }
 
@@ -60,7 +68,7 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
 
       // Filter by custom date range if provided
       let filteredLedger = fullReport.ledgerRows;
-      let rangeTitle = 'کل اسناد مالی و حسابداری (از ابتدا تاکنون)';
+      let rangeTitle = 'کل اسناد مالی و حسابداری - از ابتدا تاکنون';
 
       if (options.startMs !== undefined && options.endMs !== undefined) {
         filteredLedger = fullReport.ledgerRows.filter(row => {
@@ -68,7 +76,7 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
           return t >= options.startMs! && t <= options.endMs!;
         });
         if (options.startDateStr && options.endDateStr) {
-          rangeTitle = `بازه زمانی شمسی: از ${options.startDateStr} تا ${options.endDateStr}`;
+          rangeTitle = `بازه زمانی: از ${options.startDateStr} تا ${options.endDateStr}`;
         } else {
           rangeTitle = 'بازه زمانی سفارشی انتخاب شده';
         }
@@ -85,30 +93,36 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
         rangeCredit += (r.credit || 0);
       });
 
-      const todayFa = new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
-      const nowTime = new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
+      // Format current Gregorian/Shamsi date reliably with Latin digits to prevent inverted numerals
+      const now = new Date();
+      const gy = now.getFullYear();
+      const gm = now.getMonth() + 1;
+      const gd = now.getDate();
+      const jNow = jalaali.toJalaali(gy, gm, gd);
+      const todayFa = `${jNow.jy}/${String(jNow.jm).padStart(2, '0')}/${String(jNow.jd).padStart(2, '0')}`;
+      const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
       const uName = user.nickname || (user.username ? `@${user.username}` : `کاربر ${user.chatId}`);
       const roleStr = user.isSeller ? 'همکار فروشنده' : 'کاربر عادی';
 
       // --- HEADER DRAWING ---
       doc.rect(30, 25, 535, 75).fillAndStroke('#0f172a', '#1e293b');
-      doc.fillColor('#ffffff').font(fontBold).fontSize(16);
+      doc.fillColor('#ffffff').font(fontBold).fontSize(15);
       doc.text(fixRTL('صورتحساب رسمی حسابداری و دفتر معین'), 30, 38, { align: 'center', width: 535 });
       
-      doc.fillColor('#94a3b8').font(fontReg).fontSize(10);
-      doc.text(fixRTL(`تاریخ صدور: ${todayFa} ساعت ${nowTime} | ${rangeTitle}`), 30, 62, { align: 'center', width: 535 });
+      doc.fillColor('#94a3b8').font(fontReg).fontSize(9.5);
+      doc.text(fixRTL(`تاریخ صدور: ${todayFa}    ساعت: ${nowTime}    |    ${rangeTitle}`), 30, 66, { align: 'center', width: 535 });
 
       // --- USER INFO BOX ---
       doc.rect(30, 110, 535, 55).fillAndStroke('#f8fafc', '#e2e8f0');
       doc.fillColor('#1e293b').font(fontBold).fontSize(10);
       
-      doc.text(fixRTL(`طرف حساب: ${uName}`), 330, 120, { align: 'right', width: 220 });
-      doc.text(fixRTL(`شناسه کاربر: ${user.chatId}`), 50, 120, { align: 'left', width: 220 });
+      doc.text(fixRTL(`طرف حساب: ${uName}`), 300, 120, { align: 'right', width: 250 });
+      doc.text(fixRTL(`شناسه کاربری: ${user.chatId}`), 40, 120, { align: 'left', width: 220 });
       
       doc.font(fontReg).fontSize(9).fillColor('#475569');
-      doc.text(fixRTL(`نقش کاربری: ${roleStr}`), 330, 140, { align: 'right', width: 220 });
-      const currentDebtStr = (user.debt || 0).toLocaleString() + ' تومان';
-      doc.text(fixRTL(`مانده بدهی فعلی: ${currentDebtStr}`), 50, 140, { align: 'left', width: 220 });
+      doc.text(fixRTL(`نقش کاربری: ${roleStr}`), 320, 140, { align: 'right', width: 230 });
+      doc.text(fixRTL(`مانده بدهی فعلی:  ${(user.debt || 0).toLocaleString()}  تومان`), 40, 140, { align: 'left', width: 220 });
 
       // --- SUMMARY CARDS ---
       const startY = 175;
@@ -119,45 +133,46 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
       doc.rect(30, startY, cardW, cardH).fillAndStroke('#fff1f2', '#fecdd3');
       doc.fillColor('#e11d48').font(fontBold).fontSize(9);
       doc.text(fixRTL('جمع گردش بدهکار (خریدها)'), 35, startY + 8, { align: 'center', width: cardW - 10 });
-      doc.fontSize(11);
-      doc.text(fixRTL(`${rangeDebit.toLocaleString()} تومان`), 35, startY + 24, { align: 'center', width: cardW - 10 });
+      doc.fontSize(10.5);
+      doc.text(fixRTL(`${rangeDebit.toLocaleString()}  تومان`), 35, startY + 24, { align: 'center', width: cardW - 10 });
 
       // Card 2: Total Credits
       doc.rect(215, startY, cardW, cardH).fillAndStroke('#f0fdf4', '#bbf7d0');
       doc.fillColor('#16a34a').font(fontBold).fontSize(9);
       doc.text(fixRTL('جمع گردش بستانکار (واریزی‌ها)'), 220, startY + 8, { align: 'center', width: cardW - 10 });
-      doc.fontSize(11);
-      doc.text(fixRTL(`${rangeCredit.toLocaleString()} تومان`), 220, startY + 24, { align: 'center', width: cardW - 10 });
+      doc.fontSize(10.5);
+      doc.text(fixRTL(`${rangeCredit.toLocaleString()}  تومان`), 220, startY + 24, { align: 'center', width: cardW - 10 });
 
       // Card 3: Range Balance
       const rangeBal = rangeDebit - rangeCredit;
-      const balColor = rangeBal > 0 ? '#b91c1c' : '#15803d';
+      const balColor = rangeBal > 0 ? '#b91c1c' : (rangeBal < 0 ? '#15803d' : '#334155');
+      const balStatus = rangeBal > 0 ? 'بدهکار' : (rangeBal < 0 ? 'بستانکار' : 'تسویه');
       doc.rect(400, startY, cardW, cardH).fillAndStroke('#f8fafc', '#cbd5e1');
       doc.fillColor('#334155').font(fontBold).fontSize(9);
       doc.text(fixRTL('تراز خالص در این بازه'), 405, startY + 8, { align: 'center', width: cardW - 10 });
-      doc.fillColor(balColor).fontSize(11);
-      doc.text(fixRTL(`${rangeBal.toLocaleString()} تومان`), 405, startY + 24, { align: 'center', width: cardW - 10 });
+      doc.fillColor(balColor).fontSize(10.5);
+      doc.text(fixRTL(`${Math.abs(rangeBal).toLocaleString()}  تومان  -  ${balStatus}`), 405, startY + 24, { align: 'center', width: cardW - 10 });
 
       // --- TABLE HEADER ---
       let y = 235;
-      const colX = {
-        num: 535,
-        date: 450,
-        desc: 260,
-        debit: 180,
-        credit: 100,
-        bal: 30
+      const cols = {
+        bal: { x: 30, w: 75 },
+        credit: { x: 105, w: 65 },
+        debit: { x: 170, w: 65 },
+        desc: { x: 235, w: 220 },
+        date: { x: 455, w: 80 },
+        num: { x: 535, w: 30 }
       };
 
       doc.rect(30, y, 535, 22).fill('#1e293b');
       doc.fillColor('#ffffff').font(fontBold).fontSize(8.5);
 
-      doc.text(fixRTL('ردیف'), colX.num - 30, y + 6, { width: 30, align: 'center' });
-      doc.text(fixRTL('تاریخ و زمان'), colX.date - 80, y + 6, { width: 80, align: 'center' });
-      doc.text(fixRTL('شرح سند / تراکنش مالی'), colX.desc - 180, y + 6, { width: 180, align: 'center' });
-      doc.text(fixRTL('بدهکار (تومان)'), colX.debit - 75, y + 6, { width: 75, align: 'center' });
-      doc.text(fixRTL('بستانکار (تومان)'), colX.credit - 75, y + 6, { width: 75, align: 'center' });
-      doc.text(fixRTL('مانده تراز'), colX.bal, y + 6, { width: 70, align: 'center' });
+      doc.text(fixRTL('مانده تراز'), cols.bal.x, y + 6, { width: cols.bal.w, align: 'center' });
+      doc.text(fixRTL('بستانکار (تومان)'), cols.credit.x, y + 6, { width: cols.credit.w, align: 'center' });
+      doc.text(fixRTL('بدهکار (تومان)'), cols.date.x ? cols.debit.x : cols.debit.x, y + 6, { width: cols.debit.w, align: 'center' });
+      doc.text(fixRTL('شرح سند و تراکنش مالی'), cols.desc.x, y + 6, { width: cols.desc.w, align: 'center' });
+      doc.text(fixRTL('تاریخ و زمان'), cols.date.x, y + 6, { width: cols.date.w, align: 'center' });
+      doc.text(fixRTL('ردیف'), cols.num.x, y + 6, { width: cols.num.w, align: 'center' });
 
       y += 22;
 
@@ -178,40 +193,53 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
             doc.rect(30, y, 535, 22).fill('#1e293b');
             doc.fillColor('#ffffff').font(fontBold).fontSize(8.5);
 
-            doc.text(fixRTL('ردیف'), colX.num - 30, y + 6, { width: 30, align: 'center' });
-            doc.text(fixRTL('تاریخ و زمان'), colX.date - 80, y + 6, { width: 80, align: 'center' });
-            doc.text(fixRTL('شرح سند / تراکنش مالی'), colX.desc - 180, y + 6, { width: 180, align: 'center' });
-            doc.text(fixRTL('بدهکار (تومان)'), colX.debit - 75, y + 6, { width: 75, align: 'center' });
-            doc.text(fixRTL('بستانکار (تومان)'), colX.credit - 75, y + 6, { width: 75, align: 'center' });
-            doc.text(fixRTL('مانده تراز'), colX.bal, y + 6, { width: 70, align: 'center' });
+            doc.text(fixRTL('مانده تراز'), cols.bal.x, y + 6, { width: cols.bal.w, align: 'center' });
+            doc.text(fixRTL('بستانکار (تومان)'), cols.credit.x, y + 6, { width: cols.credit.w, align: 'center' });
+            doc.text(fixRTL('بدهکار (تومان)'), cols.debit.x, y + 6, { width: cols.debit.w, align: 'center' });
+            doc.text(fixRTL('شرح سند و تراکنش مالی'), cols.desc.x, y + 6, { width: cols.desc.w, align: 'center' });
+            doc.text(fixRTL('تاریخ و زمان'), cols.date.x, y + 6, { width: cols.date.w, align: 'center' });
+            doc.text(fixRTL('ردیف'), cols.num.x, y + 6, { width: cols.num.w, align: 'center' });
 
             y += 22;
           }
 
           const rowBg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
-          const rowH = 20;
+          const rowH = 22;
 
           doc.rect(30, y, 535, rowH).fillAndStroke(rowBg, '#e2e8f0');
-          doc.fillColor('#334155').font(fontReg).fontSize(8);
 
           const dtStr = `${row.dateStr} ${row.timeStr}`;
-          const debStr = row.debit > 0 ? row.debit.toLocaleString() : '0';
-          const credStr = row.credit > 0 ? row.credit.toLocaleString() : '0';
+          const debStr = row.debit > 0 ? row.debit.toLocaleString() : '-';
+          const credStr = row.credit > 0 ? row.credit.toLocaleString() : '-';
           const balVal = row.runningBalance || 0;
-          const balStr = (balVal > 0 ? `${balVal.toLocaleString()} بدهکار` : (balVal < 0 ? `${Math.abs(balVal).toLocaleString()} بستانکار` : 'تراز صفر'));
+          const balStatusStr = balVal > 0 ? 'بدهکار' : (balVal < 0 ? 'بستانکار' : 'تسویه');
+          const balStr = `${Math.abs(balVal).toLocaleString()}  ${balStatusStr}`;
+          const balRowColor = balVal > 0 ? '#b91c1c' : (balVal < 0 ? '#15803d' : '#475569');
 
-          doc.text(fixRTL(idx + 1), colX.num - 30, y + 5, { width: 30, align: 'center' });
-          doc.text(fixRTL(dtStr), colX.date - 80, y + 5, { width: 80, align: 'center' });
-          doc.text(fixRTL(row.description), colX.desc - 180, y + 5, { width: 180, align: 'right' });
+          doc.fillColor(balRowColor).font(fontReg).fontSize(7.5);
+          doc.text(fixRTL(balStr), cols.bal.x, y + 6, { width: cols.bal.w, align: 'center' });
           
-          doc.fillColor(row.debit > 0 ? '#e11d48' : '#94a3b8');
-          doc.text(fixRTL(debStr), colX.debit - 75, y + 5, { width: 75, align: 'center' });
-          
-          doc.fillColor(row.credit > 0 ? '#16a34a' : '#94a3b8');
-          doc.text(fixRTL(credStr), colX.credit - 75, y + 5, { width: 75, align: 'center' });
+          doc.fillColor(row.credit > 0 ? '#16a34a' : '#94a3b8').font(fontBold).fontSize(8);
+          doc.text(credStr, cols.credit.x, y + 6, { width: cols.credit.w, align: 'center' });
 
-          doc.fillColor('#0f172a').font(fontBold);
-          doc.text(fixRTL(balStr), colX.bal, y + 5, { width: 70, align: 'center' });
+          doc.fillColor(row.debit > 0 ? '#e11d48' : '#94a3b8').font(fontBold).fontSize(8);
+          doc.text(debStr, cols.debit.x, y + 6, { width: cols.debit.w, align: 'center' });
+
+          // Clean up description: strip redundant [0GB] and clean spacing
+          let cleanDesc = row.description
+            .replace(/\[0GB\]/g, '')
+            .replace(/خرید کانفیگ:\s*کانفیگ/g, 'خرید: کانفیگ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          doc.fillColor('#1e293b').font(fontReg).fontSize(8);
+          doc.text(fixRTL(cleanDesc), cols.desc.x, y + 6, { width: cols.desc.w, align: 'right', lineBreak: false });
+          
+          doc.fillColor('#475569').font(fontReg).fontSize(7.5);
+          doc.text(dtStr, cols.date.x, y + 6, { width: cols.date.w, align: 'center' });
+          
+          doc.fillColor('#64748b').font(fontBold).fontSize(8);
+          doc.text(String(idx + 1), cols.num.x, y + 6, { width: cols.num.w, align: 'center' });
 
           y += rowH;
         });
@@ -226,7 +254,7 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
       y += 15;
       doc.rect(30, y, 535, 25).fillAndStroke('#f1f5f9', '#cbd5e1');
       doc.fillColor('#475569').font(fontReg).fontSize(8);
-      doc.text(fixRTL('این صورتحساب به صورت مکانیزه از سیستم حسابداری استخراج شده و بدون نیاز به مهر دستی دارای اعتبار رسمی است.'), 30, y + 8, { align: 'center', width: 535 });
+      doc.text(fixRTL('این صورتحساب به صورت مکانیزه از سیستم حسابداری استخراج شده و دارای اعتبار رسمی است.'), 30, y + 8, { align: 'center', width: 535 });
 
       doc.end();
     } catch (err) {

@@ -186,7 +186,7 @@ function TabBtn({ active, onClick, children, icon, collapsed }: any) {
 function SettingsView() {
   const [state, setState] = useState<any>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'general' | 'coupons' | 'backups'>('sanaei');
+  const [activeSection, setActiveSection] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'panel4' | 'general' | 'coupons' | 'backups'>('sanaei');
   const [inbounds, setInbounds] = useState<any[]>([]);
   const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
   const [rebeccaTesting, setRebeccaTesting] = useState(false);
@@ -195,6 +195,11 @@ function SettingsView() {
   const [mroceanSaving, setMroceanSaving] = useState(false);
   const [mroceanDashboard, setMroceanDashboard] = useState<any>(null);
   const [mroceanLoadingDash, setMroceanLoadingDash] = useState(false);
+
+  const [panel4Testing, setPanel4Testing] = useState(false);
+  const [panel4Saving, setPanel4Saving] = useState(false);
+  const [panel4Inbounds, setPanel4Inbounds] = useState<any[]>([]);
+  const [panel4LoadingInbounds, setPanel4LoadingInbounds] = useState(false);
   const [adminIdsStr, setAdminIdsStr] = useState('');
 
   const [backupPassword, setBackupPassword] = useState('');
@@ -789,6 +794,68 @@ function SettingsView() {
     }
   };
 
+  const savePanel4Settings = async () => {
+    setPanel4Saving(true);
+    try {
+      const res = await fetch('/api/update-panel4', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.panel4 || {})
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('✅ تنظیمات پنل ۴ با موفقیت ذخیره شد.');
+        const updatedState = await fetch('/api/state').then(r => r.json());
+        setState(updatedState);
+      } else {
+        alert('❌ خطا در ذخیره پنل ۴: ' + data.message);
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    } finally {
+      setPanel4Saving(false);
+    }
+  };
+
+  const testPanel4Connection = async () => {
+    setPanel4Testing(true);
+    try {
+      const res = await fetch('/api/test-panel4-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.panel4 || {})
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message);
+        loadPanel4Inbounds();
+      } else {
+        alert('❌ خطا: ' + data.message);
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    } finally {
+      setPanel4Testing(false);
+    }
+  };
+
+  const loadPanel4Inbounds = async () => {
+    setPanel4LoadingInbounds(true);
+    try {
+      const res = await fetch('/api/panel4-inbounds');
+      const data = await res.json();
+      if (data.success) {
+        setPanel4Inbounds(data.inbounds || []);
+      } else {
+        console.log('Panel 4 inbounds fetch info:', data.message);
+      }
+    } catch (e) {
+      console.error('Error fetching Panel 4 inbounds:', e);
+    } finally {
+      setPanel4LoadingInbounds(false);
+    }
+  };
+
   const rebeccaData = state.rebeccaPanel || {
     url: '',
     username: '',
@@ -806,6 +873,16 @@ function SettingsView() {
     apiKey: '',
     serviceId: 347,
     subUrlBase: '',
+    enabled: true
+  };
+
+  const panel4Data = state.panel4 || {
+    url: '',
+    username: '',
+    password: '',
+    apiKey: '',
+    subUrlBase: '',
+    inboundIds: [],
     enabled: true
   };
 
@@ -850,6 +927,21 @@ function SettingsView() {
         >
           <span className="w-2.5 h-2.5 rounded-full bg-cyan-300"></span>
           🌊 مستر اوشن (MR OCEAN)
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveSection('panel4');
+            loadPanel4Inbounds();
+          }}
+          className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all ${
+            activeSection === 'panel4'
+              ? 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md shadow-amber-600/30'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-300"></span>
+          🔸 پنل ۴ (Panel 4)
         </button>
 
         <button
@@ -1383,6 +1475,168 @@ function SettingsView() {
                 className="bg-cyan-700 hover:bg-cyan-800 text-white px-6 py-2.5 rounded-xl font-bold text-sm transition flex items-center shadow-md shadow-cyan-800/20"
               >
                 <Save className="w-4 h-4 ml-2" /> ذخیره مشخصات پنل مستر اوشن
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 4: Panel 4 */}
+      {activeSection === 'panel4' && (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+          <div className="flex items-center justify-between border-b pb-4 border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 font-bold">
+                P4
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">مشخصات و اتصال پنل ۴ (Panel 4)</h2>
+                <p className="text-xs text-slate-500">پیکربندی کامل آدرس، نام کاربری، رمز ورود، کلید API و اینباندهای پنل ۴</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer bg-slate-100 px-3 py-1.5 rounded-xl">
+                <input 
+                  type="checkbox" 
+                  checked={panel4Data.enabled !== false} 
+                  onChange={e => setState({
+                    ...state, 
+                    panel4: { ...panel4Data, enabled: e.target.checked }
+                  })}
+                  className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                />
+                فعال بودن پنل ۴
+              </label>
+              <span className="bg-amber-50 text-amber-700 font-bold px-3 py-1 rounded-full text-xs border border-amber-200">
+                Panel 4 Engine
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">آدرس کامل اتصال به پنل ۴ (URL)</label>
+              <input 
+                type="text" 
+                value={panel4Data.url || ''} 
+                onChange={e => setState({
+                  ...state, 
+                  panel4: { ...panel4Data, url: e.target.value }
+                })} 
+                className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 font-mono text-sm text-left bg-slate-50/50" 
+                dir="ltr" 
+                placeholder="https://panel4.domain.com:2053" 
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">نام کاربری ورود به پنل ۴</label>
+                <input 
+                  type="text" 
+                  value={panel4Data.username || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    panel4: { ...panel4Data, username: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 text-sm font-mono text-left" 
+                  placeholder="admin"
+                  dir="ltr"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">رمز عبور ورود به پنل ۴</label>
+                <input 
+                  type="password" 
+                  value={panel4Data.password || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    panel4: { ...panel4Data, password: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 text-sm" 
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">کلید API Key پنل ۴ (اختیاری جهت احراز هویت توکن)</label>
+                <input 
+                  type="text" 
+                  value={panel4Data.apiKey || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    panel4: { ...panel4Data, apiKey: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="api_key_or_token" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">آدرس دامنه پایه لینک‌های سابسکریپشن (اختیاری)</label>
+                <input 
+                  type="text" 
+                  value={panel4Data.subUrlBase || ''} 
+                  onChange={e => setState({
+                    ...state, 
+                    panel4: { ...panel4Data, subUrlBase: e.target.value }
+                  })} 
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 font-mono text-sm text-left bg-slate-50/50" 
+                  dir="ltr" 
+                  placeholder="https://sub.domain.com/sub/" 
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button 
+                onClick={testPanel4Connection} 
+                disabled={panel4Testing}
+                className="flex-1 min-w-[180px] bg-slate-900 text-white px-4 py-2.5 rounded-xl hover:bg-slate-800 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <Zap className="w-4 h-4 ml-2 text-amber-400" /> {panel4Testing ? 'در حال تست...' : 'تست آنلاین اتصال پنل ۴'}
+              </button>
+              <button 
+                onClick={loadPanel4Inbounds} 
+                disabled={panel4LoadingInbounds}
+                className="flex-1 min-w-[180px] bg-amber-600 text-white px-4 py-2.5 rounded-xl hover:bg-amber-700 transition flex items-center justify-center font-bold text-sm shadow-sm"
+              >
+                <RefreshCw className={`w-4 h-4 ml-2 ${panel4LoadingInbounds ? 'animate-spin' : ''}`} /> دریافت اینباندهای پنل ۴
+              </button>
+            </div>
+
+            {/* Inbounds List */}
+            {panel4Inbounds.length > 0 && (
+              <div className="p-4 bg-amber-50/60 rounded-xl border border-amber-200 space-y-3">
+                <h3 className="text-sm font-bold text-amber-950 flex items-center gap-2">
+                  <span>📡</span> اینباندهای فعال در پنل ۴ ({panel4Inbounds.length} مورد)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {panel4Inbounds.map((ib: any) => (
+                    <div key={ib.id} className="p-2.5 bg-white rounded-lg border border-amber-200 text-xs flex items-center justify-between shadow-xs">
+                      <div>
+                        <p className="font-bold text-slate-800">{ib.remark || ib.tag || `Inbound #${ib.id}`}</p>
+                        <p className="text-[11px] text-slate-500 font-mono">Port: {ib.port || 'Auto'} | {ib.protocol || 'VLESS'}</p>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                        ID: {ib.id}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 border-t flex justify-end">
+              <button 
+                onClick={savePanel4Settings} 
+                disabled={panel4Saving} 
+                className="bg-amber-600 hover:bg-amber-700 text-white px-6 py-2.5 rounded-xl font-bold text-sm transition flex items-center shadow-md shadow-amber-600/20"
+              >
+                <Save className="w-4 h-4 ml-2" /> ذخیره مشخصات پنل ۴
               </button>
             </div>
           </div>
