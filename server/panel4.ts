@@ -103,25 +103,47 @@ export class Panel4Client {
       };
     }
 
-    // 2. Cookie Session Auth
+    // 2. Bearer Token Auth via Login (/api/admins/token) or Cookie Session
     if (!this.cookie) {
-      const loginPaths = ['/login', '/panel/login'];
+      const loginPaths = ['/api/admins/token', '/login', '/panel/login'];
       let loginSuccess = false;
       let lastLoginError = '';
 
       for (const path of loginPaths) {
         try {
-          const res = await this.client.post(`${baseURL}${path}`, {
+          // Form-encoded (FastAPI / Panel 4 standard)
+          const params = new URLSearchParams();
+          params.append('grant_type', 'password');
+          params.append('username', panel.username.trim());
+          params.append('password', panel.password.trim());
+
+          let res = await this.client.post(`${baseURL}${path}`, params, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            validateStatus: () => true,
+            timeout: 10000
+          });
+
+          if (res.data?.token || res.data?.access_token) {
+            this.cookie = res.data.token || res.data.access_token;
+            loginSuccess = true;
+            break;
+          }
+
+          // JSON mode
+          res = await this.client.post(`${baseURL}${path}`, {
             username: panel.username.trim(),
             password: panel.password.trim()
           }, {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-              'Accept': 'application/json, text/plain, */*'
-            }
+            headers: { 'Content-Type': 'application/json' },
+            validateStatus: () => true,
+            timeout: 10000
           });
 
-          if (res.data?.success || res.status === 200) {
+          if (res.data?.token || res.data?.access_token) {
+            this.cookie = res.data.token || res.data.access_token;
+            loginSuccess = true;
+            break;
+          } else if (res.data?.success || res.status === 200) {
             const rawCookies = res.headers['set-cookie'];
             if (rawCookies && rawCookies.length > 0) {
               this.cookie = rawCookies.map((c: string) => c.split(';')[0]).join('; ');
@@ -139,9 +161,11 @@ export class Panel4Client {
       }
     }
 
+    const authHeader = this.cookie.startsWith('Bearer ') ? this.cookie : (this.cookie.includes('.') ? `Bearer ${this.cookie}` : this.cookie);
     return {
       baseURL,
       headers: {
+        'Authorization': authHeader,
         'Cookie': this.cookie,
         'Accept': 'application/json'
       }
@@ -317,12 +341,9 @@ export class Panel4Client {
 
       const subPayload: any = {
         username: cleanEmail,
-        service_id: Number(ibId) || ibId,
-        service_ids: [Number(ibId) || ibId],
         services: [Number(ibId) || ibId],
-        data_limit: totalBytes,
-        expire: expireSeconds,
-        status: 'active',
+        usage_limit: totalBytes,
+        expire_days: durationDays > 0 ? durationDays : undefined,
         note: sellerGroupName || ''
       };
 
@@ -342,7 +363,10 @@ export class Panel4Client {
 
           if (res.status >= 200 && res.status < 300 && res.data) {
             addedToAny = true;
-            createdSubUrl = res.data.subscription_url || res.data.url || res.data.link || '';
+            const dataObj = Array.isArray(res.data) ? res.data[0] : res.data;
+            if (dataObj) {
+              createdSubUrl = dataObj.subscription_link || dataObj.subscription_url || dataObj.url || dataObj.link || '';
+            }
             break;
           }
         }

@@ -200,6 +200,7 @@ function SettingsView() {
   const [panel4Saving, setPanel4Saving] = useState(false);
   const [panel4Inbounds, setPanel4Inbounds] = useState<any[]>([]);
   const [panel4LoadingInbounds, setPanel4LoadingInbounds] = useState(false);
+  const [panel4TestResult, setPanel4TestResult] = useState<any>(null);
   const [adminIdsStr, setAdminIdsStr] = useState('');
 
   const [backupPassword, setBackupPassword] = useState('');
@@ -819,6 +820,7 @@ function SettingsView() {
 
   const testPanel4Connection = async () => {
     setPanel4Testing(true);
+    setPanel4TestResult(null);
     try {
       const res = await fetch('/api/test-panel4-connection', {
         method: 'POST',
@@ -826,14 +828,13 @@ function SettingsView() {
         body: JSON.stringify(state.panel4 || {})
       });
       const data = await res.json();
+      setPanel4TestResult(data);
       if (data.success) {
-        alert(data.message);
+        if (data.inbounds) setPanel4Inbounds(data.inbounds);
         loadPanel4Inbounds();
-      } else {
-        alert('❌ خطا: ' + data.message);
       }
     } catch (e: any) {
-      alert('خطای شبکه: ' + e.message);
+      setPanel4TestResult({ success: false, message: 'خطای شبکه: ' + e.message });
     } finally {
       setPanel4Testing(false);
     }
@@ -846,6 +847,9 @@ function SettingsView() {
       const data = await res.json();
       if (data.success) {
         setPanel4Inbounds(data.inbounds || []);
+        if (!panel4TestResult) {
+          setPanel4TestResult(data);
+        }
       } else {
         console.log('Panel 4 inbounds fetch info:', data.message);
       }
@@ -1608,6 +1612,30 @@ function SettingsView() {
               </button>
             </div>
 
+            {/* Response Output Card */}
+            {panel4TestResult && (
+              <div className={`p-4 rounded-xl border space-y-2.5 transition ${panel4TestResult.success ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950' : 'bg-rose-50/70 border-rose-300 text-rose-950'}`}>
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-sm flex items-center gap-2">
+                    <span>{panel4TestResult.success ? '✅' : '❌'}</span>
+                    <span>پاسخ خروجی دریافتی از پنل ۴ (Panel 4 Response Output):</span>
+                  </h4>
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${panel4TestResult.success ? 'bg-emerald-200 text-emerald-900' : 'bg-rose-200 text-rose-900'}`}>
+                    {panel4TestResult.success ? 'اتصال موفق' : 'خطا در اتصال'}
+                  </span>
+                </div>
+                <p className="text-xs font-semibold">{panel4TestResult.message}</p>
+
+                {/* Formatted JSON Output */}
+                <div className="mt-2 bg-slate-900 text-slate-100 p-3 rounded-lg overflow-x-auto text-xs font-mono max-h-60 border border-slate-700">
+                  <p className="text-[10px] text-amber-400 font-bold mb-1">// خروجی خام دریافت شده از API پنل ۴:</p>
+                  <pre className="whitespace-pre-wrap leading-relaxed">
+                    {JSON.stringify(panel4TestResult, null, 2)}
+                  </pre>
+                </div>
+              </div>
+            )}
+
             {/* Inbounds List */}
             {panel4Inbounds.length > 0 && (
               <div className="p-4 bg-amber-50/60 rounded-xl border border-amber-200 space-y-3">
@@ -1618,7 +1646,7 @@ function SettingsView() {
                   {panel4Inbounds.map((ib: any) => (
                     <div key={ib.id} className="p-2.5 bg-white rounded-lg border border-amber-200 text-xs flex items-center justify-between shadow-xs">
                       <div>
-                        <p className="font-bold text-slate-800">{ib.remark || ib.tag || `Inbound #${ib.id}`}</p>
+                        <p className="font-bold text-slate-800">{ib.remark || ib.tag || ib.name || `Inbound #${ib.id}`}</p>
                         <p className="text-[11px] text-slate-500 font-mono">Port: {ib.port || 'Auto'} | {ib.protocol || 'VLESS'}</p>
                       </div>
                       <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
@@ -2949,56 +2977,53 @@ function ProductsView() {
            {/* Panel 4 Inbounds Section */}
            {['panel4', 'sanaei_panel4', 'rebecca_panel4', 'mrocean_panel4', 'all'].includes(form.panelType) && (
              <div className="p-3 bg-amber-50/50 rounded-lg border border-amber-200">
-               <label className="block text-xs font-bold text-amber-900 mb-1.5">🔸 اینباندهای پنل ۴ (Panel 4 Inbounds):</label>
+               <label className="block text-xs font-bold text-amber-900 mb-1.5 flex items-center justify-between">
+                 <span>🔸 تخصیص سرویس‌ها/اینباندهای پنل ۴ (Panel 4 Services):</span>
+                 <span className="text-[11px] text-amber-700 bg-amber-100 font-normal px-2.5 py-0.5 rounded-full">شناسایی خودکار</span>
+               </label>
                {panel4Inbounds.length > 0 ? (
-                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
-                   {panel4Inbounds.map((ib: any) => {
-                     const isChecked = form.panel4InboundIds.includes(ib.id) || form.panel4InboundId === String(ib.id);
-                     return (
-                       <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-amber-600 cursor-pointer select-none">
-                         <input 
-                           type="checkbox" 
-                           checked={isChecked}
-                           onChange={e => {
-                             let updatedIds = [...form.panel4InboundIds];
-                             if (form.panel4InboundId && !updatedIds.includes(Number(form.panel4InboundId))) {
-                               updatedIds.push(Number(form.panel4InboundId));
-                             }
-                             if (e.target.checked) {
-                               if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
-                             } else {
-                               updatedIds = updatedIds.filter(id => id !== ib.id);
-                             }
-                             setForm({
-                               ...form,
-                               panel4InboundIds: updatedIds,
-                               panel4InboundId: updatedIds[0] ? String(updatedIds[0]) : ''
-                             });
-                           }}
-                           className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
-                         />
-                         <span className="font-medium text-slate-800">{ib.remark || ib.tag || `Inbound #${ib.id}`}</span>
-                         <span className="text-[10px] text-amber-700 font-mono bg-amber-100 px-1 py-0.5 rounded">ID: {ib.id}</span>
-                       </label>
-                     );
-                   })}
+                 <div className="space-y-2">
+                   <p className="text-[11px] text-slate-600">
+                     سرویس‌های زیر از پنل ۴ دریافت شدند. انتخاب سرویس اختیاری است (در صورت عدم انتخاب، ساخت اکانت روی همه سرویس‌های فعال پنل ۴ به صورت اتومات انجام می‌گردد):
+                   </p>
+                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
+                     {panel4Inbounds.map((ib: any) => {
+                       const isChecked = form.panel4InboundIds.includes(ib.id) || form.panel4InboundId === String(ib.id);
+                       return (
+                         <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-amber-600 cursor-pointer select-none">
+                           <input 
+                             type="checkbox" 
+                             checked={isChecked}
+                             onChange={e => {
+                               let updatedIds = [...form.panel4InboundIds];
+                               if (form.panel4InboundId && !updatedIds.includes(Number(form.panel4InboundId))) {
+                                 updatedIds.push(Number(form.panel4InboundId));
+                               }
+                               if (e.target.checked) {
+                                 if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                               } else {
+                                 updatedIds = updatedIds.filter(id => id !== ib.id);
+                               }
+                               setForm({
+                                 ...form,
+                                 panel4InboundIds: updatedIds,
+                                 panel4InboundId: updatedIds[0] ? String(updatedIds[0]) : ''
+                               });
+                             }}
+                             className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                           />
+                           <span className="font-medium text-slate-800">{ib.remark || ib.tag || ib.name || `Inbound #${ib.id}`}</span>
+                           <span className="text-[10px] text-amber-700 font-mono bg-amber-100 px-1 py-0.5 rounded">ID: {ib.id}</span>
+                         </label>
+                       );
+                     })}
+                   </div>
                  </div>
                ) : (
-                 <input 
-                   type="text" 
-                   value={form.panel4InboundId} 
-                   onChange={e => {
-                     const val = e.target.value;
-                     const numeric = parseInt(val);
-                     setForm({
-                       ...form, 
-                       panel4InboundId: val, 
-                       panel4InboundIds: isNaN(numeric) ? [] : [numeric]
-                     });
-                   }}
-                   className="w-full px-3 py-2 border rounded-md text-xs font-mono bg-white" 
-                   placeholder="آیدی عددی اینباند پنل ۴ (مثلاً 1, 2)"
-                 />
+                 <div className="p-3 bg-white rounded-lg border border-amber-200 text-xs text-amber-900 flex items-center gap-2">
+                   <span className="text-base">⚡️</span>
+                   <span>اینباندهای پنل ۴ به صورت <b>خودکار و اتوماتیک</b> از خود پنل ۴ دریافت و تنظیم می‌گردند (نیاز به ورود شناسه دستی نیست).</span>
+                 </div>
                )}
              </div>
            )}

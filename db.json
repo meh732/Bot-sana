@@ -18,6 +18,18 @@
     "password": "Mo!RgElMrGlPlNIKFIQX8xN9MopPeuIcVZ9",
     "apiKey": "rk_-itJXBc5_vWntoQxC9QflcAQ8jRIF9H6zULsm3KHJpI",
     "serviceId": 347,
+    "enabled": true,
+    "_sessionCookie": "__Host-mrocean_reseller=eyJwdXJwb3NlIjoicmVzZWxsZXJfYnJvd3NlciIsInVzZXJfaWQiOjc4LCJzZXJ2aWNlX2lkIjozNDcsImNyZWRlbnRpYWxfZmluZ2VycHJpbnQiOiJlYmExNzUyNDQ2Mzk1OTIwZGU2MWI0MmNiYzExM2FmNGE3NTE3ZjJhMzk1NjM2MWEwMDJjYzU2ZjQ3YmIyYzRhIiwiY3NyZl90b2tlbiI6IlpWLVdFb2ZpRWRqVnUyRVlGVHJoNThMaWFkRl9lTTZ1IiwiaXNzdWVkX2F0IjoxNzkyMjU3NTE2LCJleHBpcmVzX2F0IjoxNzkyMjg2MzE2LCJub25jZSI6IjRtVjNRbHlmRzJYblh3b0ZLTlVrUWhqUyJ9.RiLoVoNmmGfCCnEXZoPuSUhw7IdntPPBaWZfOZy1Og0",
+    "_csrfToken": "ZV-WEofiEdjVu2EYFTrh58LiadF_eM6u",
+    "_sessionExpiryTime": 1792282716461,
+    "_serviceId": 347,
+    "_apiBase": "https://panel.mrocean.ir/api/reseller-panel/service/347"
+  },
+  "panel4": {
+    "url": "https://app.solidlayerco.com",
+    "username": "meh7375",
+    "password": "X7k2jPCj5z#FH6",
+    "apiKey": "df34a8861140b16669963f4d9c95c8502beb01379dca16413d6b984cfc11ac51",
     "enabled": true
   },
   "products": [
@@ -26,14 +38,20 @@
       "name": "سرویس ۱ ماهه ۲۰ گیگ",
       "price": 100000,
       "categoryId": "1",
-      "disabled": false
+      "disabled": false,
+      "volumeGb": 0,
+      "durationDays": 0,
+      "panelType": "sanaei"
     },
     {
       "id": "p2",
       "name": "سرویس پاریس ۳۰ گیگ",
       "price": 150000,
       "categoryId": "2",
-      "disabled": false
+      "disabled": false,
+      "volumeGb": 0,
+      "durationDays": 0,
+      "panelType": "sanaei"
     }
   ],
   "users": [
@@ -68,6 +86,11 @@
   "cardHolder": "نام مدیر حساب",
   "supportUsername": "",
   "coupons": [],
+  "customVolumePricePerGb": 3000,
+  "customVolumeMinGb": 1,
+  "customVolumeDefaultDays": 30,
+  "customVolumePanelType": "mrocean",
+  "customVolumeEnabled": true,
   "activePanelMode": "both",
   "categories": [
     {
@@ -81,5 +104,7 @@
   ],
   "freeTestInboundIds": [],
   "lastAutoBackupSent": 0,
-  "pendingPayments": []
+  "pendingPayments": [],
+  "lastDailyReportSent": 1792258417030,
+  "lastDailyReportDate": "۱۴۰۵/۷/۲۵"
 }
