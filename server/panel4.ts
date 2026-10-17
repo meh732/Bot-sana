@@ -163,32 +163,41 @@ export class Panel4Client {
   }
 
   public async getInbounds(panelOverride?: any): Promise<any[]> {
-    const auth = await this.getAuthOptions(panelOverride);
-    const prefixes = this.workingApiPrefix 
-      ? [this.workingApiPrefix] 
-      : ['/panel/api/inbounds', '/xui/api/inbounds', '/api/inbounds', '/inbounds'];
+    try {
+      const state = db.getState();
+      const panel = panelOverride || state.panel4 || {};
+      if (!panel.url || panel.enabled === false) return [];
+      if (panel.url.includes('test-') || panel.url.includes('example.com')) return [];
 
-    let lastError: any = null;
+      const auth = await this.getAuthOptions(panelOverride);
+      const prefixes = this.workingApiPrefix 
+        ? [this.workingApiPrefix] 
+        : ['/panel/api/inbounds', '/xui/api/inbounds', '/api/inbounds', '/inbounds'];
 
-    for (const prefix of prefixes) {
-      try {
-        const res = await this.client.get(`${auth.baseURL}${prefix}/list`, {
-          headers: auth.headers
-        });
+      for (const prefix of prefixes) {
+        try {
+          const res = await this.client.get(`${auth.baseURL}${prefix}/list`, {
+            headers: auth.headers,
+            timeout: 8000
+          });
 
-        if (res.data?.success && Array.isArray(res.data.obj)) {
-          this.workingApiPrefix = prefix;
-          return res.data.obj;
-        } else if (Array.isArray(res.data)) {
-          this.workingApiPrefix = prefix;
-          return res.data;
+          if (res.data?.success && Array.isArray(res.data.obj)) {
+            this.workingApiPrefix = prefix;
+            return res.data.obj;
+          } else if (Array.isArray(res.data)) {
+            this.workingApiPrefix = prefix;
+            return res.data;
+          }
+        } catch (err: any) {
+          // continue to next prefix
         }
-      } catch (err: any) {
-        lastError = err;
       }
-    }
 
-    throw new Error(`خطا در دریافت لیست اینباندهای پنل ۴: ${lastError?.message || 'پاسخ نامعتبر'}`);
+      return [];
+    } catch (e: any) {
+      console.warn('[Panel4] getInbounds note:', e.message);
+      return [];
+    }
   }
 
   public async addClient(
@@ -381,41 +390,51 @@ export class Panel4Client {
   }
 
   public async getAllClientsWithTraffic(): Promise<any[]> {
-    const inbounds = await this.getInbounds().catch(() => []);
-    const results: any[] = [];
+    try {
+      const state = db.getState();
+      const panel = state.panel4 || {};
+      if (!panel.url || panel.enabled === false) return [];
+      if (panel.url.includes('test-') || panel.url.includes('example.com')) return [];
 
-    for (const ib of inbounds) {
-      if (!ib.clientStats && !ib.settings) continue;
-      
-      const statsMap = new Map<string, any>();
-      if (Array.isArray(ib.clientStats)) {
-        ib.clientStats.forEach((st: any) => {
-          statsMap.set(st.email || st.id, st);
-        });
-      }
+      const inbounds = await this.getInbounds().catch(() => []);
+      const results: any[] = [];
 
-      const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
-      if (settings && Array.isArray(settings.clients)) {
-        for (const cl of settings.clients) {
-          const key = cl.email || cl.id;
-          const stat = statsMap.get(key) || {};
-          results.push({
-            id: cl.id,
-            email: cl.email,
-            subId: cl.subId,
-            up: stat.up || cl.up || 0,
-            down: stat.down || cl.down || 0,
-            totalUsed: (stat.up || cl.up || 0) + (stat.down || cl.down || 0),
-            total: cl.totalGB || stat.total || 0,
-            expiryTime: cl.expiryTime || stat.expiryTime || 0,
-            enable: cl.enable !== false,
-            panel: 'panel4'
+      for (const ib of inbounds) {
+        if (!ib.clientStats && !ib.settings) continue;
+        
+        const statsMap = new Map<string, any>();
+        if (Array.isArray(ib.clientStats)) {
+          ib.clientStats.forEach((st: any) => {
+            statsMap.set(st.email || st.id, st);
           });
         }
-      }
-    }
 
-    return results;
+        const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
+        if (settings && Array.isArray(settings.clients)) {
+          for (const cl of settings.clients) {
+            const key = cl.email || cl.id;
+            const stat = statsMap.get(key) || {};
+            results.push({
+              id: cl.id,
+              email: cl.email,
+              subId: cl.subId,
+              up: stat.up || cl.up || 0,
+              down: stat.down || cl.down || 0,
+              totalUsed: (stat.up || cl.up || 0) + (stat.down || cl.down || 0),
+              total: cl.totalGB || stat.total || 0,
+              expiryTime: cl.expiryTime || stat.expiryTime || 0,
+              enable: cl.enable !== false,
+              panel: 'panel4'
+            });
+          }
+        }
+      }
+
+      return results;
+    } catch (e: any) {
+      console.warn('[Panel4] getAllClientsWithTraffic note:', e.message);
+      return [];
+    }
   }
 
   public async getOnlineUsers(): Promise<{ onlineCount: number; totalUsers: number; users: Panel4OnlineUser[] }> {

@@ -9,6 +9,46 @@ safe_exit() {
 # Ignore SIGHUP so SSH terminal disconnects never kill the installer/updater process
 trap '' HUP 2>/dev/null
 
+# Terminal Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+clear
+echo -e "${CYAN}=============================================${NC}"
+echo -e "${GREEN}      Sanaei Telegram Bot & Admin Panel      ${NC}"
+echo -e "${GREEN}        Automated Installer & Manager        ${NC}"
+echo -e "${CYAN}=============================================${NC}"
+
+# Check to see if running as root
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}❌ Please run this script as root (e.g., sudo bash install.sh)${NC}"
+  safe_exit 1
+fi
+
+GIT_URL="https://github.com/meh732/Bot-sana.git"
+FALLBACK_GIT_URL="https://github.com/meh732/botsel.git"
+DIR_NAME="sanaei-bot"
+
+show_menu() {
+  echo -e "\n${YELLOW}Please select one of the following options:${NC}"
+  echo -e "1) ${GREEN}Fresh Installation${NC} - Clean previous install and download full new release"
+  echo -e "2) ${BLUE}Update Bot${NC}         - Pull latest Git changes and preserve current database"
+  echo -e "3) ${PURPLE}Restart Service${NC}    - Restart bot and rebuild project"
+  echo -e "4) ${RED}Uninstall${NC}          - Stop running service and remove all files"
+  echo -e "5) ${NC}Exit${NC}"
+  echo -e "${CYAN}---------------------------------------------${NC}"
+  if [ -c /dev/tty ]; then
+    read -p "Enter choice [1-5]: " CHOICE </dev/tty
+  else
+    read -p "Enter choice [1-5]: " CHOICE
+  fi
+}
+
 # Helper to ensure swap exists and configure SSH keepalive to prevent disconnects on 1GB VPS
 ensure_swap_and_memory() {
     # Check if /swapfile is already active
@@ -83,7 +123,7 @@ do_uninstall() {
     pm2 save --force &> /dev/null
   fi
 
-  # Kill any stray processes matching server.ts, server.cjs or tsx (do not match folder name 'sanaei-bot' which kills bash/SSH session)
+  # Kill any stray processes matching server.ts, server.cjs or tsx
   pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null
   pkill -9 -f "node.*server\.ts" 2>/dev/null
   pkill -9 -f "tsx.*server\.ts" 2>/dev/null
@@ -102,7 +142,11 @@ do_uninstall() {
 
 do_fresh_install() {
   echo -e "\n${YELLOW}⚠️ This operation will stop any existing bot and perform a clean installation of '$DIR_NAME'.${NC}"
-  read -p "Are you sure you want to proceed? (y/n): " confirm
+  if [ -c /dev/tty ]; then
+    read -p "Are you sure you want to proceed? (y/n): " confirm </dev/tty
+  else
+    confirm="y"
+  fi
   if [[ $confirm != "y" && $confirm != "Y" ]]; then
     echo -e "${RED}❌ Installation cancelled.${NC}"
     return
@@ -111,12 +155,15 @@ do_fresh_install() {
   echo -e "\n${CYAN}=============================================${NC}"
   echo -e "${YELLOW}       Admin & Web Panel Configuration       ${NC}"
   echo -e "${CYAN}=============================================${NC}"
-  read -p "Enter web panel port [default: 2020]: " PANEL_PORT
+  if [ -c /dev/tty ]; then
+    read -p "Enter web panel port [default: 2020]: " PANEL_PORT </dev/tty
+    read -p "Enter panel admin username (optional): " PANEL_USER </dev/tty
+    read -sp "Enter panel admin password (optional): " PANEL_PASS </dev/tty
+    echo ""
+  else
+    PANEL_PORT="2020"
+  fi
   PANEL_PORT=${PANEL_PORT:-2020}
-  
-  read -p "Enter panel admin username (optional): " PANEL_USER
-  read -sp "Enter panel admin password (optional): " PANEL_PASS
-  echo ""
 
   # Kill port if currently used
   PID_TARGET=$(lsof -t -i:$PANEL_PORT 2>/dev/null)
@@ -153,11 +200,11 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || npm install --no-audit --no-fund
+  nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
 
   echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
   npm run clean 2>/dev/null
-  NODE_OPTIONS="--max-old-space-size=256" npm run build
+  nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm run build
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
   pm2 delete "sanaei-bot" 2>/dev/null
@@ -208,8 +255,8 @@ do_update() {
   fi
 
   echo -e "\n${CYAN}>> Pulling latest updates from Git...${NC}"
-  git fetch --all
-  git reset --hard origin/main || git reset --hard origin/master
+  git fetch --all 2>/dev/null || true
+  git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || true
 
   # Ensure swap memory is active
   ensure_swap_and_memory
@@ -264,28 +311,55 @@ do_restart() {
   fi
 }
 
-show_menu
+# Main Execution Flow
+CHOICE="${1:-}"
+
+if [ -z "$CHOICE" ]; then
+  if [ -t 0 ] || [ -c /dev/tty ]; then
+    while true; do
+      show_menu
+      case $CHOICE in
+        1|2|3|4|5)
+          break
+          ;;
+        *)
+          echo -e "${RED}❌ Invalid selection: '$CHOICE'. Please enter a number from 1 to 5.${NC}"
+          ;;
+      esac
+    done
+  else
+    # Non-interactive without CLI argument
+    echo -e "${YELLOW}ℹ️ Usage: bash install.sh [1-5]${NC}"
+    echo -e "  1: Fresh Installation"
+    echo -e "  2: Update Bot"
+    echo -e "  3: Restart Service"
+    echo -e "  4: Uninstall"
+    echo -e "  5: Exit"
+    safe_exit 1
+  fi
+fi
 
 case $CHOICE in
-  1)
+  1|install|fresh)
     do_fresh_install
     ;;
-  2)
+  2|update)
     do_update
     ;;
-  3)
+  3|restart)
     do_restart
     ;;
-  4)
+  4|uninstall)
     do_uninstall
     echo -e "${GREEN}✅ All files and processes removed successfully.${NC}"
     ;;
-  5)
+  5|exit)
     echo -e "${YELLOW}Exiting.${NC}"
     safe_exit 0
     ;;
   *)
-    echo -e "${RED}❌ Invalid selection. Please enter a number from 1 to 5.${NC}"
+    echo -e "${RED}❌ Invalid selection: '$CHOICE'. Please enter a number from 1 to 5.${NC}"
     safe_exit 1
     ;;
 esac
+

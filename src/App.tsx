@@ -49,7 +49,7 @@ export default function App() {
             {!sidebarCollapsed && (
               <div className="flex flex-col whitespace-nowrap overflow-hidden">
                 <span className="text-white font-bold text-base tracking-tight truncate">مدیریت پنل هوشمند</span>
-                <span className="text-xs text-indigo-400 font-medium truncate">سنایی و ربکا</span>
+                <span className="text-xs text-indigo-400 font-medium truncate">مدیریت ۴ پنل (سنایی، ربکا، اوشن، پنل ۴)</span>
               </div>
             )}
           </div>
@@ -2447,15 +2447,18 @@ function ProductsView() {
   const [categories, setCategories] = useState<any[]>([]);
   const [inbounds, setInbounds] = useState<any[]>([]);
   const [rebeccaInbounds, setRebeccaInbounds] = useState<any[]>([]);
+  const [panel4Inbounds, setPanel4Inbounds] = useState<any[]>([]);
   const [form, setForm] = useState({
     name: '',
     price: 0,
     volumeGb: 10,
     durationDays: 30,
-    panelType: 'sanaei' as 'sanaei' | 'rebecca' | 'mrocean' | 'sanaei_rebecca' | 'sanaei_mrocean' | 'rebecca_mrocean' | 'all' | 'both',
+    panelType: 'sanaei' as any,
     inboundId: '',
     inboundIds: [] as number[],
     rebeccaInboundTags: [] as string[],
+    panel4InboundId: '',
+    panel4InboundIds: [] as number[],
     limitIp: 1,
     categoryId: '',
     isPayAsYouGo: false
@@ -2465,7 +2468,7 @@ function ProductsView() {
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [bulkInboundIds, setBulkInboundIds] = useState<number[]>([]);
   const [bulkRebeccaTags, setBulkRebeccaTags] = useState<string[]>([]);
-  const [bulkPanelType, setBulkPanelType] = useState<'sanaei' | 'rebecca' | 'mrocean' | 'sanaei_rebecca' | 'sanaei_mrocean' | 'rebecca_mrocean' | 'all' | 'both' | ''>('');
+  const [bulkPanelType, setBulkPanelType] = useState<string>('');
 
   useEffect(() => {
     fetch('/api/state')
@@ -2491,6 +2494,16 @@ function ProductsView() {
       .then(data => {
         if (data && data.success) {
           setRebeccaInbounds(data.inbounds || []);
+        }
+      })
+      .catch(() => {});
+
+    // Fetch Panel 4 inbounds
+    fetch('/api/panel4-inbounds')
+      .then(r => r.json())
+      .then(data => {
+        if (data && data.success) {
+          setPanel4Inbounds(data.inbounds || []);
         }
       })
       .catch(() => {});
@@ -2548,6 +2561,8 @@ function ProductsView() {
       inboundId: form.inboundId ? parseInt(form.inboundId) : undefined,
       inboundIds: form.inboundIds,
       rebeccaInboundTags: form.rebeccaInboundTags,
+      panel4InboundId: form.panel4InboundId ? parseInt(form.panel4InboundId) : undefined,
+      panel4InboundIds: form.panel4InboundIds,
       panelType: form.panelType,
       categoryId: form.categoryId || undefined
     };
@@ -2574,6 +2589,8 @@ function ProductsView() {
       inboundId: p.inboundId ? String(p.inboundId) : '',
       inboundIds: p.inboundIds || (p.inboundId ? [Number(p.inboundId)] : []),
       rebeccaInboundTags: p.rebeccaInboundTags || [],
+      panel4InboundId: p.panel4InboundId ? String(p.panel4InboundId) : '',
+      panel4InboundIds: p.panel4InboundIds || (p.panel4InboundId ? [Number(p.panel4InboundId)] : []),
       limitIp: p.limitIp !== undefined ? p.limitIp : 1,
       categoryId: p.categoryId || '',
       isPayAsYouGo: p.isPayAsYouGo || false
@@ -2591,6 +2608,8 @@ function ProductsView() {
       inboundId: '',
       inboundIds: [],
       rebeccaInboundTags: [],
+      panel4InboundId: '',
+      panel4InboundIds: [],
       limitIp: 1,
       categoryId: '',
       isPayAsYouGo: false
@@ -2703,6 +2722,20 @@ function ProductsView() {
                   </div>
                 </label>
 
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'panel4' ? 'bg-amber-50 border-amber-500 text-amber-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'panel4'} 
+                    onChange={() => setForm({ ...form, panelType: 'panel4' })} 
+                    className="text-amber-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">🔸 فقط پنل ۴ (Panel 4)</div>
+                    <div className="text-[11px] text-slate-500">ساخت اتوماتیک روی سرور پنل ۴</div>
+                  </div>
+                </label>
+
                 <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei_rebecca' || form.panelType === 'both' ? 'bg-indigo-50 border-indigo-500 text-indigo-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
                   <input 
                     type="radio" 
@@ -2714,6 +2747,20 @@ function ProductsView() {
                   <div className="text-xs">
                     <div className="font-bold flex items-center gap-1">⚡️ سنایی + ربکا (Dual)</div>
                     <div className="text-[11px] text-slate-500">تولید همزمان سنایی و ربکا</div>
+                  </div>
+                </label>
+
+                <label className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition ${form.panelType === 'sanaei_panel4' ? 'bg-amber-50 border-amber-500 text-amber-900 font-bold' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                  <input 
+                    type="radio" 
+                    name="panelType" 
+                    checked={form.panelType === 'sanaei_panel4'} 
+                    onChange={() => setForm({ ...form, panelType: 'sanaei_panel4' })} 
+                    className="text-amber-600"
+                  />
+                  <div className="text-xs">
+                    <div className="font-bold flex items-center gap-1">⚡️ سنایی + پنل ۴</div>
+                    <div className="text-[11px] text-slate-500">تولید همزمان سنایی و پنل ۴</div>
                   </div>
                 </label>
 
@@ -2754,8 +2801,8 @@ function ProductsView() {
                     className="text-emerald-600"
                   />
                   <div className="text-xs">
-                    <div className="font-bold flex items-center gap-1">🚀 همه ۳ پنل همزمان (All Panels)</div>
-                    <div className="text-[11px] text-slate-500">سنایی + ربکا + مستر اوشن به صورت تجمیعی</div>
+                    <div className="font-bold flex items-center gap-1">🚀 هر ۴ پنل همزمان (All 4 Panels)</div>
+                    <div className="text-[11px] text-slate-500">سنایی + ربکا + مستر اوشن + پنل ۴ به صورت تجمیعی</div>
                   </div>
                 </label>
               </div>
@@ -2802,7 +2849,7 @@ function ProductsView() {
            </div>
 
            {/* Sanaei Inbounds Section */}
-           {['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'all'].includes(form.panelType) && (
+           {['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'sanaei_panel4', 'all'].includes(form.panelType) && (
              <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-200">
                <label className="block text-xs font-bold text-blue-900 mb-1.5">🔵 اینباندهای پنل سنایی (X-UI) برای این پکیج:</label>
                {inbounds.length > 0 ? (
@@ -2862,7 +2909,7 @@ function ProductsView() {
            )}
 
            {/* Rebecca Inbounds Section */}
-           {['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'all'].includes(form.panelType) && (
+           {['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'rebecca_panel4', 'all'].includes(form.panelType) && (
              <div className="p-3 bg-purple-50/50 rounded-lg border border-purple-200">
                <label className="block text-xs font-bold text-purple-900 mb-1.5">🟣 اینباندهای پنل ربکا (Rebecca Inbounds):</label>
                {rebeccaInbounds.length > 0 ? (
@@ -2895,6 +2942,63 @@ function ProductsView() {
                  <div className="text-xs text-purple-700">
                    💡 تمام پروتکل‌ها و اینباندهای پیش‌فرض ربکا (VLESS, VMess, Trojan) به طور خودکار به این پکیج اختصاص داده خواهند شد.
                  </div>
+               )}
+             </div>
+           )}
+
+           {/* Panel 4 Inbounds Section */}
+           {['panel4', 'sanaei_panel4', 'rebecca_panel4', 'mrocean_panel4', 'all'].includes(form.panelType) && (
+             <div className="p-3 bg-amber-50/50 rounded-lg border border-amber-200">
+               <label className="block text-xs font-bold text-amber-900 mb-1.5">🔸 اینباندهای پنل ۴ (Panel 4 Inbounds):</label>
+               {panel4Inbounds.length > 0 ? (
+                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-white rounded-lg border max-h-40 overflow-y-auto">
+                   {panel4Inbounds.map((ib: any) => {
+                     const isChecked = form.panel4InboundIds.includes(ib.id) || form.panel4InboundId === String(ib.id);
+                     return (
+                       <label key={ib.id} className="flex items-center gap-2 text-xs text-slate-700 hover:text-amber-600 cursor-pointer select-none">
+                         <input 
+                           type="checkbox" 
+                           checked={isChecked}
+                           onChange={e => {
+                             let updatedIds = [...form.panel4InboundIds];
+                             if (form.panel4InboundId && !updatedIds.includes(Number(form.panel4InboundId))) {
+                               updatedIds.push(Number(form.panel4InboundId));
+                             }
+                             if (e.target.checked) {
+                               if (!updatedIds.includes(ib.id)) updatedIds.push(ib.id);
+                             } else {
+                               updatedIds = updatedIds.filter(id => id !== ib.id);
+                             }
+                             setForm({
+                               ...form,
+                               panel4InboundIds: updatedIds,
+                               panel4InboundId: updatedIds[0] ? String(updatedIds[0]) : ''
+                             });
+                           }}
+                           className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                         />
+                         <span className="font-medium text-slate-800">{ib.remark || ib.tag || `Inbound #${ib.id}`}</span>
+                         <span className="text-[10px] text-amber-700 font-mono bg-amber-100 px-1 py-0.5 rounded">ID: {ib.id}</span>
+                       </label>
+                     );
+                   })}
+                 </div>
+               ) : (
+                 <input 
+                   type="text" 
+                   value={form.panel4InboundId} 
+                   onChange={e => {
+                     const val = e.target.value;
+                     const numeric = parseInt(val);
+                     setForm({
+                       ...form, 
+                       panel4InboundId: val, 
+                       panel4InboundIds: isNaN(numeric) ? [] : [numeric]
+                     });
+                   }}
+                   className="w-full px-3 py-2 border rounded-md text-xs font-mono bg-white" 
+                   placeholder="آیدی عددی اینباند پنل ۴ (مثلاً 1, 2)"
+                 />
                )}
              </div>
            )}
@@ -3120,9 +3224,14 @@ function ProductsView() {
                        🟣 پنل ربکا
                      </span>
                    )}
-                   {['mrocean', 'sanaei_mrocean', 'rebecca_mrocean', 'all'].includes(panelType) && (
+                   {['mrocean', 'sanaei_mrocean', 'rebecca_mrocean', 'mrocean_panel4', 'all'].includes(panelType) && (
                      <span className="text-[11px] bg-cyan-100 text-cyan-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
                        🌊 پنل مستر اوشن
+                     </span>
+                   )}
+                   {['panel4', 'sanaei_panel4', 'rebecca_panel4', 'mrocean_panel4', 'all'].includes(panelType) && (
+                     <span className="text-[11px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                       🔸 پنل ۴
                      </span>
                    )}
                    {panelType === 'sanaei' && (
@@ -3144,13 +3253,23 @@ function ProductsView() {
                    <div className="flex justify-between border-b pb-1"><span>میزان حجم:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود (PAYG)' : p.volumeGb === 0 ? 'نامحدود' : `${p.volumeGb} GB`}</span></div>
                    <div className="flex justify-between border-b pb-1"><span>مدت زمان:</span><span className="font-bold text-slate-800">{p.isPayAsYouGo ? 'نامحدود' : p.durationDays === 0 ? 'نامحدود' : `${p.durationDays} روز`}</span></div>
                    <div className="flex justify-between border-b pb-1"><span>محدودیت IP:</span><span className="font-bold text-slate-800">{p.limitIp || 0}</span></div>
-                   {['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'all'].includes(panelType) && (
+                   {['sanaei', 'both', 'sanaei_rebecca', 'sanaei_mrocean', 'sanaei_panel4', 'all'].includes(panelType) && (
                      <div className="flex justify-between pb-1 border-b">
                        <span>اینباندهای سنایی:</span>
                        <span className="font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
                          {p.inboundIds && p.inboundIds.length > 0 
                            ? p.inboundIds.map((id: number) => `ID ${id}`).join(', ') 
                            : (p.inboundId ? `ID ${p.inboundId}` : 'پیشفرض')}
+                       </span>
+                     </div>
+                   )}
+                   {['panel4', 'sanaei_panel4', 'rebecca_panel4', 'mrocean_panel4', 'all'].includes(panelType) && (
+                     <div className="flex justify-between pb-1 border-b">
+                       <span>اینباندهای پنل ۴:</span>
+                       <span className="font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded text-[11px]">
+                         {p.panel4InboundIds && p.panel4InboundIds.length > 0 
+                           ? p.panel4InboundIds.map((id: number) => `ID ${id}`).join(', ') 
+                           : (p.panel4InboundId ? `ID ${p.panel4InboundId}` : 'پیشفرض')}
                        </span>
                      </div>
                    )}
@@ -3162,7 +3281,7 @@ function ProductsView() {
                        </span>
                      </div>
                    )}
-                   {['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'all'].includes(panelType) && (
+                   {['rebecca', 'both', 'sanaei_rebecca', 'rebecca_mrocean', 'rebecca_panel4', 'all'].includes(panelType) && (
                      <div className="flex justify-between pb-1">
                        <span>اینباندهای ربکا:</span>
                        <span className="font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded text-[11px]">

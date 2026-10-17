@@ -99,8 +99,10 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
     defaultDays: 30,
     defaultPanel: 'mrocean',
     availablePanels: [
-      { id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊 - پیشنهادی' },
-      { id: 'sanaei', name: 'سنایی (X-UI) 🔵' }
+      { id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊' },
+      { id: 'sanaei', name: 'سنایی (X-UI) 🔵' },
+      { id: 'rebecca', name: 'ربکا (Rebecca) 🟣' },
+      { id: 'panel4', name: 'پنل ۴ (Panel 4) 🔸' }
     ]
   });
 
