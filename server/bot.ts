@@ -3330,9 +3330,11 @@ export async function initBot() {
     if (userSg && userSg.action === 'awaiting_custom_config_name' && text && !text.startsWith('/')) {
       const { productId, couponCode } = userSg;
       
-      const customName = text.trim().toLowerCase();
-      if (!/^[a-zA-Z0-9_-]+$/.test(customName)) {
-        bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً فقط از حروف انگلیسی، اعداد، خط تیره (-) و زیرخط (_) استفاده کنید و فاصله نگذارید (یا برای انصراف دکمه زیر را بزنید):', {
+      const rawText = text.trim();
+      const customName = rawText.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
+      if (customName.length < 2) {
+        bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً یک نام انگلیسی یا عدد با حداقل ۲ کاراکتر وارد بفرمایید (یا برای انصراف دکمه زیر را بزنید):', {
           reply_markup: {
             inline_keyboard: [
               [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
@@ -3352,7 +3354,7 @@ export async function initBot() {
       }
       
       if (isDuplicate) {
-        bot!.sendMessage(chatId, '❌ هشدار: این نام تکراری است و قبلاً ثبت شده است! لطفاً یک نام دیگر انتخاب کنید:', {
+        bot!.sendMessage(chatId, '❌ هشدار: نام «' + customName + '» تکراری است و قبلاً ثبت شده است! لطفاً یک نام دیگر انتخاب کنید:', {
           reply_markup: {
             inline_keyboard: [
               [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]

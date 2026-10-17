@@ -360,11 +360,16 @@ export class Panel4Client {
       const subPayload: any = {
         username: cleanEmail,
         services: [Number(ibId) || ibId],
-        limit_usage: totalBytes > 0 ? totalBytes : undefined,
-        limit_expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
-        usage_limit: totalBytes > 0 ? totalBytes : undefined,
+        service_ids: [Number(ibId) || ibId],
         data_limit: totalBytes > 0 ? totalBytes : undefined,
+        usage_limit: totalBytes > 0 ? totalBytes : undefined,
+        limit_usage: totalBytes > 0 ? totalBytes : undefined,
+        data_limit_gb: volumeGb > 0 ? volumeGb : undefined,
         expire_days: durationDays > 0 ? durationDays : undefined,
+        expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
+        limit_expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
+        expire_date: durationDays > 0 ? new Date(Date.now() + durationDays * 86400000).toISOString() : undefined,
+        status: 'active',
         note: sellerGroupName || ''
       };
 
@@ -376,17 +381,27 @@ export class Panel4Client {
         ];
 
         for (const ep of subEndpoints) {
-          const res = await this.client.post(ep, subPayload, {
+          // Single object
+          let res = await this.client.post(ep, subPayload, {
             headers: auth.headers,
             timeout: 10000,
             validateStatus: () => true
           });
 
+          // Array object fallback
+          if (res.status >= 400) {
+            res = await this.client.post(ep, [subPayload], {
+              headers: auth.headers,
+              timeout: 10000,
+              validateStatus: () => true
+            });
+          }
+
           if (res.status >= 200 && res.status < 300 && res.data) {
             addedToAny = true;
             const dataObj = Array.isArray(res.data) ? res.data[0] : res.data;
             if (dataObj) {
-              createdSubUrl = dataObj.subscription_link || dataObj.subscription_url || dataObj.url || dataObj.link || '';
+              createdSubUrl = dataObj.subscription_link || dataObj.subscription_url || dataObj.url || dataObj.link || dataObj.access_key || '';
             }
             break;
           }
@@ -396,25 +411,60 @@ export class Panel4Client {
       if (addedToAny) break;
     }
 
+    // Apply actions (usage & expire days) on Panel 4 / GoGuard
+    if (addedToAny) {
+      if (volumeGb > 0) {
+        try {
+          await this.client.post(`${auth.baseURL}/api/actions/usage/${volumeGb}?usernames=${cleanEmail}`, {
+            usernames: [cleanEmail]
+          }, { headers: auth.headers, timeout: 6000, validateStatus: () => true });
+        } catch (e) {}
+      }
+
+      if (durationDays > 0) {
+        try {
+          await this.client.post(`${auth.baseURL}/api/actions/expire/${durationDays}?usernames=${cleanEmail}`, {
+            usernames: [cleanEmail]
+          }, { headers: auth.headers, timeout: 6000, validateStatus: () => true });
+        } catch (e) {}
+      }
+    }
+
     // 2. Try fetching subscription link directly if created
     if (addedToAny && !createdSubUrl) {
-      try {
-        const linkRes = await this.client.get(`${auth.baseURL}/api/subscriptions/${cleanEmail}/links`, {
-          headers: auth.headers,
-          timeout: 6000,
-          validateStatus: () => true
-        });
+      const linkEndpoints = [
+        `${auth.baseURL}/api/subscriptions/${cleanEmail}/links`,
+        `${auth.baseURL}/api/subscriptions/${cleanEmail}`,
+        `${auth.baseURL}/api/admins/current/links`
+      ];
 
-        if (linkRes.status === 200 && linkRes.data) {
-          if (typeof linkRes.data === 'string') {
-            createdSubUrl = linkRes.data;
-          } else if (Array.isArray(linkRes.data) && linkRes.data.length > 0) {
-            createdSubUrl = typeof linkRes.data[0] === 'string' ? linkRes.data[0] : (linkRes.data[0].url || linkRes.data[0].link || '');
-          } else if (linkRes.data.links && Array.isArray(linkRes.data.links) && linkRes.data.links.length > 0) {
-            createdSubUrl = typeof linkRes.data.links[0] === 'string' ? linkRes.data.links[0] : (linkRes.data.links[0].url || linkRes.data.links[0].link || '');
+      for (const lep of linkEndpoints) {
+        try {
+          const linkRes = await this.client.get(lep, {
+            headers: auth.headers,
+            timeout: 6000,
+            validateStatus: () => true
+          });
+
+          if (linkRes.status === 200 && linkRes.data) {
+            if (typeof linkRes.data === 'string' && linkRes.data.includes('http')) {
+              createdSubUrl = linkRes.data;
+              break;
+            } else if (Array.isArray(linkRes.data) && linkRes.data.length > 0) {
+              const firstItem = linkRes.data[0];
+              createdSubUrl = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || '');
+              if (createdSubUrl) break;
+            } else if (linkRes.data.links && Array.isArray(linkRes.data.links) && linkRes.data.links.length > 0) {
+              const firstItem = linkRes.data.links[0];
+              createdSubUrl = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || '');
+              if (createdSubUrl) break;
+            } else if (linkRes.data.url || linkRes.data.link || linkRes.data.subscription_url) {
+              createdSubUrl = linkRes.data.url || linkRes.data.link || linkRes.data.subscription_url;
+              if (createdSubUrl) break;
+            }
           }
-        }
-      } catch (e) {}
+        } catch (e) {}
+      }
     }
 
     // 3. Fallback to 3x-ui / X-UI style addClient if native subscriptions failed
