@@ -187,15 +187,18 @@ export class Panel4Client {
         } 
       };
     }
+
+    throw new Error('مشخصات احراز هویت پنل ۴ تعریف نشده است.');
   }
 
-  public async testConnection(panelOverride?: any): Promise<{ success: boolean; message: string; inboundsCount?: number }> {
+  public async testConnection(panelOverride?: any): Promise<{ success: boolean; message: string; inboundsCount?: number; inbounds?: any[] }> {
     try {
       const inbounds = await this.getInbounds(panelOverride);
       return {
         success: true,
-        message: `اتصال به پنل ۴ با موفقیت برقرار شد. (${inbounds.length} اینباند فعال)`,
-        inboundsCount: inbounds.length
+        message: `اتصال به پنل ۴ با موفقیت برقرار شد. (${inbounds.length} سرویس/اینباند فعال)`,
+        inboundsCount: inbounds.length,
+        inbounds
       };
     } catch (err: any) {
       return {
@@ -216,12 +219,12 @@ export class Panel4Client {
       const inboundsList: any[] = [];
 
       // 1. Check Panel 4 native Services API (/api/services or /api/admins/current)
-      const servicePaths = ['/api/services', '/api/v2/services', '/api/v1/services', '/api/admins/current', '/api/admins/current/links'];
+      const servicePaths = ['/api/services', '/api/admins/current'];
       for (const sp of servicePaths) {
         try {
           const res = await this.client.get(`${auth.baseURL}${sp}`, {
             headers: auth.headers,
-            timeout: 8000,
+            timeout: 5000,
             validateStatus: () => true
           });
 
@@ -245,37 +248,34 @@ export class Panel4Client {
                   });
                 }
               }
+              if (inboundsList.length > 0) {
+                return inboundsList;
+              }
             }
           }
         } catch (e) {}
       }
 
-      // 2. Check X-UI / 3x-ui style inbounds prefixes
+      // 2. Check X-UI / 3x-ui style inbounds prefixes if native services API returned nothing
       const prefixes = this.workingApiPrefix 
         ? [this.workingApiPrefix] 
         : [
             '/panel/api/inbounds',
-            '/xui/api/inbounds',
             '/api/inbounds',
-            '/inbounds',
-            '/api/v1/inbounds',
-            '/api/v2/inbounds',
-            '/api/inbound',
-            '/panel/inbounds'
+            '/inbounds'
           ];
 
       for (const prefix of prefixes) {
         try {
           let res = await this.client.get(`${auth.baseURL}${prefix}/list`, {
             headers: auth.headers,
-            timeout: 8000,
+            timeout: 5000,
             validateStatus: () => true
           });
-
           if (res.status !== 200 || !res.data) {
             res = await this.client.get(`${auth.baseURL}${prefix}`, {
               headers: auth.headers,
-              timeout: 8000,
+              timeout: 5000,
               validateStatus: () => true
             });
           }
@@ -299,6 +299,7 @@ export class Panel4Client {
                   });
                 }
               }
+              if (inboundsList.length > 0) return inboundsList;
             }
           }
         } catch (err: any) {
@@ -313,109 +314,176 @@ export class Panel4Client {
     }
   }
 
+  /**
+   * Fundamental client creation method supporting both positional and object options.
+   * Fully validated against Panel 4 API specification and seller permission limits.
+   */
   public async addClient(
-    clientEmail: string,
-    volumeGb: number,
-    durationDays: number,
-    targetInboundIds?: (number | string)[],
-    limitIp: number = 0,
-    chatId?: string,
-    sellerGroupName?: string
+    emailOrOptions: string | {
+      clientEmail?: string;
+      email?: string;
+      volumeGb?: number;
+      totalGB?: number;
+      durationDays?: number;
+      expiryDays?: number;
+      targetInboundIds?: (number | string)[];
+      inboundIds?: (number | string)[];
+      inboundId?: number | string;
+      limitIp?: number;
+      chatId?: string;
+      sellerGroupName?: string;
+    },
+    posVolumeGb?: number,
+    posDurationDays?: number,
+    posTargetInboundIds?: (number | string)[],
+    posLimitIp: number = 0,
+    posChatId?: string,
+    posSellerGroupName?: string
   ): Promise<Panel4ClientDetails> {
     const state = db.getState();
     const panel = state.panel4 || {};
     const auth = await this.getAuthOptions();
 
+    // 1. Extract arguments cleanly from either object or positional format
+    let rawEmail = typeof emailOrOptions === 'object' ? (emailOrOptions.clientEmail || emailOrOptions.email || '') : emailOrOptions;
+    let volumeGb = typeof emailOrOptions === 'object' ? (emailOrOptions.volumeGb ?? emailOrOptions.totalGB ?? 0) : (posVolumeGb ?? 0);
+    let durationDays = typeof emailOrOptions === 'object' ? (emailOrOptions.durationDays ?? emailOrOptions.expiryDays ?? 0) : (posDurationDays ?? 0);
+    let targetInboundIds = typeof emailOrOptions === 'object' 
+      ? (emailOrOptions.targetInboundIds || emailOrOptions.inboundIds || (emailOrOptions.inboundId ? [emailOrOptions.inboundId] : [])) 
+      : posTargetInboundIds;
+    let limitIp = typeof emailOrOptions === 'object' ? (emailOrOptions.limitIp ?? 0) : (posLimitIp ?? 0);
+    let chatId = typeof emailOrOptions === 'object' ? emailOrOptions.chatId : posChatId;
+    let sellerGroupName = typeof emailOrOptions === 'object' ? emailOrOptions.sellerGroupName : posSellerGroupName;
+
+    // 2. Fetch available services/inbounds on Panel 4
     const inbounds = await this.getInbounds();
     if (!inbounds || inbounds.length === 0) {
-      throw new Error('هیچ اینباند یا سرویسی روی پنل ۴ یافت نشد. ابتدا یک اینباند یا سرویس ایجاد کنید.');
+      throw new Error('هیچ اینباند یا سرویسی روی پنل ۴ یافت نشد. لطفاً در تنظیمات پنل ۴ اتصال و سرویس‌ها را بررسی فرمایید.');
     }
 
-    let inboundIds = targetInboundIds && targetInboundIds.length > 0 
-      ? targetInboundIds 
-      : (panel.inboundIds && panel.inboundIds.length > 0 ? panel.inboundIds : (panel.inboundId ? [panel.inboundId] : []));
-
-    if (inboundIds.length === 0) {
-      inboundIds = [inbounds[0].id];
+    // Match requested inbounds against available services on Panel 4
+    const availableServiceIds = inbounds.map((ib: any) => Number(ib.id) || ib.id);
+    let matchedServices: number[] = [];
+    if (targetInboundIds && targetInboundIds.length > 0) {
+      matchedServices = targetInboundIds
+        .map(Number)
+        .filter(id => !isNaN(id) && availableServiceIds.some((aid: any) => Number(aid) === id));
+    }
+    if (matchedServices.length === 0 && panel.inboundIds && panel.inboundIds.length > 0) {
+      matchedServices = panel.inboundIds
+        .map(Number)
+        .filter((id: number) => !isNaN(id) && availableServiceIds.some((aid: any) => Number(aid) === id));
+    }
+    if (matchedServices.length === 0) {
+      matchedServices = [Number(inbounds[0].id) || 4];
     }
 
     const uuid = uuidv4();
     const subId = Math.random().toString(36).substring(2, 18);
-    const totalBytes = volumeGb > 0 ? Math.round(volumeGb * 1024 * 1024 * 1024) : 0;
-    const expiryTime = durationDays > 0 ? Date.now() + Math.round(durationDays * 86400000) : 0;
-    const expireSeconds = durationDays > 0 ? Math.floor(expiryTime / 1000) : 0;
 
-    let cleanEmail = clientEmail.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    if (cleanEmail.length < 2) cleanEmail = `user_${cleanEmail}_${Date.now().toString().slice(-4)}`;
+    // 3. Ensure volume and duration adhere to Panel 4 permissions (seller cannot create unlimited usage/expiry)
+    // If volumeGb <= 0, default to 10 GB
+    if (!volumeGb || volumeGb <= 0) {
+      volumeGb = 10;
+    }
+    // If durationDays <= 0, default to 30 days
+    if (!durationDays || durationDays <= 0) {
+      durationDays = 30;
+    }
+
+    const totalBytes = Math.round(volumeGb * 1024 * 1024 * 1024);
+    // In GoGuard / Panel 4: Negative duration = relative "After first use: X days" (on-hold until connect)
+    const limitExpireOnHold = -Math.round(durationDays * 86400);
+    const expiryTime = Date.now() + Math.round(durationDays * 86400000);
+
+    // 4. Sanitize username: Panel 4 strictly requires lowercase letters, numbers, and underscore (3-30 chars)
+    let cleanEmail = String(rawEmail || '')
+      .trim()
+      .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
+      .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632))
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    if (cleanEmail.length < 3) {
+      const suffix = Math.floor(100 + Math.random() * 899);
+      cleanEmail = cleanEmail ? `${cleanEmail}_${suffix}` : `u_${Date.now().toString().slice(-6)}`;
+    }
+    if (cleanEmail.length > 30) {
+      cleanEmail = cleanEmail.slice(0, 30).replace(/_+$/g, '');
+    }
 
     let createdSubUrl = '';
     let addedToAny = false;
+    let lastErrorMsg = '';
 
-    // 1. Try Panel 4 Native Subscriptions API (POST /api/subscriptions)
-    for (const ibId of inboundIds) {
-      const targetIb = inbounds.find((ib: any) => String(ib.id) === String(ibId));
-      if (!targetIb) continue;
+    // 5. Native Panel 4 Subscriptions API (POST /api/subscriptions)
+    const note = sellerGroupName ? String(sellerGroupName).slice(0, 60) : '';
 
-      const limitExpireSeconds = durationDays > 0 ? Math.floor((Date.now() + durationDays * 86400000) / 1000) : 0;
-      const subPayload: any = {
-        username: cleanEmail,
-        services: [Number(ibId) || ibId],
-        service_ids: [Number(ibId) || ibId],
-        data_limit: totalBytes > 0 ? totalBytes : undefined,
-        usage_limit: totalBytes > 0 ? totalBytes : undefined,
-        limit_usage: totalBytes > 0 ? totalBytes : undefined,
-        data_limit_gb: volumeGb > 0 ? volumeGb : undefined,
-        expire_days: durationDays > 0 ? durationDays : undefined,
-        expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
-        limit_expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
-        expire_date: durationDays > 0 ? new Date(Date.now() + durationDays * 86400000).toISOString() : undefined,
-        status: 'active',
-        note: sellerGroupName || ''
+    const attemptCreate = async (uname: string) => {
+      const subPayload = {
+        username: uname,
+        services: matchedServices,
+        limit_usage: totalBytes,
+        limit_expire: limitExpireOnHold,
+        note: note || undefined
       };
 
-      try {
-        const subEndpoints = [
-          `${auth.baseURL}/api/subscriptions`,
-          `${auth.baseURL}/api/v2/users`,
-          `${auth.baseURL}/api/user`
-        ];
+      const res = await this.client.post(`${auth.baseURL}/api/subscriptions`, subPayload, {
+        headers: auth.headers,
+        timeout: 10000,
+        validateStatus: () => true
+      });
 
-        for (const ep of subEndpoints) {
-          // Single object
-          let res = await this.client.post(ep, subPayload, {
-            headers: auth.headers,
-            timeout: 10000,
-            validateStatus: () => true
-          });
+      return { res, payload: subPayload };
+    };
 
-          // Array object fallback
-          if (res.status >= 400) {
-            res = await this.client.post(ep, [subPayload], {
-              headers: auth.headers,
-              timeout: 10000,
-              validateStatus: () => true
-            });
-          }
+    try {
+      let { res, payload } = await attemptCreate(cleanEmail);
 
-          if (res.status >= 200 && res.status < 300 && res.data) {
-            addedToAny = true;
-            const dataObj = Array.isArray(res.data) ? res.data[0] : res.data;
-            if (dataObj) {
-              createdSubUrl = dataObj.subscription_link || dataObj.subscription_url || dataObj.url || dataObj.link || dataObj.access_key || '';
-            }
-            break;
+      // If username already exists (409 Conflict), generate a unique suffix and retry automatically
+      if (res.status === 409 || (res.data && JSON.stringify(res.data).includes('already exists'))) {
+        const uniqueSuffix = `_${Math.floor(100 + Math.random() * 899)}`;
+        cleanEmail = `${cleanEmail.slice(0, 30 - uniqueSuffix.length)}${uniqueSuffix}`;
+        const secondAttempt = await attemptCreate(cleanEmail);
+        res = secondAttempt.res;
+      }
+
+      // If single object rejected with array requirement, retry with array
+      if (res.status >= 400 && res.status !== 409) {
+        const arrayRes = await this.client.post(`${auth.baseURL}/api/subscriptions`, [payload], {
+          headers: auth.headers,
+          timeout: 10000,
+          validateStatus: () => true
+        });
+        if (arrayRes.status >= 200 && arrayRes.status < 300) {
+          res = arrayRes;
+        }
+      }
+
+      if (res.status >= 200 && res.status < 300 && res.data) {
+        addedToAny = true;
+        const dataObj = Array.isArray(res.data) ? res.data[0] : res.data;
+        if (dataObj && typeof dataObj === 'object') {
+          const link = dataObj.subscription_link || dataObj.subscription_url || dataObj.url || dataObj.link || '';
+          if (typeof link === 'string' && link.startsWith('http')) {
+            createdSubUrl = link.trim();
           }
         }
-      } catch (e) {}
-
-      if (addedToAny) break;
+      } else {
+        const errorData = res.data;
+        const msg = errorData?.message || errorData?.errors?.[0]?.message || (Array.isArray(errorData?.errors) ? errorData.errors[0] : null) || JSON.stringify(errorData);
+        lastErrorMsg = msg ? String(msg) : `کد وضعیت HTTP ${res.status}`;
+      }
+    } catch (e: any) {
+      lastErrorMsg = e.message;
     }
 
-    // 2. Try fetching subscription link directly if created
+    // 6. Try fetching subscription link directly if created but link was missing in response
     if (addedToAny && !createdSubUrl) {
       const linkEndpoints = [
         `${auth.baseURL}/api/subscriptions/${cleanEmail}/links`,
-        `${auth.baseURL}/api/subscriptions/${cleanEmail}`,
         `${auth.baseURL}/api/admins/current/links`
       ];
 
@@ -428,37 +496,39 @@ export class Panel4Client {
           });
 
           if (linkRes.status === 200 && linkRes.data) {
-            if (typeof linkRes.data === 'string' && linkRes.data.includes('http')) {
-              createdSubUrl = linkRes.data;
+            if (typeof linkRes.data === 'string' && linkRes.data.startsWith('http')) {
+              createdSubUrl = linkRes.data.trim();
               break;
             } else if (Array.isArray(linkRes.data) && linkRes.data.length > 0) {
               const firstItem = linkRes.data[0];
-              createdSubUrl = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || '');
-              if (createdSubUrl) break;
+              const candidate = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || firstItem.subscription_link || '');
+              if (typeof candidate === 'string' && candidate.startsWith('http')) {
+                createdSubUrl = candidate.trim();
+                break;
+              }
             } else if (linkRes.data.links && Array.isArray(linkRes.data.links) && linkRes.data.links.length > 0) {
               const firstItem = linkRes.data.links[0];
-              createdSubUrl = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || '');
-              if (createdSubUrl) break;
-            } else if (linkRes.data.url || linkRes.data.link || linkRes.data.subscription_url) {
-              createdSubUrl = linkRes.data.url || linkRes.data.link || linkRes.data.subscription_url;
-              if (createdSubUrl) break;
+              const candidate = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || firstItem.subscription_link || '');
+              if (typeof candidate === 'string' && candidate.startsWith('http')) {
+                createdSubUrl = candidate.trim();
+                break;
+              }
             }
           }
         } catch (e) {}
       }
     }
 
-    // 3. Fallback to 3x-ui / X-UI style addClient if native subscriptions failed
+    // 7. Fallback to 3x-ui / X-UI style addClient if native subscriptions endpoint was not supported
     if (!addedToAny) {
       const prefix = this.workingApiPrefix || '/panel/api/inbounds';
-
-      for (const ibId of inboundIds) {
+      for (const ibId of matchedServices) {
         const targetIb = inbounds.find((ib: any) => String(ib.id) === String(ibId));
         if (!targetIb) continue;
 
         const clientPayload = {
           id: uuid,
-          email: clientEmail,
+          email: cleanEmail,
           limitIp: limitIp || 0,
           totalGB: totalBytes,
           expiryTime: expiryTime,
@@ -474,11 +544,14 @@ export class Panel4Client {
             id: targetIb.id,
             settings: JSON.stringify({ clients: [clientPayload] })
           }, {
-            headers: auth.headers
+            headers: auth.headers,
+            timeout: 8000,
+            validateStatus: () => true
           });
 
           if (res.data?.success) {
             addedToAny = true;
+            break;
           }
         } catch (err: any) {
           console.error(`[Panel 4] Error adding client to inbound ${ibId}:`, err.message);
@@ -487,7 +560,7 @@ export class Panel4Client {
     }
 
     if (!addedToAny) {
-      throw new Error('ایجاد کلاینت روی اینباندهای مشخص شده پنل ۴ با خطا مواجه شد.');
+      throw new Error(`خطا در ایجاد سرویس در پنل ۴: ${lastErrorMsg || 'عدم پاسخ معتبر از سرور'}`);
     }
 
     let subUrl = createdSubUrl;
@@ -495,9 +568,9 @@ export class Panel4Client {
       if (panel.subUrlBase && panel.subUrlBase.trim() !== '') {
         let base = panel.subUrlBase.trim();
         if (!base.endsWith('/')) base += '/';
-        subUrl = `${base}${subId}`;
+        subUrl = `${base}${cleanEmail}`;
       } else {
-        subUrl = `${auth.baseURL}/sub/${subId}`;
+        subUrl = `${auth.baseURL}/sub/${cleanEmail}`;
       }
     }
 
@@ -505,9 +578,9 @@ export class Panel4Client {
       id: cleanEmail,
       email: cleanEmail,
       uuid,
-      subId,
+      subId: cleanEmail,
       subUrl,
-      inboundIds,
+      inboundIds: matchedServices,
       totalBytes,
       expiryTime,
       limitIp,
@@ -517,8 +590,10 @@ export class Panel4Client {
 
   public async renewClient(email: string, volumeGb: number, durationDays: number): Promise<void> {
     const auth = await this.getAuthOptions();
-    const totalBytes = volumeGb > 0 ? Math.round(volumeGb * 1024 * 1024 * 1024) : 0;
-    const limitExpireSeconds = durationDays > 0 ? Math.floor((Date.now() + durationDays * 86400000) / 1000) : 0;
+    const safeVolume = volumeGb > 0 ? volumeGb : 10;
+    const safeDays = durationDays > 0 ? durationDays : 30;
+    const totalBytes = Math.round(safeVolume * 1024 * 1024 * 1024);
+    const limitExpireOnHold = -Math.round(safeDays * 86400);
 
     // Reset & update subscription in Panel 4 / GoGuard
     try {
@@ -528,22 +603,15 @@ export class Panel4Client {
 
       await this.client.put(`${auth.baseURL}/api/subscriptions`, {
         usernames: [email],
-        data_limit: totalBytes > 0 ? totalBytes : undefined,
-        usage_limit: totalBytes > 0 ? totalBytes : undefined,
-        limit_usage: totalBytes > 0 ? totalBytes : undefined,
-        data_limit_gb: volumeGb > 0 ? volumeGb : undefined,
-        expire_days: durationDays > 0 ? durationDays : undefined,
-        expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
-        limit_expire: limitExpireSeconds > 0 ? limitExpireSeconds : undefined,
-        status: 'active'
+        limit_usage: totalBytes,
+        limit_expire: limitExpireOnHold,
+        enabled: true
       }, { headers: auth.headers, validateStatus: () => true });
     } catch (e) {}
 
-    // Also try 3x-ui style renewal
+    // Also try 3x-ui style renewal fallback
     const inbounds = await this.getInbounds().catch(() => []);
     const prefix = this.workingApiPrefix || '/panel/api/inbounds';
-
-    let found = false;
     for (const ib of inbounds) {
       if (!ib.settings) continue;
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
@@ -555,10 +623,8 @@ export class Panel4Client {
       );
 
       if (clientObj) {
-        found = true;
-        const addBytes = volumeGb > 0 ? Math.round(volumeGb * 1024 * 1024 * 1024) : 0;
-        const addMs = durationDays > 0 ? Math.round(durationDays * 86400000) : 0;
-
+        const addBytes = Math.round(safeVolume * 1024 * 1024 * 1024);
+        const addMs = Math.round(safeDays * 86400000);
         clientObj.up = 0;
         clientObj.down = 0;
         clientObj.totalGB = addBytes;
@@ -575,19 +641,23 @@ export class Panel4Client {
 
   public async updateClientEnable(email: string, enable: boolean): Promise<void> {
     const auth = await this.getAuthOptions();
-
+    
     // Try Panel 4 bulk enable/disable
     try {
       const actionEp = enable ? '/api/subscriptions/enable' : '/api/subscriptions/disable';
       await this.client.post(`${auth.baseURL}${actionEp}`, {
         usernames: [email]
       }, { headers: auth.headers, validateStatus: () => true });
+
+      await this.client.put(`${auth.baseURL}/api/subscriptions`, {
+        usernames: [email],
+        enabled: enable
+      }, { headers: auth.headers, validateStatus: () => true });
     } catch (e) {}
 
     // Fallback to 3x-ui
     const inbounds = await this.getInbounds().catch(() => []);
     const prefix = this.workingApiPrefix || '/panel/api/inbounds';
-
     for (const ib of inbounds) {
       if (!ib.settings) continue;
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
@@ -618,16 +688,11 @@ export class Panel4Client {
         headers: auth.headers,
         validateStatus: () => true
       });
-      await this.client.delete(`${auth.baseURL}/api/subscriptions/${email}`, {
-        headers: auth.headers,
-        validateStatus: () => true
-      });
     } catch (e) {}
 
     // Fallback to 3x-ui
     const inbounds = await this.getInbounds().catch(() => []);
     const prefix = this.workingApiPrefix || '/panel/api/inbounds';
-
     for (const ib of inbounds) {
       if (!ib.settings) continue;
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
@@ -656,45 +721,62 @@ export class Panel4Client {
       const auth = await this.getAuthOptions();
       const results: any[] = [];
 
-      // 1. Try Panel 4 native Subscriptions API (/api/subscriptions or /api/stats/subscriptions)
-      const subEndpoints = ['/api/subscriptions', '/api/stats/subscriptions', '/api/subscriptions/stats'];
-      for (const ep of subEndpoints) {
-        try {
-          const res = await this.client.get(`${auth.baseURL}${ep}`, {
-            headers: auth.headers,
-            timeout: 8000,
-            validateStatus: () => true
-          });
+      // 1. Try Panel 4 native Subscriptions API (/api/subscriptions)
+      try {
+        const res = await this.client.get(`${auth.baseURL}/api/subscriptions?page=1&size=500`, {
+          headers: auth.headers,
+          timeout: 8000,
+          validateStatus: () => true
+        });
 
-          if (res.status === 200 && res.data) {
-            const data = res.data;
-            const items = Array.isArray(data) 
-              ? data 
-              : (data.items || data.subscriptions || data.data || data.obj || data.result);
+        if (res.status === 200 && res.data && typeof res.data === 'object') {
+          const data = res.data;
+          const items = Array.isArray(data) 
+            ? data 
+            : (data.items || data.subscriptions || data.data || data.obj || data.result);
 
-            if (Array.isArray(items) && items.length > 0) {
-              for (const sub of items) {
-                const username = sub.username || sub.email || sub.id;
-                if (!username) continue;
+          if (Array.isArray(items) && items.length > 0) {
+            for (const sub of items) {
+              const username = sub.username || sub.email || sub.id;
+              if (!username) continue;
 
-                results.push({
-                  id: username,
-                  email: username,
-                  subId: sub.sub_id || sub.subId || username,
-                  up: sub.up || sub.upload || 0,
-                  down: sub.down || sub.download || 0,
-                  totalUsed: sub.used_traffic !== undefined ? sub.used_traffic : ((sub.up || 0) + (sub.down || 0)),
-                  total: sub.data_limit || sub.total || 0,
-                  expiryTime: sub.expire ? sub.expire * 1000 : (sub.expiryTime || 0),
-                  enable: sub.status === 'active' || sub.enable !== false,
-                  panel: 'panel4'
-                });
+              const usedBytes = sub.total_usage !== undefined ? Number(sub.total_usage) : (sub.used_traffic !== undefined ? Number(sub.used_traffic) : ((Number(sub.up) || 0) + (Number(sub.down) || 0)));
+              const limitBytes = sub.limit_usage !== undefined && sub.limit_usage !== null ? Number(sub.limit_usage) : (Number(sub.data_limit) || Number(sub.total) || 0);
+              const rawExp = sub.limit_expire !== undefined && sub.limit_expire !== null ? Number(sub.limit_expire) : 0;
+              
+              let expiryTime = 0;
+              if (rawExp > 0) {
+                expiryTime = rawExp < 10000000000 ? rawExp * 1000 : rawExp;
+              } else if (rawExp < 0) {
+                // On-hold relative days
+                if (sub.first_online_at) {
+                  expiryTime = new Date(sub.first_online_at).getTime() + Math.abs(rawExp) * 1000;
+                } else {
+                  expiryTime = Date.now() + Math.abs(rawExp) * 1000;
+                }
               }
-              if (results.length > 0) return results;
+
+              results.push({
+                id: String(username),
+                email: String(username),
+                username: String(username),
+                subId: sub.access_key || String(username),
+                subUrl: sub.subscription_link || sub.subscription_url || '',
+                up: Number(sub.up || 0),
+                down: Number(sub.down || usedBytes || 0),
+                totalUsed: usedBytes,
+                total: limitBytes,
+                expiryTime,
+                enable: sub.enabled !== undefined ? Boolean(sub.enabled) : true,
+                lastOnlineAt: sub.last_online_at || null,
+                firstOnlineAt: sub.first_online_at || null,
+                panel: 'panel4'
+              });
             }
+            if (results.length > 0) return results;
           }
-        } catch (e) {}
-      }
+        }
+      } catch (e) {}
 
       // 2. Fallback to 3x-ui inbounds clientStats
       const inbounds = await this.getInbounds().catch(() => []);
@@ -738,29 +820,28 @@ export class Panel4Client {
 
   public async getOnlineUsers(): Promise<{ onlineCount: number; totalUsers: number; users: Panel4OnlineUser[] }> {
     try {
-      const auth = await this.getAuthOptions();
-      const prefix = this.workingApiPrefix || '/panel/api/inbounds';
-
-      let onlineEmails: string[] = [];
-      try {
-        const res = await this.client.post(`${auth.baseURL}${prefix}/onlines`, {}, {
-          headers: auth.headers
-        });
-        if (res.data?.success && Array.isArray(res.data.obj)) {
-          onlineEmails = res.data.obj;
-        }
-      } catch (e) {}
-
       const allClients = await this.getAllClientsWithTraffic();
-      const onlineUsers: Panel4OnlineUser[] = onlineEmails.map(email => ({
-        email,
-        lastOnline: new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' })
-      }));
+      
+      // A client is online if lastOnlineAt was within the last 120 seconds (2 minutes, matching Panel 4 UI logic)
+      const now = Date.now();
+      const onlineList: Panel4OnlineUser[] = [];
+
+      for (const cl of allClients) {
+        if (cl.lastOnlineAt) {
+          const t = new Date(cl.lastOnlineAt).getTime();
+          if (!isNaN(t) && now - t < 120000) {
+            onlineList.push({
+              email: cl.email,
+              lastOnline: new Date(t).toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' })
+            });
+          }
+        }
+      }
 
       return {
-        onlineCount: onlineEmails.length,
+        onlineCount: onlineList.length,
         totalUsers: allClients.length,
-        users: onlineUsers
+        users: onlineList
       };
     } catch (err) {
       return {

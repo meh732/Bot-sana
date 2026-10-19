@@ -96,18 +96,42 @@ export class MultiPanelService {
 
     // Generate unique identifier / email
     let clientEmail = '';
-    if (customName && customName.trim() !== '') {
-      clientEmail = customName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    } else {
-      const cleanUsername = user.username ? user.username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '') : '';
+    if (customName && String(customName).trim() !== '') {
+      clientEmail = String(customName)
+        .trim()
+        .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
+        .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632))
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '');
+    }
+    if (!clientEmail) {
+      const cleanUsername = user.username ? String(user.username).trim().toLowerCase().replace(/[^a-z0-9_]/g, '') : '';
       const emailPrefix = cleanUsername || String(user.chatId);
       const uniqueSuffix = Date.now().toString().slice(-6);
       clientEmail = `${emailPrefix}_${uniqueSuffix}`;
     }
 
     const isPAYG = !!product.isPayAsYouGo;
-    const volGb = isPAYG ? 0 : (product.volumeGb !== undefined ? Number(product.volumeGb) : 0);
-    const durDays = isPAYG ? 0 : (product.durationDays !== undefined ? Number(product.durationDays) : 0);
+    let volGb = isPAYG ? 0 : (product.volumeGb !== undefined ? Number(product.volumeGb) : 0);
+    let durDays = isPAYG ? 0 : (product.durationDays !== undefined ? Number(product.durationDays) : 0);
+    if (!isPAYG && volGb <= 0 && product.name) {
+      const norm = String(product.name)
+        .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
+        .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632));
+      const mVol = norm.match(/(\d+(?:\.\d+)?)\s*(?:گیگ|گیگابایت|gb|gig)/i);
+      if (mVol) volGb = parseFloat(mVol[1]);
+    }
+    if (!isPAYG && durDays <= 0 && product.name) {
+      const norm = String(product.name)
+        .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
+        .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632));
+      const mMonth = norm.match(/(\d+)\s*ماهه?/i);
+      if (mMonth) durDays = parseInt(mMonth[1]) * 30;
+      const mDay = norm.match(/(\d+)\s*روزه?/i);
+      if (mDay) durDays = parseInt(mDay[1]);
+    }
 
     const selectedInboundIds = (product.inboundIds && product.inboundIds.length > 0)
       ? product.inboundIds
@@ -220,8 +244,8 @@ export class MultiPanelService {
       try {
         const p4Client = await panel4.addClient(
           clientEmail,
-          volGb,
-          durDays,
+          volGb > 0 ? volGb : 10,
+          durDays > 0 ? durDays : 30,
           selectedPanel4Inbounds,
           product.limitIp || 0,
           String(user.chatId),
@@ -229,6 +253,9 @@ export class MultiPanelService {
         );
         panel4SubUrl = p4Client.subUrl || '';
         panel4Details = p4Client;
+        if (!useSanaei && !useRebecca && !useMrOcean && p4Client.email) {
+          clientEmail = p4Client.email;
+        }
         console.log(`[MultiPanel] Created Panel 4 client: ${clientEmail}`);
       } catch (err: any) {
         panel4Err = err.message || 'خطا در اتصال به پنل ۴';

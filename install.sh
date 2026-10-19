@@ -281,14 +281,28 @@ do_update() {
 
   echo -e "\n${CYAN}>> Rebuilding project with Vite + esbuild...${NC}"
   npm run clean 2>/dev/null
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm run build
+  nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npm run build
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
-  if command -v pm2 &> /dev/null && pm2 describe "sanaei-bot" &> /dev/null; then
-    pm2 restart "sanaei-bot"
-  else
-    pm2 start npm --name "sanaei-bot" -- run start
+  if command -v pm2 &> /dev/null; then
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
+    pkill -9 -f "node.*server\.ts" 2>/dev/null || true
+    pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
+
+    PORT_VAL=2020
+    if [ -f ".env" ]; then
+      ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
+      if [ -n "$ENV_PORT" ]; then
+        PORT_VAL="$ENV_PORT"
+      fi
+    fi
+
+    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" || pm2 start npm --name "sanaei-bot" -- run start
     pm2 save
+  else
+    pkill -9 -f "dist/server.cjs" 2>/dev/null || true
+    nohup npm start > bot_output.log 2>&1 &
   fi
 
   echo -e "\n${GREEN}=============================================${NC}"

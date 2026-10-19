@@ -512,6 +512,9 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       `📊 حجم کل: ${volStr}\n` +
       `⏳ مدت اعتبار: ${durStr}\n\n`;
 
+    if (p.panel4SubUrl) {
+      txt += `🔗 لینک اتصال (پنل ۴):\n${p.panel4SubUrl}\n\n`;
+    }
     if (p.sanaeiSubUrl) {
       txt += `🔗 لینک اتصال (سرور ۱):\n${p.sanaeiSubUrl}\n\n`;
     }
@@ -1403,7 +1406,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                           <button
                             onClick={() => {
                               setViewingPurchase(p);
-                              const mainSub = p.subUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || '';
+                              const mainSub = p.panel4SubUrl || p.mroceanSubUrl || p.subUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || '';
                               if (mainSub) {
                                 import('qrcode').then(QRCode => {
                                   QRCode.toDataURL(mainSub, { width: 350, margin: 2 }).then(setViewingQrCode).catch(() => {});
@@ -2185,7 +2188,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs text-slate-300 space-y-2">
               <p className="font-bold text-slate-100 border-b border-slate-800/80 pb-2">🔗 لینک اتصال سابسکریپشن:</p>
               <pre className="whitespace-pre-wrap font-mono text-[11px] text-emerald-400 bg-slate-900/80 p-3 rounded-xl border border-slate-800 overflow-x-auto" dir="ltr">
-                {viewingPurchase.subUrl || viewingPurchase.sanaeiSubUrl || viewingPurchase.rebeccaSubUrl || 'لینک ساب موجود نیست'}
+                {viewingPurchase.panel4SubUrl || viewingPurchase.mroceanSubUrl || viewingPurchase.subUrl || viewingPurchase.sanaeiSubUrl || viewingPurchase.rebeccaSubUrl || 'لینک ساب موجود نیست'}
               </pre>
             </div>
 
@@ -2214,7 +2217,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             <div className="space-y-2">
               <button
                 onClick={() => {
-                  const mainSub = viewingPurchase.subUrl || viewingPurchase.sanaeiSubUrl || viewingPurchase.rebeccaSubUrl || '';
+                  const mainSub = viewingPurchase.panel4SubUrl || viewingPurchase.mroceanSubUrl || viewingPurchase.subUrl || viewingPurchase.sanaeiSubUrl || viewingPurchase.rebeccaSubUrl || '';
                   navigator.clipboard.writeText(mainSub);
                   setCopiedText(true);
                   setTimeout(() => setCopiedText(false), 2500);

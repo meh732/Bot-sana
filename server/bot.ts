@@ -33,6 +33,18 @@ function normalizePersianText(str: string): string {
     .trim();
 }
 
+export function sanitizeCustomConfigName(input: any): string {
+  if (input === null || input === undefined) return '';
+  return String(input)
+    .trim()
+    .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
+    .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632))
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 export function parseAmountInput(input: any): number | null {
   if (input === null || input === undefined) return null;
   let str = String(input).trim().toLowerCase();
@@ -214,10 +226,12 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
     }
   }
 
+  const cleanCustomName = customName ? sanitizeCustomConfigName(customName) : undefined;
+
   const clientResult = await multiPanel.createClientConfig({
     user,
     product,
-    customName
+    customName: cleanCustomName
   });
 
   const clientEmail = clientResult.clientEmail;
@@ -240,6 +254,8 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
     rebeccaSubUrl: clientResult.rebeccaSubUrl,
     mroceanSubUrl: clientResult.mroceanSubUrl,
     mroceanPortalUrl: clientResult.mroceanPortalUrl,
+    panel4SubUrl: clientResult.panel4SubUrl,
+    panel4Details: clientResult.panel4Details,
     panelType: clientResult.panelType,
     volumeGb: volGb,
     durationDays: durDays,
@@ -341,6 +357,8 @@ export async function executeSellerCustomVolumePurchase(params: {
 
   const packageName = `سفارش دلخواه ${vol} گیگ (${dur} روز)`;
 
+  const cleanCustomName = customName ? sanitizeCustomConfigName(customName) : undefined;
+
   const clientResult = await multiPanel.createClientConfig({
     user,
     product: {
@@ -349,7 +367,7 @@ export async function executeSellerCustomVolumePurchase(params: {
       durationDays: dur,
       panelType: targetPanel
     },
-    customName
+    customName: cleanCustomName
   });
 
   const clientEmail = clientResult.clientEmail;
@@ -360,7 +378,7 @@ export async function executeSellerCustomVolumePurchase(params: {
 
   const newPurchase: any = {
     id: clientEmail,
-    name: customName ? `${customName} (${vol}GB)` : packageName,
+    name: cleanCustomName ? `${cleanCustomName} (${vol}GB)` : packageName,
     price: finalPrice,
     subId: clientResult.subId,
     subUrl: clientResult.subUrl,
@@ -368,6 +386,8 @@ export async function executeSellerCustomVolumePurchase(params: {
     rebeccaSubUrl: clientResult.rebeccaSubUrl,
     mroceanSubUrl: clientResult.mroceanSubUrl,
     mroceanPortalUrl: clientResult.mroceanPortalUrl,
+    panel4SubUrl: clientResult.panel4SubUrl,
+    panel4Details: clientResult.panel4Details,
     panelType: clientResult.panelType,
     volumeGb: vol,
     durationDays: dur,
@@ -1437,10 +1457,12 @@ export async function initBot() {
       const volGb = isPAYG ? 0 : (product.volumeGb !== undefined ? Number(product.volumeGb) : 0);
       const durDays = isPAYG ? 0 : (product.durationDays !== undefined ? Number(product.durationDays) : 0);
 
+      const cleanCustomName = customName ? sanitizeCustomConfigName(customName) : undefined;
+
       const clientResult = await multiPanel.createClientConfig({
         user,
         product,
-        customName
+        customName: cleanCustomName
       });
 
       const clientEmail = clientResult.clientEmail;
@@ -1468,6 +1490,8 @@ export async function initBot() {
         rebeccaSubUrl: clientResult.rebeccaSubUrl,
         mroceanSubUrl: clientResult.mroceanSubUrl,
         mroceanPortalUrl: clientResult.mroceanPortalUrl,
+        panel4SubUrl: clientResult.panel4SubUrl,
+        panel4Details: clientResult.panel4Details,
         panelType: clientResult.panelType,
         volumeGb: volGb,
         durationDays: durDays,
@@ -2618,6 +2642,32 @@ export async function initBot() {
     });
   };
 
+  const sendPanel4ConnectionMenu = (chatId: number) => {
+    const state = db.getState();
+    const p4 = state.panel4 || {};
+    const isEnabled = p4.enabled !== false;
+    const msg = `🔸 <b>اطلاعات و تنظیمات پنل ۴ (Panel 4 / GoGuard)</b>:\n\n` +
+      `🔘 وضعیت پنل: <b>${isEnabled ? "✅ فعال" : "❌ غیرفعال"}</b>\n` +
+      `🔗 آدرس پنل: <code>${escapeHtml(p4.url || "❌ تنظیم نشده")}</code>\n` +
+      `👤 نام کاربری: <code>${escapeHtml(p4.username || "❌ تنظیم نشده")}</code>\n` +
+      `🔑 رمز عبور ورود: <code>${p4.password ? "******" : "❌ تنظیم نشده"}</code>\n` +
+      `🌐 آدرس پایه سابسکریپشن: <code>${escapeHtml(p4.subUrlBase || "پیشفرض سرور")}</code>\n\n` +
+      `جهت ویرایش هر بخش یا تست وضعیت آنلاین و مشاهده سرویس‌ها، از گزینه‌های زیر استفاده نمایید:`;
+
+    bot!.sendMessage(chatId, msg, {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: isEnabled ? "🔴 غیرفعال کردن پنل ۴" : "🟢 فعال کردن پنل ۴", callback_data: "toggle_p4_enable" }],
+          [{ text: "🔗 تغییر آدرس پنل", callback_data: "set_p4_url" }, { text: "👤 تغییر نام کاربری", callback_data: "set_p4_user" }],
+          [{ text: "🔑 تغییر رمز عبور", callback_data: "set_p4_pass" }, { text: "🌐 تغییر آدرس سابسکریپشن", callback_data: "set_p4_suburl" }],
+          [{ text: "🔄 تست آنلاین اتصال پنل ۴", callback_data: "test_p4_conn" }, { text: "📡 مشاهده اینباندها/سرویس‌های پنل ۴", callback_data: "view_p4_inbounds" }],
+          [{ text: "🔙 بازگشت به منوی ادمین", callback_data: "admin_main" }]
+        ]
+      }
+    });
+  };
+
   const sendTestSettingsMenu = (chatId: number) => {
     const state = db.getState();
     const statusText = state.freeTestEnabled !== false ? '✅ فعال' : '❌ غیرفعال';
@@ -3327,34 +3377,13 @@ export async function initBot() {
       return;
     }
 
-    if (userSg && userSg.action === 'awaiting_custom_config_name' && text && !text.startsWith('/')) {
+    if (userSg && (userSg.action === 'awaiting_custom_config_name' || userSg.action === 'awaiting_config_name') && text && !text.startsWith('/')) {
       const { productId, couponCode } = userSg;
       
-      const rawText = text.trim();
-      const customName = rawText.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const customName = sanitizeCustomConfigName(text);
 
-      if (customName.length < 2) {
-        bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً یک نام انگلیسی یا عدد با حداقل ۲ کاراکتر وارد بفرمایید (یا برای انصراف دکمه زیر را بزنید):', {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
-            ]
-          }
-        });
-        return; 
-      }
-
-      let isDuplicate = false;
-      const allUsers = state.users;
-      for (const u of allUsers) {
-        if (u.purchases && u.purchases.some((p: any) => p.id.toLowerCase() === customName.toLowerCase())) {
-          isDuplicate = true;
-          break;
-        }
-      }
-      
-      if (isDuplicate) {
-        bot!.sendMessage(chatId, '❌ هشدار: نام «' + customName + '» تکراری است و قبلاً ثبت شده است! لطفاً یک نام دیگر انتخاب کنید:', {
+      if (!customName) {
+        bot!.sendMessage(chatId, '❌ نام وارد شده معتبر نیست. لطفاً یک نام شامل حروف انگلیسی یا عدد وارد بفرمایید (یا برای انصراف دکمه زیر را بزنید):', {
           reply_markup: {
             inline_keyboard: [
               [{ text: '❌ انصراف از خرید', callback_data: 'cancel_purchase' }]
@@ -3951,7 +3980,8 @@ export async function initBot() {
         }
 
         const newId = `p_${Date.now()}`;
-        state.products.push({ id: newId, name, price, volumeGb, durationDays, inboundId });
+        const activeMode = state.activePanelMode && state.activePanelMode !== 'xui' ? state.activePanelMode : 'sanaei';
+        state.products.push({ id: newId, name, price, volumeGb, durationDays, inboundId, panelType: activeMode });
         db.updateState({ products: state.products });
         
         bot!.sendMessage(chatId, `✅ محصول جدید *${name}* با موفقیت تعریف شد.`, { parse_mode: 'Markdown' });
@@ -4378,7 +4408,7 @@ export async function initBot() {
         const volGb = state.freeTestVolumeGb !== undefined ? Number(state.freeTestVolumeGb) : 0;
         const durDays = state.freeTestDurationDays !== undefined ? Number(state.freeTestDurationDays) : 0;
 
-        const cleanUsername = user.username ? user.username.trim().replace(/[^a-zA-Z0-9_]/g, '') : '';
+        const cleanUsername = user.username ? sanitizeCustomConfigName(user.username) : '';
         const emailPrefix = cleanUsername || String(chatId);
         const uniqueSuffix = Date.now().toString().slice(-4);
         const clientEmail = `${emailPrefix}_test_${uniqueSuffix}`;

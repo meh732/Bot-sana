@@ -325,15 +325,37 @@ class Database {
     } else {
       sanitized.products = sanitized.products
         .filter((p: any) => p && p.id)
-        .map((p: any) => ({
-          ...p,
-          id: String(p.id),
-          name: p.name || 'محصول بدون نام',
-          price: Number(p.price || 0),
-          volumeGb: Number(p.volumeGb || 0),
-          durationDays: Number(p.durationDays || 0),
-          panelType: p.panelType || 'sanaei'
-        }));
+        .map((p: any) => {
+          let vol = Number(p.volumeGb || 0);
+          let dur = Number(p.durationDays || 0);
+          if (vol <= 0 && p.name) {
+            const norm = String(p.name).replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728));
+            const m = norm.match(/(\d+(?:\.\d+)?)\s*(?:گیگ|گیگابایت|gb|gig)/i);
+            if (m) vol = parseFloat(m[1]);
+          }
+          if (dur <= 0 && p.name) {
+            const norm = String(p.name).replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728));
+            const mMonth = norm.match(/(\d+)\s*ماهه?/i);
+            if (mMonth) dur = parseInt(mMonth[1]) * 30;
+            const mDay = norm.match(/(\d+)\s*روزه?/i);
+            if (mDay) dur = parseInt(mDay[1]);
+          }
+          let pType = p.panelType;
+          if (!pType) {
+            if (p.panel4InboundIds && p.panel4InboundIds.length > 0) pType = "panel4";
+            else if (sanitized.activePanelMode && sanitized.activePanelMode !== "xui") pType = sanitized.activePanelMode;
+            else pType = "sanaei";
+          }
+          return {
+            ...p,
+            id: String(p.id),
+            name: p.name || "محصول بدون نام",
+            price: Number(p.price || 0),
+            volumeGb: vol,
+            durationDays: dur,
+            panelType: pType
+          };
+        });
     }
 
     // Sanitize categories

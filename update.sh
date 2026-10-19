@@ -103,7 +103,7 @@ fi
 
 echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
 npm run clean 2>/dev/null
-nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm run build
+nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npm run build
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Build failed! Please inspect compilation errors above.${NC}"
@@ -117,6 +117,9 @@ echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
 if command -v pm2 &> /dev/null; then
     # Restart or start fresh
     pm2 delete "sanaei-bot" 2>/dev/null
+    pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
+    pkill -9 -f "node.*server\.ts" 2>/dev/null || true
+    pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
     
     # Load port from .env if present
     PORT_VAL=2020

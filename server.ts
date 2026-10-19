@@ -1349,6 +1349,9 @@ async function startServer() {
         `📊 <b>حجم کل:</b> ${volStr}\n` +
         `⏳ <b>مدت اعتبار:</b> ${durStr}\n\n`;
 
+      if (purchase.panel4SubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال (پنل ۴):</b>\n<code>${purchase.panel4SubUrl}</code>\n\n`;
+      }
       if (purchase.sanaeiSubUrl) {
         cleanMessage += `🔗 <b>لینک اتصال (سرور ۱):</b>\n<code>${purchase.sanaeiSubUrl}</code>\n\n`;
       }
@@ -1405,7 +1408,9 @@ async function startServer() {
         `📊 <b>حجم کل:</b> ${volStr}\n` +
         `⏳ <b>مدت اعتبار:</b> ${durStr}\n\n`;
 
-      if (purchase.mroceanSubUrl) {
+      if (purchase.panel4SubUrl) {
+        cleanMessage += `🔗 <b>لینک اتصال (پنل ۴):</b>\n<code>${purchase.panel4SubUrl}</code>\n\n`;
+      } else if (purchase.mroceanSubUrl) {
         cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.mroceanSubUrl}</code>\n\n`;
       } else if (purchase.sanaeiSubUrl) {
         cleanMessage += `🔗 <b>لینک اتصال:</b>\n<code>${purchase.sanaeiSubUrl}</code>\n\n`;
@@ -1626,7 +1631,7 @@ async function startServer() {
         : (state.freeTestInboundId ? [state.freeTestInboundId] : undefined);
 
       const panelType = (state.freeTestPanel as any) || 'sanaei';
-      const cleanCustom = (customName || `test_${Date.now().toString().slice(-4)}`).replace(/[^a-zA-Z0-9_]/g, '_');
+      const cleanCustom = String(customName || `test_${Date.now().toString().slice(-4)}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
       const clientResult = await multiPanel.createClientConfig({
         user,
@@ -1652,6 +1657,8 @@ async function startServer() {
         rebeccaSubUrl: clientResult.rebeccaSubUrl,
         mroceanSubUrl: clientResult.mroceanSubUrl,
         mroceanPortalUrl: clientResult.mroceanPortalUrl,
+        panel4SubUrl: clientResult.panel4SubUrl,
+        panel4Details: clientResult.panel4Details,
         panelType: clientResult.panelType,
         volumeGb: volGb,
         durationDays: durDays,
