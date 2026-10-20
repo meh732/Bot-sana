@@ -35,7 +35,7 @@ function normalizePersianText(str: string): string {
 
 export function sanitizeCustomConfigName(input: any): string {
   if (input === null || input === undefined) return '';
-  return String(input)
+  let str = String(input)
     .trim()
     .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
     .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632))
@@ -43,6 +43,17 @@ export function sanitizeCustomConfigName(input: any): string {
     .replace(/[^a-z0-9_]/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
+
+  if (str.length > 0 && !/[0-9]/.test(str)) {
+    str = `${str}_${Math.floor(10 + Math.random() * 89)}`;
+  }
+  if (str.length < 3) {
+    str = `${str}_${Math.floor(100 + Math.random() * 899)}`;
+  }
+  if (str.length > 30) {
+    str = str.slice(0, 30).replace(/_+$/, '');
+  }
+  return str;
 }
 
 export function parseAmountInput(input: any): number | null {

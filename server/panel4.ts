@@ -406,6 +406,9 @@ export class Panel4Client {
       .replace(/_+/g, '_')
       .replace(/^_+|_+$/g, '');
 
+    if (cleanEmail.length > 0 && !/[0-9]/.test(cleanEmail)) {
+      cleanEmail = `${cleanEmail}_${Math.floor(10 + Math.random() * 89)}`;
+    }
     if (cleanEmail.length < 3) {
       const suffix = Math.floor(100 + Math.random() * 899);
       cleanEmail = cleanEmail ? `${cleanEmail}_${suffix}` : `u_${Date.now().toString().slice(-6)}`;
