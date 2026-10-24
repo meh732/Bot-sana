@@ -1,0 +1,152 @@
+{
+  "botToken": "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ123456789",
+  "panel": {
+    "url": "https://test-xui.com:2053",
+    "username": "admin",
+    "password": "password",
+    "inboundId": 1
+  },
+  "rebeccaPanel": {
+    "url": "https://test-rebecca.com:8000",
+    "username": "reb_admin",
+    "password": "reb_password",
+    "apiKey": "api-123"
+  },
+  "mroceanPanel": {
+    "url": "https://panel.mrocean.ir",
+    "username": "mo_78_347_misieoig7k-6",
+    "password": "Mo!RgElMrGlPlNIKFIQX8xN9MopPeuIcVZ9",
+    "apiKey": "rk_-itJXBc5_vWntoQxC9QflcAQ8jRIF9H6zULsm3KHJpI",
+    "serviceId": 347,
+    "enabled": true,
+    "_sessionCookie": "__Host-mrocean_reseller=eyJwdXJwb3NlIjoicmVzZWxsZXJfYnJvd3NlciIsInVzZXJfaWQiOjc4LCJzZXJ2aWNlX2lkIjozNDcsImNyZWRlbnRpYWxfZmluZ2VycHJpbnQiOiJlYmExNzUyNDQ2Mzk1OTIwZGU2MWI0MmNiYzExM2FmNGE3NTE3ZjJhMzk1NjM2MWEwMDJjYzU2ZjQ3YmIyYzRhIiwiY3NyZl90b2tlbiI6IjNlb2ZDWkgwOEdUUnFuTlI0MUdoRHNtS0NXT0toYXlIIiwiaXNzdWVkX2F0IjoxNzkyNTI1NjEzLCJleHBpcmVzX2F0IjoxNzkyNTU0NDEzLCJub25jZSI6ImdjRUZVTWRnN2liXzh5R3hiU1dPaGRDRyJ9.XOCw2NPHPDfIWmgYiNl_bPT7C-3it6YTu8dYx2VF6-4",
+    "_csrfToken": "3eofCZH08GTRqnNR41GhDsmKCWOKhayH",
+    "_sessionExpiryTime": 1792550813428,
+    "_serviceId": 347,
+    "_apiBase": "https://panel.mrocean.ir/api/reseller-panel/service/347"
+  },
+  "panel4": {
+    "url": "https://app.solidlayerco.com",
+    "username": "meh7375",
+    "password": "X7k2jPCj5z#FH6",
+    "enabled": true
+  },
+  "products": [
+    {
+      "id": "p1",
+      "name": "سرویس ۱ ماهه ۲۰ گیگ",
+      "price": 100000,
+      "categoryId": "1",
+      "disabled": false,
+      "volumeGb": 20,
+      "durationDays": 30,
+      "panelType": "sanaei"
+    },
+    {
+      "id": "p2",
+      "name": "سرویس پاریس ۳۰ گیگ",
+      "price": 150000,
+      "categoryId": "2",
+      "disabled": false,
+      "volumeGb": 30,
+      "durationDays": 0,
+      "panelType": "sanaei"
+    }
+  ],
+  "users": [
+    {
+      "chatId": 92218108,
+      "username": "mohammadeh7",
+      "testUsed": false,
+      "registeredAt": "2026-09-24T07:18:45.754Z",
+      "balance": 0,
+      "debt": 0,
+      "purchases": []
+    },
+    {
+      "chatId": 99999999,
+      "username": "testuser",
+      "testUsed": false,
+      "registeredAt": "2026-09-24T07:25:32.917Z",
+      "balance": 0,
+      "debt": 0,
+      "purchases": []
+    },
+    {
+      "chatId": 999888777,
+      "username": "test_seller_chk",
+      "isSeller": true,
+      "debt": 45000,
+      "debtLimit": 10000000,
+      "debtVolume": 15,
+      "totalSales": 45000,
+      "purchases": [
+        {
+          "id": "testpartnerconfig_upper_23",
+          "name": "testpartnerconfig_upper_23 (15GB)",
+          "price": 45000,
+          "subId": "testpartnerconfig_upper_23",
+          "subUrl": "https://www.gboard.surf:2087/sub/dGVzdHBhcnRuZXJjb25maWdfdXBwZXJfMjMsMTc5MjUyNTk1NAso9FUYv3LD",
+          "mroceanSubUrl": "https://www.gboard.surf:2087/sub/dGVzdHBhcnRuZXJjb25maWdfdXBwZXJfMjMsMTc5MjUyNTk1NAso9FUYv3LD",
+          "mroceanPortalUrl": "https://panel.mrocean.ir/sub/Qmiln9UgRVHP6tw02YNjsjBuy3tKCQuMsc3BhVQNdAM",
+          "panel4Details": null,
+          "panelType": "mrocean",
+          "volumeGb": 15,
+          "durationDays": 30,
+          "createdAt": "2026-10-20T19:52:34.139Z",
+          "originalPrice": 45000,
+          "ratePerGb": 3000,
+          "discountPercent": 0,
+          "discountAmount": 0,
+          "isCustomVolume": true
+        }
+      ],
+      "transactions": [
+        {
+          "id": "tx_1792525954155_gb9fz",
+          "type": "purchase",
+          "amount": 45000,
+          "direction": "debit",
+          "description": "سفارش حجم دلخواه 15 GB (30 روز) با نرخ 3,000 ت/گیگ",
+          "configName": "testpartnerconfig_upper_23 (15GB)",
+          "volumeGb": 15,
+          "debtAfter": 45000,
+          "createdAt": "2026-10-20T19:52:34.139Z"
+        }
+      ]
+    }
+  ],
+  "freeTestVolumeGb": 1,
+  "freeTestDurationDays": 3,
+  "freeTestEnabled": true,
+  "freeTestPanel": "sanaei",
+  "adminIds": [
+    92218108
+  ],
+  "referralRewardToman": 0,
+  "cardNumber": "۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸",
+  "cardHolder": "نام مدیر حساب",
+  "supportUsername": "",
+  "coupons": [],
+  "customVolumePricePerGb": 3000,
+  "customVolumeMinGb": 1,
+  "customVolumeDefaultDays": 30,
+  "customVolumePanelType": "mrocean",
+  "customVolumeEnabled": true,
+  "activePanelMode": "both",
+  "categories": [
+    {
+      "id": "1",
+      "name": "مولتی لوکیشن vip"
+    },
+    {
+      "id": "2",
+      "name": "پاریس"
+    }
+  ],
+  "freeTestInboundIds": [],
+  "lastAutoBackupSent": 0,
+  "pendingPayments": [],
+  "lastDailyReportSent": 1792258417030,
+  "lastDailyReportDate": "۱۴۰۵/۷/۲۵"
+}

@@ -44,16 +44,26 @@ export function sanitizeCustomConfigName(input: any): string {
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
 
-  if (str.length > 0 && !/[0-9]/.test(str)) {
+  if (!str) return '';
+
+  if (!/[a-z]/.test(str)) {
+    str = `u_${str}`;
+  }
+  if (str.length > 24) {
+    str = str.slice(0, 24).replace(/_+$/, '');
+  }
+  if (!/[0-9]/.test(str)) {
     str = `${str}_${Math.floor(10 + Math.random() * 89)}`;
   }
   if (str.length < 3) {
-    str = `${str}_${Math.floor(100 + Math.random() * 899)}`;
+    str = `${str}${Math.floor(100 + Math.random() * 899)}`;
   }
   if (str.length > 30) {
-    str = str.slice(0, 30).replace(/_+$/, '');
+    const suffixDigits = (str.match(/\d+$/) || [String(Math.floor(10 + Math.random() * 89))])[0].slice(0, 4);
+    const maxHead = 30 - suffixDigits.length - 1;
+    str = `${str.slice(0, maxHead).replace(/_+$/, '')}_${suffixDigits}`;
   }
-  return str;
+  return str.replace(/^_+|_+$/g, '');
 }
 
 export function parseAmountInput(input: any): number | null {
@@ -320,8 +330,9 @@ export async function executeSellerCustomVolumePurchase(params: {
   durationDays?: number;
   customName?: string;
   panelType?: PanelType;
+  categoryId?: string;
 }) {
-  const { sellerChatId, volumeGb, durationDays, customName, panelType } = params;
+  const { sellerChatId, volumeGb, durationDays, customName, panelType, categoryId } = params;
   const user = db.getUser(sellerChatId);
   if (!user || !user.isSeller) {
     throw new Error('حساب کاربری همکار معتبر نیست.');
@@ -2662,8 +2673,10 @@ export async function initBot() {
       `🔗 آدرس پنل: <code>${escapeHtml(p4.url || "❌ تنظیم نشده")}</code>\n` +
       `👤 نام کاربری: <code>${escapeHtml(p4.username || "❌ تنظیم نشده")}</code>\n` +
       `🔑 رمز عبور ورود: <code>${p4.password ? "******" : "❌ تنظیم نشده"}</code>\n` +
+      `🗝 کلید API Key: <code>${p4.apiKey ? "✅ ثبت شده" : "خودکار از پنل"}</code>\n` +
+      `📡 سرویس پیش‌فرض (Service ID): <code>${escapeHtml(String(p4.inboundId || (p4.inboundIds && p4.inboundIds[0]) || 4))}</code>\n` +
       `🌐 آدرس پایه سابسکریپشن: <code>${escapeHtml(p4.subUrlBase || "پیشفرض سرور")}</code>\n\n` +
-      `جهت ویرایش هر بخش یا تست وضعیت آنلاین و مشاهده سرویس‌ها، از گزینه‌های زیر استفاده نمایید:`;
+      `جهت ویرایش هر بخش، تست وضعیت آنلاین، یا عملیات گروهی روی اشتراک‌ها (/api/actions) از گزینه‌های زیر استفاده نمایید:`;
 
     bot!.sendMessage(chatId, msg, {
       parse_mode: "HTML",
@@ -2671,8 +2684,12 @@ export async function initBot() {
         inline_keyboard: [
           [{ text: isEnabled ? "🔴 غیرفعال کردن پنل ۴" : "🟢 فعال کردن پنل ۴", callback_data: "toggle_p4_enable" }],
           [{ text: "🔗 تغییر آدرس پنل", callback_data: "set_p4_url" }, { text: "👤 تغییر نام کاربری", callback_data: "set_p4_user" }],
-          [{ text: "🔑 تغییر رمز عبور", callback_data: "set_p4_pass" }, { text: "🌐 تغییر آدرس سابسکریپشن", callback_data: "set_p4_suburl" }],
-          [{ text: "🔄 تست آنلاین اتصال پنل ۴", callback_data: "test_p4_conn" }, { text: "📡 مشاهده اینباندها/سرویس‌های پنل ۴", callback_data: "view_p4_inbounds" }],
+          [{ text: "🔑 تغییر رمز عبور", callback_data: "set_p4_pass" }, { text: "🗝 تغییر API Key", callback_data: "set_p4_apikey" }],
+          [{ text: "📡 تغییر شناسه سرویس", callback_data: "set_p4_inbound" }, { text: "🌐 تغییر آدرس سابسکریپشن", callback_data: "set_p4_suburl" }],
+          [{ text: "🔄 تست آنلاین اتصال پنل ۴", callback_data: "test_p4_conn" }, { text: "📡 مشاهده سرویس‌های پنل ۴", callback_data: "view_p4_inbounds" }],
+          [{ text: "📊 پیش‌نمایش اشتراک‌های پنل ۴ (Actions Preview)", callback_data: "p4_bulk_preview" }],
+          [{ text: "➕ افزودن زمان همگانی (روز)", callback_data: "p4_bulk_add_days" }, { text: "➖ کسر زمان همگانی (روز)", callback_data: "p4_bulk_sub_days" }],
+          [{ text: "➕ افزودن حجم همگانی (GB)", callback_data: "p4_bulk_add_gb" }, { text: "➖ کسر حجم همگانی (GB)", callback_data: "p4_bulk_sub_gb" }],
           [{ text: "🔙 بازگشت به منوی ادمین", callback_data: "admin_main" }]
         ]
       }
@@ -3663,6 +3680,98 @@ export async function initBot() {
         sendMrOceanConnectionMenu(chatId);
         return;
       }
+
+      if (sessionType === 'set_p4_url') {
+        state.panel4 = state.panel4 || {};
+        state.panel4.url = text.trim();
+        db.updateState({ panel4: state.panel4 });
+        bot!.sendMessage(chatId, `✅ آدرس پنل ۴ با موفقیت به <code>${escapeHtml(text.trim())}</code> تغییر یافت.`, { parse_mode: 'HTML' });
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_p4_user') {
+        state.panel4 = state.panel4 || {};
+        state.panel4.username = text.trim();
+        db.updateState({ panel4: state.panel4 });
+        bot!.sendMessage(chatId, '✅ نام کاربری پنل ۴ با موفقیت ذخیره شد.');
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_p4_pass') {
+        state.panel4 = state.panel4 || {};
+        state.panel4.password = text.trim();
+        db.updateState({ panel4: state.panel4 });
+        bot!.sendMessage(chatId, '✅ رمز عبور پنل ۴ با موفقیت ذخیره شد.');
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_p4_apikey') {
+        state.panel4 = state.panel4 || {};
+        state.panel4.apiKey = text.trim() === '0' ? '' : text.trim();
+        db.updateState({ panel4: state.panel4 });
+        bot!.sendMessage(chatId, '✅ کلید API Key پنل ۴ با موفقیت بروزرسانی شد.');
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_p4_suburl') {
+        state.panel4 = state.panel4 || {};
+        state.panel4.subUrlBase = text.trim() === '0' ? '' : text.trim();
+        db.updateState({ panel4: state.panel4 });
+        bot!.sendMessage(chatId, `✅ آدرس پایه سابسکریپشن پنل ۴ با موفقیت بروزرسانی شد.`);
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'set_p4_inbound') {
+        const val = parseInt(text.trim());
+        if (isNaN(val) || val <= 0) {
+          bot!.sendMessage(chatId, '❌ شناسه سرویس پنل ۴ باید یک عدد صحیح مثبت باشد (مثلاً 4).');
+          sendPanel4ConnectionMenu(chatId);
+          return;
+        }
+        state.panel4 = state.panel4 || {};
+        state.panel4.inboundId = val;
+        state.panel4.inboundIds = [val];
+        db.updateState({ panel4: state.panel4 });
+        bot!.sendMessage(chatId, `✅ شناسه سرویس پیش‌فرض پنل ۴ به <code>${val}</code> تنظیم شد.`, { parse_mode: 'HTML' });
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'p4_bulk_add_days' || sessionType === 'p4_bulk_sub_days') {
+        const days = parseInt(text.trim());
+        if (isNaN(days) || days <= 0) {
+          bot!.sendMessage(chatId, '❌ تعداد روز وارد شده معتبر نیست. لطفاً یک عدد صحیح بزرگتر از ۰ ارسال کنید.');
+          sendPanel4ConnectionMenu(chatId);
+          return;
+        }
+        const mode = sessionType === 'p4_bulk_sub_days' ? 'subtract' : 'add';
+        bot!.sendMessage(chatId, `⏳ در حال ${mode === 'add' ? 'افزودن' : 'کسر'} ${days} روز روی اشتراک‌های پنل ۴...`);
+        try {
+          const res = await panel4.bulkModifyExpire(days, mode, { includeExpired: false, includeOnHold: false });
+          bot!.sendMessage(chatId, `✅ <b>عملیات زمانی پنل ۴ انجام شد</b>\n\n📊 تعداد اشتراک‌های تحت تأثیر: <b>${res.affected}</b>\n💬 پیام سرور: <code>${escapeHtml(res.message)}</code>`, { parse_mode: 'HTML' });
+        } catch (err: any) {
+          bot!.sendMessage(chatId, `❌ خطا در عملیات زمانی پنل ۴: ${escapeHtml(err.message || String(err))}`, { parse_mode: 'HTML' });
+        }
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
+      if (sessionType === 'p4_bulk_add_gb' || sessionType === 'p4_bulk_sub_gb') {
+        const gb = parseInt(text.trim());
+        if (isNaN(gb) || gb <= 0) {
+          bot!.sendMessage(chatId, '❌ مقدار گیگابایت وارد شده معتبر نیست. لطفاً یک عدد صحیح بزرگتر از ۰ ارسال کنید.');
+          sendPanel4ConnectionMenu(chatId);
+          return;
+        }
+        const mode = sessionType === 'p4_bulk_sub_gb' ? 'subtract' : 'add';
+        bot!.sendMessage(chatId, `⏳ در حال ${mode === 'add' ? 'افزودن' : 'کسر'} ${gb} گیگابایت روی اشتراک‌های پنل ۴...`);
+        try {
+          const res = await panel4.bulkModifyUsage(gb, mode, { includeLimited: false });
+          bot!.sendMessage(chatId, `✅ <b>عملیات حجمی پنل ۴ انجام شد</b>\n\n📊 تعداد اشتراک‌های تحت تأثیر: <b>${res.affected}</b>\n💬 پیام سرور: <code>${escapeHtml(res.message)}</code>`, { parse_mode: 'HTML' });
+        } catch (err: any) {
+          bot!.sendMessage(chatId, `❌ خطا در عملیات حجمی پنل ۴: ${escapeHtml(err.message || String(err))}`, { parse_mode: 'HTML' });
+        }
+        sendPanel4ConnectionMenu(chatId);
+        return;
+      }
       if (sessionType === 'set_p_inbound') {
         const val = parseInt(text.trim());
         if (isNaN(val)) {
@@ -4381,6 +4490,9 @@ export async function initBot() {
           if ((!parsed.mroceanPanel || !parsed.mroceanPanel.url) && currentDbState.mroceanPanel && currentDbState.mroceanPanel.url) {
             parsed.mroceanPanel = { ...currentDbState.mroceanPanel, ...parsed.mroceanPanel };
           }
+          if ((!parsed.panel4 || !parsed.panel4.url) && currentDbState.panel4 && currentDbState.panel4.url) {
+            parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
+          }
           
           const dbPath = path.join(process.cwd(), 'db.json');
           fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
@@ -4875,6 +4987,9 @@ export async function initBot() {
             }
             if ((!parsed.mroceanPanel || !parsed.mroceanPanel.url) && currentDbState.mroceanPanel && currentDbState.mroceanPanel.url) {
               parsed.mroceanPanel = { ...currentDbState.mroceanPanel, ...parsed.mroceanPanel };
+            }
+            if ((!parsed.panel4 || !parsed.panel4.url) && currentDbState.panel4 && currentDbState.panel4.url) {
+              parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
             }
 
             const dbPath = path.join(process.cwd(), 'db.json');
@@ -5486,8 +5601,211 @@ export async function initBot() {
         return;
       }
       db.updateState({ activePanelMode: 'all' });
-      answerQuery({ text: 'حالت پنل فعال به همه ۳ پنل همزمان تغییر یافت' });
+      answerQuery({ text: 'حالت پنل فعال به همه پنل‌ها همزمان تغییر یافت' });
       sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_panel4') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'panel4' });
+      answerQuery({ text: 'حالت پنل فعال به فقط پنل ۴ تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_set_mode_sanaei_panel4') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      db.updateState({ activePanelMode: 'sanaei_panel4' });
+      answerQuery({ text: 'حالت پنل فعال به سنایی + پنل ۴ تغییر یافت' });
+      sendAdminMainMenu(chatId);
+      return;
+    }
+
+    if (data === 'admin_panel4_menu') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      sendPanel4ConnectionMenu(chatId);
+      answerQuery();
+      return;
+    }
+
+    if (data === 'toggle_p4_enable') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      const p4 = state.panel4 || {};
+      p4.enabled = p4.enabled === false ? true : false;
+      db.updateState({ panel4: p4 });
+      answerQuery({ text: p4.enabled ? 'پنل ۴ فعال شد' : 'پنل ۴ غیرفعال شد' });
+      sendPanel4ConnectionMenu(chatId);
+      return;
+    }
+
+    if (data === 'set_p4_url') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_p4_url');
+      bot!.sendMessage(chatId, '🔗 لطفاً آدرس کامل پنل ۴ را ارسال فرمایید:\n\nمثال: <code>https://app.solidlayerco.com</code>', { parse_mode: 'HTML' });
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_p4_user') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_p4_user');
+      bot!.sendMessage(chatId, '👤 لطفاً نام کاربری ورود به پنل ۴ را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_p4_pass') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_p4_pass');
+      bot!.sendMessage(chatId, '🔑 لطفاً رمز عبور ورود به پنل ۴ را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_p4_apikey') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_p4_apikey');
+      bot!.sendMessage(chatId, '🗝 لطفاً کلید API Key پنل ۴ را ارسال کنید (یا برای دریافت خودکار عدد 0 را بفرستید):');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_p4_suburl') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_p4_suburl');
+      bot!.sendMessage(chatId, '🌐 لطفاً آدرس پایه لینک سابسکریپشن پنل ۴ را ارسال کنید (یا برای استفاده از پیش‌فرض پنل عدد 0 را بفرستید):');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'set_p4_inbound') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, 'set_p4_inbound');
+      bot!.sendMessage(chatId, '📡 لطفاً شناسه عددی سرویس پیش‌فرض در پنل ۴ (مثلاً 4) را ارسال کنید:');
+      answerQuery();
+      return;
+    }
+
+    if (data === 'test_p4_conn') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال تست آنلاین اتصال و احراز هویت در پنل ۴...');
+      try {
+        const testRes = await panel4.testConnection();
+        if (testRes.success) {
+          bot!.sendMessage(chatId, `✅ <b>اتصال به پنل ۴ برقرار است!</b>\n\n🔹 ${escapeHtml(testRes.message)}`, { parse_mode: 'HTML' });
+        } else {
+          bot!.sendMessage(chatId, `❌ <b>خطا در اتصال به پنل ۴:</b>\n\n<code>${escapeHtml(testRes.message || 'عدم دریافت پاسخ')}</code>`, { parse_mode: 'HTML' });
+        }
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در بررسی اتصال پنل ۴: ${escapeHtml(err.message || String(err))}`);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'view_p4_inbounds') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال واکشی لیست سرویس‌ها و اینباندهای پنل ۴...');
+      try {
+        const list = await panel4.getInbounds();
+        if (!list || list.length === 0) {
+          bot!.sendMessage(chatId, '⚠️ هیچ سرویسی یافت نشد.');
+        } else {
+          let txt = `📡 <b>سرویس‌های فعال در پنل ۴ (${list.length} مورد):</b>\n\n`;
+          list.forEach((ib: any) => {
+            txt += `🆔 شناسه (Service ID): <code>${escapeHtml(String(ib.id))}</code>\n🏷 نام سرویس: <b>${escapeHtml(String(ib.remark || ib.name || ib.tag))}</b>\n🌐 پروتکل: <code>${escapeHtml(String(ib.protocol || 'Multi-Protocol'))}</code>\n------------------------\n`;
+          });
+          bot!.sendMessage(chatId, txt, { parse_mode: 'HTML' });
+        }
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در دریافت سرویس‌های پنل ۴: ${escapeHtml(err.message || String(err))}`);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'p4_bulk_preview') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      bot!.sendMessage(chatId, '⏳ در حال دریافت پیش‌نمایش وضعیت کل اشتراک‌های پنل ۴ (/api/actions/preview)...');
+      try {
+        const prev = await panel4.getActionsPreview();
+        const msg = `📊 <b>پیش‌نمایش وضعیت اشتراک‌های پنل ۴ (Actions Preview):</b>\n\n` +
+          `👥 <b>کل اشتراک‌ها:</b> <code>${prev.total ?? 0}</code>\n` +
+          `✅ <b>فعال (Active):</b> <code>${prev.active ?? 0}</code>\n` +
+          `⏳ <b>در انتظار اولین اتصال (On-Hold):</b> <code>${prev.on_hold ?? 0}</code>\n` +
+          `⌛ <b>منقضی شده (Expired):</b> <code>${prev.expired ?? 0}</code>\n` +
+          `📉 <b>حجم تمام‌شده (Limited):</b> <code>${prev.limited ?? 0}</code>\n` +
+          `📦 <b>دارای سقف حجم (Finite):</b> <code>${prev.finite ?? 0}</code>\n` +
+          `♾ <b>نامحدود (Unlimited):</b> <code>${prev.unlimited ?? 0}</code>`;
+        bot!.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در دریافت پیش‌نمایش پنل ۴: ${escapeHtml(err.message || String(err))}`);
+      }
+      answerQuery();
+      return;
+    }
+
+    if (data === 'p4_bulk_add_days' || data === 'p4_bulk_sub_days') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, data);
+      const actionLabel = data === 'p4_bulk_add_days' ? 'افزودن به اعتبار' : 'کسر از اعتبار';
+      bot!.sendMessage(chatId, `⏱ لطفاً تعداد روز مورد نظر جهت <b>${actionLabel}</b> تمامی اشتراک‌های فعال پنل ۴ را به صورت عدد انگلیسی ارسال نمایید (مثلاً <code>5</code>):`, { parse_mode: 'HTML' });
+      answerQuery();
+      return;
+    }
+
+    if (data === 'p4_bulk_add_gb' || data === 'p4_bulk_sub_gb') {
+      if (!isAdmin) {
+        answerQuery({ text: '⛔️ شما دسترسی مدیریت ندارید.', show_alert: true });
+        return;
+      }
+      adminSession.set(chatId, data);
+      const actionLabel = data === 'p4_bulk_add_gb' ? 'افزودن به حجم' : 'کسر از حجم';
+      bot!.sendMessage(chatId, `📦 لطفاً مقدار گیگابایت (GB) مورد نظر جهت <b>${actionLabel}</b> تمامی اشتراک‌های حجم‌دار پنل ۴ را به صورت عدد انگلیسی ارسال نمایید (مثلاً <code>10</code>):`, { parse_mode: 'HTML' });
+      answerQuery();
       return;
     }
 

@@ -312,9 +312,12 @@ async function startServer() {
   api.post("/test-panel4-connection", async (req, res) => {
     try {
       const { url, username, password, apiKey } = req.body;
+      const savedP4 = db.getState().panel4 || {};
+      const resolvedPassword = (!password || password === '********') ? savedP4.password : password;
+      const resolvedApiKey = (!apiKey || apiKey === '********') ? savedP4.apiKey : apiKey;
       let result;
-      if (url && (username || apiKey)) {
-        result = await panel4.testConnection({ url, username, password, apiKey });
+      if (url && (username || resolvedApiKey)) {
+        result = await panel4.testConnection({ url, username, password: resolvedPassword, apiKey: resolvedApiKey });
       } else {
         result = await panel4.testConnection();
       }
@@ -339,6 +342,65 @@ async function startServer() {
       res.json({ success: true, ...stats });
     } catch (e: any) {
       res.json({ success: false, message: e.message, onlineCount: 0, totalUsers: 0, users: [] });
+    }
+  });
+
+  api.get("/panel4-actions/preview", async (req, res) => {
+    try {
+      const preview = await panel4.getActionsPreview();
+      res.json({ success: true, preview });
+    } catch (e: any) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  });
+
+  api.post("/panel4-actions/expire", async (req, res) => {
+    try {
+      const { days, action, includeExpired, includeOnHold } = req.body;
+      const numDays = parseInt(days);
+      if (isNaN(numDays) || numDays <= 0) {
+        return res.status(400).json({ success: false, message: 'تعداد روز باید یک عدد صحیح بزرگتر از صفر باشد.' });
+      }
+      const mode = action === 'subtract' ? 'subtract' : 'add';
+      const result = await panel4.bulkModifyExpire(numDays, mode, {
+        includeExpired: Boolean(includeExpired),
+        includeOnHold: Boolean(includeOnHold)
+      });
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  });
+
+  api.post("/panel4-actions/usage", async (req, res) => {
+    try {
+      const { gb, action, includeLimited } = req.body;
+      const numGb = parseInt(gb);
+      if (isNaN(numGb) || numGb <= 0) {
+        return res.status(400).json({ success: false, message: 'مقدار حجم (گیگابایت) باید یک عدد صحیح بزرگتر از صفر باشد.' });
+      }
+      const mode = action === 'subtract' ? 'subtract' : 'add';
+      const result = await panel4.bulkModifyUsage(numGb, mode, {
+        includeLimited: Boolean(includeLimited)
+      });
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  });
+
+  api.post("/panel4-actions/service", async (req, res) => {
+    try {
+      const { serviceId, action, targetId } = req.body;
+      const numServiceId = parseInt(serviceId);
+      if (isNaN(numServiceId) || numServiceId <= 0) {
+        return res.status(400).json({ success: false, message: 'شناسه سرویس معتبر نیست.' });
+      }
+      const mode = action === 'remove' ? 'remove' : (action === 'migrate' ? 'migrate' : 'add');
+      const result = await panel4.bulkModifyService(numServiceId, mode, targetId ? parseInt(targetId) : undefined);
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      res.status(400).json({ success: false, message: e.message });
     }
   });
 
@@ -502,6 +564,10 @@ async function startServer() {
       if ((!parsed.mroceanPanel || !parsed.mroceanPanel.url) && currentDbState.mroceanPanel && currentDbState.mroceanPanel.url) {
         parsed.mroceanPanel = { ...currentDbState.mroceanPanel, ...parsed.mroceanPanel };
       }
+
+      if ((!parsed.panel4 || !parsed.panel4.url) && currentDbState.panel4 && currentDbState.panel4.url) {
+        parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
+      }
       
       // Write to db.json and update memory state
       const dbPath = path.join(process.cwd(), 'db.json');
@@ -591,6 +657,11 @@ async function startServer() {
 
       if (!parsed || !parsed.panel || !parsed.users) {
         return res.status(400).json({ success: false, message: 'ساختار فایل پشتیبان معتبر نیست.' });
+      }
+
+      const currentDbState = db.getState();
+      if ((!parsed.panel4 || !parsed.panel4.url) && currentDbState.panel4 && currentDbState.panel4.url) {
+        parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
       }
 
       // Overwrite db.json
@@ -1378,7 +1449,7 @@ async function startServer() {
   api.post("/seller-portal/buy-custom-volume/:chatId", async (req, res) => {
     try {
       const chatId = parseInt(req.params.chatId);
-      const { volumeGb, durationDays, customName, panelType } = req.body;
+      const { volumeGb, durationDays, customName, panelType, categoryId } = req.body;
       const volNum = Number(volumeGb);
       if (isNaN(volNum) || volNum <= 0) {
         return res.status(400).json({ success: false, message: 'لطفاً میزان حجم معتبری به گیگابایت وارد فرمایید.' });
@@ -1389,7 +1460,8 @@ async function startServer() {
         volumeGb: volNum,
         durationDays: durationDays ? Number(durationDays) : 30,
         customName: customName ? String(customName).trim() : undefined,
-        panelType: panelType || undefined
+        panelType: panelType || undefined,
+        categoryId: categoryId ? String(categoryId) : undefined
       });
 
       let qrCodeDataUrl = '';

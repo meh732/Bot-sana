@@ -201,6 +201,16 @@ function SettingsView() {
   const [panel4Inbounds, setPanel4Inbounds] = useState<any[]>([]);
   const [panel4LoadingInbounds, setPanel4LoadingInbounds] = useState(false);
   const [panel4TestResult, setPanel4TestResult] = useState<any>(null);
+  const [panel4Preview, setPanel4Preview] = useState<any>(null);
+  const [panel4ActionBusy, setPanel4ActionBusy] = useState(false);
+  const [panel4BulkDays, setPanel4BulkDays] = useState('5');
+  const [panel4IncludeExpired, setPanel4IncludeExpired] = useState(false);
+  const [panel4IncludeOnHold, setPanel4IncludeOnHold] = useState(false);
+  const [panel4BulkGb, setPanel4BulkGb] = useState('5');
+  const [panel4IncludeLimited, setPanel4IncludeLimited] = useState(false);
+  const [panel4BulkServiceId, setPanel4BulkServiceId] = useState('4');
+  const [panel4BulkTargetServiceId, setPanel4BulkTargetServiceId] = useState('');
+  const [panel4BulkMsg, setPanel4BulkMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [adminIdsStr, setAdminIdsStr] = useState('');
 
   const [backupPassword, setBackupPassword] = useState('');
@@ -857,6 +867,131 @@ function SettingsView() {
       console.error('Error fetching Panel 4 inbounds:', e);
     } finally {
       setPanel4LoadingInbounds(false);
+    }
+  };
+
+  const loadPanel4ActionsPreview = async () => {
+    setPanel4ActionBusy(true);
+    setPanel4BulkMsg(null);
+    try {
+      const res = await fetch('/api/panel4-actions/preview');
+      const data = await res.json();
+      if (data.success) {
+        setPanel4Preview(data.preview);
+      } else {
+        setPanel4BulkMsg({ ok: false, text: data.message || 'خطا در دریافت پیش‌نمایش اشتراک‌ها' });
+      }
+    } catch (e: any) {
+      setPanel4BulkMsg({ ok: false, text: e.message || 'خطای شبکه' });
+    } finally {
+      setPanel4ActionBusy(false);
+    }
+  };
+
+  const handlePanel4BulkExpire = async (action: 'add' | 'subtract') => {
+    const days = parseInt(panel4BulkDays);
+    if (isNaN(days) || days <= 0) {
+      setPanel4BulkMsg({ ok: false, text: 'لطفاً تعداد روز معتبر (عدد بزرگتر از صفر) وارد نمایید.' });
+      return;
+    }
+    setPanel4ActionBusy(true);
+    setPanel4BulkMsg(null);
+    try {
+      const res = await fetch('/api/panel4-actions/expire', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          days,
+          action,
+          includeExpired: panel4IncludeExpired,
+          includeOnHold: panel4IncludeOnHold
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPanel4BulkMsg({
+          ok: true,
+          text: `عملیات زمانی با موفقیت انجام شد (${data.affected ?? 0} اشتراک تغییر کرد) — ${data.message || ''}`
+        });
+        loadPanel4ActionsPreview();
+      } else {
+        setPanel4BulkMsg({ ok: false, text: data.message || 'خطا در اجرای عملیات زمانی' });
+      }
+    } catch (e: any) {
+      setPanel4BulkMsg({ ok: false, text: e.message || 'خطای شبکه' });
+    } finally {
+      setPanel4ActionBusy(false);
+    }
+  };
+
+  const handlePanel4BulkUsage = async (action: 'add' | 'subtract') => {
+    const gb = parseInt(panel4BulkGb);
+    if (isNaN(gb) || gb <= 0) {
+      setPanel4BulkMsg({ ok: false, text: 'لطفاً مقدار گیگابایت معتبر (عدد بزرگتر از صفر) وارد نمایید.' });
+      return;
+    }
+    setPanel4ActionBusy(true);
+    setPanel4BulkMsg(null);
+    try {
+      const res = await fetch('/api/panel4-actions/usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gb,
+          action,
+          includeLimited: panel4IncludeLimited
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPanel4BulkMsg({
+          ok: true,
+          text: `عملیات حجمی با موفقیت انجام شد (${data.affected ?? 0} اشتراک تغییر کرد) — ${data.message || ''}`
+        });
+        loadPanel4ActionsPreview();
+      } else {
+        setPanel4BulkMsg({ ok: false, text: data.message || 'خطا در اجرای عملیات حجمی' });
+      }
+    } catch (e: any) {
+      setPanel4BulkMsg({ ok: false, text: e.message || 'خطای شبکه' });
+    } finally {
+      setPanel4ActionBusy(false);
+    }
+  };
+
+  const handlePanel4BulkService = async (action: 'add' | 'remove' | 'migrate') => {
+    const serviceId = parseInt(panel4BulkServiceId);
+    const targetId = panel4BulkTargetServiceId ? parseInt(panel4BulkTargetServiceId) : undefined;
+    if (isNaN(serviceId) || serviceId <= 0) {
+      setPanel4BulkMsg({ ok: false, text: 'لطفاً شناسه سرویس معتبر وارد نمایید.' });
+      return;
+    }
+    if (action === 'migrate' && (!targetId || isNaN(targetId) || targetId <= 0)) {
+      setPanel4BulkMsg({ ok: false, text: 'برای انتقال سرویس، شناسه سرویس مقصد (Target Service ID) الزامی است.' });
+      return;
+    }
+    setPanel4ActionBusy(true);
+    setPanel4BulkMsg(null);
+    try {
+      const res = await fetch('/api/panel4-actions/service', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceId, action, targetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPanel4BulkMsg({
+          ok: true,
+          text: `عملیات سرویس همگانی انجام شد (${data.affected ?? 0} اشتراک تغییر کرد) — ${data.message || ''}`
+        });
+        loadPanel4ActionsPreview();
+      } else {
+        setPanel4BulkMsg({ ok: false, text: data.message || 'خطا در عملیات سرویس همگانی' });
+      }
+    } catch (e: any) {
+      setPanel4BulkMsg({ ok: false, text: e.message || 'خطای شبکه' });
+    } finally {
+      setPanel4ActionBusy(false);
     }
   };
 
@@ -1657,6 +1792,218 @@ function SettingsView() {
                 </div>
               </div>
             )}
+
+            {/* Bulk Actions Section (/api/actions/*) */}
+            <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <span>⚡</span> عملیات گروهی روی کل اشتراک‌های پنل ۴ (Bulk Actions API)
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    افزودن یا کسر همگانی زمان (روز)، حجم (گیگابایت) و مدیریت سرویس متصل به تمامی اشتراک‌های پنل ۴
+                  </p>
+                </div>
+                <button
+                  onClick={loadPanel4ActionsPreview}
+                  disabled={panel4ActionBusy}
+                  className="bg-slate-800 hover:bg-slate-900 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${panel4ActionBusy ? 'animate-spin' : ''}`} />
+                  پیش‌نمایش وضعیت اشتراک‌ها
+                </button>
+              </div>
+
+              {panel4Preview && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5 text-center">
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <p className="text-[11px] text-slate-500">کل اشتراک‌ها</p>
+                    <p className="text-sm font-bold font-mono text-slate-800 mt-0.5">{panel4Preview.total ?? 0}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-emerald-200">
+                    <p className="text-[11px] text-emerald-700">فعال (Active)</p>
+                    <p className="text-sm font-bold font-mono text-emerald-700 mt-0.5">{panel4Preview.active ?? 0}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-amber-200">
+                    <p className="text-[11px] text-amber-700">انتظار اتصال (On Hold)</p>
+                    <p className="text-sm font-bold font-mono text-amber-700 mt-0.5">{panel4Preview.on_hold ?? 0}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-rose-200">
+                    <p className="text-[11px] text-rose-700">منقضی (Expired)</p>
+                    <p className="text-sm font-bold font-mono text-rose-700 mt-0.5">{panel4Preview.expired ?? 0}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-orange-200">
+                    <p className="text-[11px] text-orange-700">حجم تمام (Limited)</p>
+                    <p className="text-sm font-bold font-mono text-orange-700 mt-0.5">{panel4Preview.limited ?? 0}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-indigo-200">
+                    <p className="text-[11px] text-indigo-700">حجم‌دار (Finite)</p>
+                    <p className="text-sm font-bold font-mono text-indigo-700 mt-0.5">{panel4Preview.finite ?? 0}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-purple-200">
+                    <p className="text-[11px] text-purple-700">نامحدود (Unlimited)</p>
+                    <p className="text-sm font-bold font-mono text-purple-700 mt-0.5">{panel4Preview.unlimited ?? 0}</p>
+                  </div>
+                </div>
+              )}
+
+              {panel4BulkMsg && (
+                <div className={`p-3 rounded-xl text-xs font-bold border ${panel4BulkMsg.ok ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-rose-50 border-rose-300 text-rose-900'}`}>
+                  {panel4BulkMsg.ok ? '✅ ' : '❌ '}{panel4BulkMsg.text}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* 1. Bulk Expire Days */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-800">⏱ تغییر همگانی زمان اعتبار (/api/actions/expire)</h4>
+                  <div>
+                    <label className="block text-[11px] text-slate-600 mb-1">تعداد روز (Days)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={panel4BulkDays}
+                      onChange={e => setPanel4BulkDays(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono text-left"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5 text-[11px] text-slate-700">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={panel4IncludeExpired}
+                        onChange={e => setPanel4IncludeExpired(e.target.checked)}
+                        className="rounded border-slate-300 text-amber-600"
+                      />
+                      شامل اشتراک‌های منقضی‌شده (include_expired)
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={panel4IncludeOnHold}
+                        onChange={e => setPanel4IncludeOnHold(e.target.checked)}
+                        className="rounded border-slate-300 text-amber-600"
+                      />
+                      شامل اشتراک‌های در انتظار اتصال (include_on_hold)
+                    </label>
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => handlePanel4BulkExpire('add')}
+                      disabled={panel4ActionBusy}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg text-xs font-bold transition"
+                    >
+                      + افزودن روز
+                    </button>
+                    <button
+                      onClick={() => handlePanel4BulkExpire('subtract')}
+                      disabled={panel4ActionBusy}
+                      className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-2 rounded-lg text-xs font-bold transition"
+                    >
+                      - کسر روز
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Bulk Usage GB */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-800">📦 تغییر همگانی حجم (/api/actions/usage)</h4>
+                  <div>
+                    <label className="block text-[11px] text-slate-600 mb-1">مقدار حجم به گیگابایت (GB)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={panel4BulkGb}
+                      onChange={e => setPanel4BulkGb(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono text-left"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5 text-[11px] text-slate-700">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={panel4IncludeLimited}
+                        onChange={e => setPanel4IncludeLimited(e.target.checked)}
+                        className="rounded border-slate-300 text-amber-600"
+                      />
+                      شامل اشتراک‌های حجم‌تمام‌شده (include_limited)
+                    </label>
+                  </div>
+                  <div className="flex gap-2 pt-4">
+                    <button
+                      onClick={() => handlePanel4BulkUsage('add')}
+                      disabled={panel4ActionBusy}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg text-xs font-bold transition"
+                    >
+                      + افزودن حجم (GB)
+                    </button>
+                    <button
+                      onClick={() => handlePanel4BulkUsage('subtract')}
+                      disabled={panel4ActionBusy}
+                      className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-2 rounded-lg text-xs font-bold transition"
+                    >
+                      - کسر حجم (GB)
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3. Bulk Service Attach/Remove/Migrate */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-800">📡 مدیریت سرویس همگانی (/api/actions/services)</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-slate-600 mb-1">شناسه سرویس (Service ID)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={panel4BulkServiceId}
+                        onChange={e => setPanel4BulkServiceId(e.target.value)}
+                        className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-xs font-mono text-left"
+                        dir="ltr"
+                        placeholder="4"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-600 mb-1">سرویس مقصد (Target ID)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={panel4BulkTargetServiceId}
+                        onChange={e => setPanel4BulkTargetServiceId(e.target.value)}
+                        className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-xs font-mono text-left"
+                        dir="ltr"
+                        placeholder="اختیاری"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-2">
+                    <button
+                      onClick={() => handlePanel4BulkService('add')}
+                      disabled={panel4ActionBusy}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-2 rounded-lg text-[11px] font-bold transition"
+                    >
+                      افزودن سرویس
+                    </button>
+                    <button
+                      onClick={() => handlePanel4BulkService('remove')}
+                      disabled={panel4ActionBusy}
+                      className="flex-1 bg-slate-600 hover:bg-slate-700 text-white py-2 px-2 rounded-lg text-[11px] font-bold transition"
+                    >
+                      حذف سرویس
+                    </button>
+                    <button
+                      onClick={() => handlePanel4BulkService('migrate')}
+                      disabled={panel4ActionBusy}
+                      className="w-full bg-amber-600 hover:bg-amber-700 text-white py-2 px-2 rounded-lg text-[11px] font-bold transition"
+                    >
+                      انتقال سرویس (Migrate)
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <div className="pt-2 border-t flex justify-end">
               <button 

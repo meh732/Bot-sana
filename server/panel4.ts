@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import https from 'https';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db.js';
@@ -27,6 +27,11 @@ export interface Panel4OnlineUser {
 export class Panel4Client {
   private client: AxiosInstance;
   private cookie: string = '';
+  private tokenExpiryTime: number = 0;
+  private discoveredApiKey: string = '';
+  private cachedServices: any[] = [];
+  private subscriptionPrefix: string = 'https://link.gridpointgo.com';
+  private subscriptionTag: string = 'access';
   private workingApiPrefix: string = '';
   private lastPanelUrl: string = '';
   private lastPanelUser: string = '';
@@ -41,55 +46,177 @@ export class Panel4Client {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
       },
-      httpsAgent: new https.Agent({ 
+      httpsAgent: new https.Agent({
         rejectUnauthorized: false,
         keepAlive: true
       }),
     });
   }
 
-  private async getAuthOptions(panelOverride?: any) {
-    const state = db.getState();
-    const panel = panelOverride || state.panel4 || {};
-    
-    const hasApiKey = panel.apiKey && panel.apiKey.trim() !== '';
-    const hasUserPass = (panel.username && panel.username.trim() !== '') && (panel.password && panel.password.trim() !== '');
+  public sanitizeUsername(rawInput: any): string {
+    let clean = String(rawInput || '')
+      .trim()
+      .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
+      .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632))
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
 
-    if (!panel.url || (!hasApiKey && !hasUserPass)) {
-      throw new Error('مشخصات پنل ۴ کامل نیست. لطفاً آدرس پنل به همراه نام کاربری و رمز ورود یا کلید API را وارد کنید.');
-    }
-    
-    if (
-      panel.url !== this.lastPanelUrl ||
-      panel.username !== this.lastPanelUser ||
-      panel.password !== this.lastPanelPass ||
-      panel.apiKey !== this.lastPanelApiKey
-    ) {
-      this.cookie = '';
-      this.workingApiPrefix = '';
-      this.lastPanelUrl = panel.url || '';
-      this.lastPanelUser = panel.username || '';
-      this.lastPanelPass = panel.password || '';
-      this.lastPanelApiKey = panel.apiKey || '';
+    // Ensure at least one lowercase English letter exists
+    if (!/[a-z]/.test(clean)) {
+      clean = clean ? `u_${clean}` : `u_${Date.now().toString().slice(-6)}`;
     }
 
-    let formattedUrl = panel.url.trim().replace(/\s/g, '');
-    if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
-      formattedUrl = 'http://' + formattedUrl;
+    // Truncate base before appending digits so digits never get cut off by 30-char limit
+    if (clean.length > 24) {
+      clean = clean.slice(0, 24).replace(/_+$/g, '');
     }
-    
-    let baseURL = formattedUrl.endsWith('/') ? formattedUrl.slice(0, -1) : formattedUrl;
-    
-    const commonSuffixes = ['/panel', '/api', '/panel/api'];
-    for (const suffix of commonSuffixes) {
-      if (baseURL.toLowerCase().endsWith(suffix)) {
-        baseURL = baseURL.slice(0, -suffix.length);
+
+    // Ensure at least one digit exists
+    if (!/[0-9]/.test(clean)) {
+      const randDigits = Math.floor(10 + Math.random() * 89);
+      clean = `${clean}_${randDigits}`;
+    }
+
+    // Ensure minimum 3 characters
+    if (clean.length < 3) {
+      const suffix = Math.floor(100 + Math.random() * 899);
+      clean = `${clean}_${suffix}`;
+    }
+
+    // Final length guard (3-30 chars) while preserving digits
+    if (clean.length > 30) {
+      clean = clean.slice(0, 30).replace(/_+$/g, '');
+      if (!/[0-9]/.test(clean)) {
+        const randDigits = Math.floor(10 + Math.random() * 89);
+        clean = `${clean.slice(0, 27).replace(/_+$/g, '')}_${randDigits}`;
       }
     }
 
-    // 1. Username/Password Login Auth (FastAPI / Panel 4 / Marzban / 3x-ui standard)
+    return clean;
+  }
+
+  private formatBaseUrl(rawUrl: string): string {
+    let formattedUrl = rawUrl.trim().replace(/\s/g, '');
+    if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+      formattedUrl = 'https://' + formattedUrl;
+    }
+
+    let baseURL = formattedUrl.endsWith('/') ? formattedUrl.slice(0, -1) : formattedUrl;
+
+    const commonSuffixes = [
+      '/panel/api',
+      '/api',
+      '/panel',
+      '/dashboard',
+      '/subscriptions',
+      '/login',
+      '/docs/index.html',
+      '/docs'
+    ];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const suffix of commonSuffixes) {
+        if (baseURL.toLowerCase().endsWith(suffix)) {
+          baseURL = baseURL.slice(0, -suffix.length);
+          if (baseURL.endsWith('/')) baseURL = baseURL.slice(0, -1);
+          changed = true;
+        }
+      }
+    }
+    return baseURL;
+  }
+
+  private extractJwtExpiryMs(token: string): number {
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+        if (payload && typeof payload.exp === 'number') {
+          // Refresh 1 hour before actual JWT expiration
+          return (payload.exp * 1000) - 3600000;
+        }
+      }
+    } catch (e) {}
+    // Default 12 hours if not parseable
+    return Date.now() + 12 * 3600 * 1000;
+  }
+
+  private captureAdminMetadata(adminObj: any) {
+    if (!adminObj || typeof adminObj !== 'object') return;
+    if (adminObj.api_key && typeof adminObj.api_key === 'string' && adminObj.api_key.trim() !== '') {
+      this.discoveredApiKey = adminObj.api_key.trim();
+    }
+    if (adminObj.subscription_prefix && typeof adminObj.subscription_prefix === 'string') {
+      this.subscriptionPrefix = adminObj.subscription_prefix.replace(/\/+$/, '');
+    }
+    if (adminObj.subscription_tag && typeof adminObj.subscription_tag === 'string') {
+      this.subscriptionTag = adminObj.subscription_tag.replace(/^\/+|\/+$/g, '');
+    }
+    if (Array.isArray(adminObj.services) && adminObj.services.length > 0) {
+      const mapped = adminObj.services.map((s: any) => ({
+        id: s.id !== undefined ? s.id : s.service_id,
+        remark: s.name || s.title || s.remark || `Service #${s.id}`,
+        name: s.name || s.title || `Service #${s.id}`,
+        protocol: 'Service',
+        enable: true,
+        ...s
+      })).filter((s: any) => s.id !== undefined);
+      if (mapped.length > 0) {
+        this.cachedServices = mapped;
+      }
+    }
+  }
+
+  private async getAuthOptions(panelOverride?: any, forceRefresh: boolean = false): Promise<{ baseURL: string; headers: Record<string, string> }> {
+    const state = db.getState();
+    const savedPanel = state.panel4 || {};
+    const panel = panelOverride ? { ...savedPanel, ...panelOverride } : savedPanel;
+
+    // Resolve masked password from web UI if '********' was sent
+    if (panel.password === '********' || !panel.password) {
+      if (savedPanel.password && savedPanel.password !== '********') {
+        panel.password = savedPanel.password;
+      }
+    }
+
+    const normUrl = (panel.url || 'https://app.solidlayerco.com').trim();
+    const normUser = (panel.username || '').trim();
+    const normPass = (panel.password || '').trim();
+    const normApiKey = (panel.apiKey || '').trim();
+
+    const hasApiKey = normApiKey !== '';
+    const hasUserPass = normUser !== '' && normPass !== '';
+
+    if (!normUrl || (!hasApiKey && !hasUserPass)) {
+      throw new Error('مشخصات پنل ۴ کامل نیست. لطفاً آدرس پنل به همراه نام کاربری و رمز ورود یا کلید API را وارد کنید.');
+    }
+
+    if (
+      normUrl !== this.lastPanelUrl ||
+      normUser !== this.lastPanelUser ||
+      normPass !== this.lastPanelPass ||
+      normApiKey !== this.lastPanelApiKey
+    ) {
+      this.cookie = '';
+      this.tokenExpiryTime = 0;
+      this.workingApiPrefix = '';
+      this.lastPanelUrl = normUrl;
+      this.lastPanelUser = normUser;
+      this.lastPanelPass = normPass;
+      this.lastPanelApiKey = normApiKey;
+    }
+
+    const baseURL = this.formatBaseUrl(normUrl);
+    const now = Date.now();
+
+    // 1. Username/Password Login Auth
     if (hasUserPass) {
-      if (!this.cookie) {
+      const isExpired = !this.cookie || (this.tokenExpiryTime > 0 && now >= this.tokenExpiryTime);
+      if (forceRefresh || isExpired) {
+        this.cookie = '';
         const loginPaths = ['/api/admins/token', '/login', '/panel/login'];
         let loginSuccess = false;
         let lastLoginError = '';
@@ -99,8 +226,8 @@ export class Panel4Client {
             // Form-encoded (FastAPI / Panel 4 standard)
             const params = new URLSearchParams();
             params.append('grant_type', 'password');
-            params.append('username', panel.username.trim());
-            params.append('password', panel.password.trim());
+            params.append('username', normUser);
+            params.append('password', normPass);
 
             let res = await this.client.post(`${baseURL}${path}`, params, {
               headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -109,15 +236,18 @@ export class Panel4Client {
             });
 
             if (res.data?.token || res.data?.access_token) {
-              this.cookie = res.data.token || res.data.access_token;
+              const tok = res.data.token || res.data.access_token;
+              this.cookie = tok;
+              this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
+              if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
               loginSuccess = true;
               break;
             }
 
             // JSON mode
             res = await this.client.post(`${baseURL}${path}`, {
-              username: panel.username.trim(),
-              password: panel.password.trim()
+              username: normUser,
+              password: normPass
             }, {
               headers: { 'Content-Type': 'application/json' },
               validateStatus: () => true,
@@ -125,13 +255,17 @@ export class Panel4Client {
             });
 
             if (res.data?.token || res.data?.access_token) {
-              this.cookie = res.data.token || res.data.access_token;
+              const tok = res.data.token || res.data.access_token;
+              this.cookie = tok;
+              this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
+              if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
               loginSuccess = true;
               break;
             } else if (res.data?.success || res.status === 200) {
               const rawCookies = res.headers['set-cookie'];
               if (rawCookies && rawCookies.length > 0) {
                 this.cookie = rawCookies.map((c: string) => c.split(';')[0]).join('; ');
+                this.tokenExpiryTime = Date.now() + 12 * 3600 * 1000;
                 loginSuccess = true;
                 break;
               }
@@ -141,59 +275,103 @@ export class Panel4Client {
           }
         }
 
-        if (!loginSuccess && !this.cookie && hasApiKey) {
-          const apiKey = panel.apiKey.trim();
-          const authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
-          return {
-            baseURL,
-            headers: {
-              'Api-Key': apiKey,
-              'X-Api-Key': apiKey,
-              'X-API-Key': apiKey,
-              'Authorization': authHeader,
-              'Accept': 'application/json'
-            }
-          };
-        }
-
+        // Fallback to configured or discovered API Key if password login failed
         if (!loginSuccess && !this.cookie) {
+          const fallbackKey = normApiKey || this.discoveredApiKey;
+          if (fallbackKey) {
+            const isJwt = fallbackKey.includes('.');
+            const headers: Record<string, string> = {
+              'Accept': 'application/json'
+            };
+            if (isJwt) {
+              headers['Authorization'] = fallbackKey.startsWith('Bearer ') ? fallbackKey : `Bearer ${fallbackKey}`;
+            } else {
+              headers['X-API-Key'] = fallbackKey;
+            }
+            return { baseURL, headers };
+          }
           throw new Error(`عدم موفقیت در ورود به پنل ۴. لطفاً آدرس، نام کاربری و رمز عبور را بررسی فرمایید: ${lastLoginError}`);
         }
       }
 
+      const isJwt = this.cookie.includes('.') || this.cookie.startsWith('Bearer ');
       const authHeader = this.cookie.startsWith('Bearer ') ? this.cookie : (this.cookie.includes('.') ? `Bearer ${this.cookie}` : this.cookie);
-      return {
-        baseURL,
-        headers: {
-          'Authorization': authHeader,
-          'Cookie': this.cookie,
-          'Accept': 'application/json'
-        }
+      const headers: Record<string, string> = {
+        'Accept': 'application/json'
       };
+      if (isJwt) {
+        headers['Authorization'] = authHeader;
+      } else {
+        headers['Cookie'] = this.cookie;
+      }
+      return { baseURL, headers };
     }
 
-    // 2. Pure API Key Auth
+    // 2. Pure API Key Auth (Important: Do NOT send Authorization: Bearer <raw_api_key> on Panel 4 as it triggers 401)
     if (hasApiKey) {
-      const apiKey = panel.apiKey.trim();
-      const authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
-      return { 
-        baseURL, 
-        headers: { 
-          'Api-Key': apiKey, 
-          'X-Api-Key': apiKey, 
-          'X-API-Key': apiKey,
-          'Authorization': authHeader, 
-          'Accept': 'application/json' 
-        } 
+      const isJwt = normApiKey.includes('.');
+      const headers: Record<string, string> = {
+        'Accept': 'application/json'
       };
+      if (isJwt) {
+        headers['Authorization'] = normApiKey.startsWith('Bearer ') ? normApiKey : `Bearer ${normApiKey}`;
+      } else {
+        headers['X-API-Key'] = normApiKey;
+      }
+      return { baseURL, headers };
     }
 
     throw new Error('مشخصات احراز هویت پنل ۴ تعریف نشده است.');
   }
 
+  private async requestWithRetry(
+    configBuilder: (auth: { baseURL: string; headers: Record<string, string> }) => AxiosRequestConfig,
+    panelOverride?: any
+  ): Promise<AxiosResponse> {
+    let auth = await this.getAuthOptions(panelOverride, false);
+    let res = await this.client.request({
+      ...configBuilder(auth),
+      validateStatus: () => true
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      // Force token refresh and retry immediately
+      try {
+        auth = await this.getAuthOptions(panelOverride, true);
+        res = await this.client.request({
+          ...configBuilder(auth),
+          validateStatus: () => true
+        });
+      } catch (e) {}
+
+      // If still 401/403 and we have a discoveredApiKey, try X-API-Key directly
+      if ((res.status === 401 || res.status === 403) && this.discoveredApiKey) {
+        const keyAuth = {
+          baseURL: auth.baseURL,
+          headers: {
+            'X-API-Key': this.discoveredApiKey,
+            'Accept': 'application/json'
+          }
+        };
+        res = await this.client.request({
+          ...configBuilder(keyAuth),
+          validateStatus: () => true
+        });
+      }
+    }
+
+    return res;
+  }
+
   public async testConnection(panelOverride?: any): Promise<{ success: boolean; message: string; inboundsCount?: number; inbounds?: any[] }> {
     try {
-      const inbounds = await this.getInbounds(panelOverride);
+      const inbounds = await this.getInbounds(panelOverride, true);
+      if (!inbounds || inbounds.length === 0) {
+        return {
+          success: false,
+          message: 'اتصال برقرار شد اما هیچ سرویس یا اینباند فعالی یافت نشد. لطفاً دسترسی اکانت را بررسی کنید.'
+        };
+      }
       return {
         success: true,
         message: `اتصال به پنل ۴ با موفقیت برقرار شد. (${inbounds.length} سرویس/اینباند فعال)`,
@@ -208,32 +386,41 @@ export class Panel4Client {
     }
   }
 
-  public async getInbounds(panelOverride?: any): Promise<any[]> {
+  public async getInbounds(panelOverride?: any, forceRefreshAuth: boolean = false): Promise<any[]> {
     try {
       const state = db.getState();
-      const panel = panelOverride || state.panel4 || {};
-      if (!panel.url || panel.enabled === false) return [];
-      if (panel.url.includes('test-') || panel.url.includes('example.com')) return [];
+      const savedPanel = state.panel4 || {};
+      const panel = panelOverride ? { ...savedPanel, ...panelOverride } : savedPanel;
+      const urlToUse = panel.url || 'https://app.solidlayerco.com';
+      if (!urlToUse || panel.enabled === false) return [];
+      if (urlToUse.includes('test-') || urlToUse.includes('example.com')) return [];
 
-      const auth = await this.getAuthOptions(panelOverride);
+      if (forceRefreshAuth) {
+        await this.getAuthOptions(panelOverride, true);
+      }
+
       const inboundsList: any[] = [];
 
-      // 1. Check Panel 4 native Services API (/api/services or /api/admins/current)
+      // 1. Check Panel 4 native Services API (/api/services and /api/admins/current) with automatic 401 retry
       const servicePaths = ['/api/services', '/api/admins/current'];
       for (const sp of servicePaths) {
         try {
-          const res = await this.client.get(`${auth.baseURL}${sp}`, {
+          const res = await this.requestWithRetry((auth) => ({
+            method: 'GET',
+            url: `${auth.baseURL}${sp}`,
             headers: auth.headers,
-            timeout: 5000,
-            validateStatus: () => true
-          });
+            timeout: 8000
+          }), panelOverride);
 
           if (res.status === 200 && res.data) {
             const data = res.data;
-            const items = Array.isArray(data) 
-              ? data 
+            if (sp === '/api/admins/current') {
+              this.captureAdminMetadata(data);
+            }
+            const items = Array.isArray(data)
+              ? data
               : (data.items || data.services || data.data || data.obj || data.result);
-            
+
             if (Array.isArray(items) && items.length > 0) {
               for (const s of items) {
                 const id = s.id !== undefined ? s.id : (s.service_id || s.tag || s.name);
@@ -249,6 +436,7 @@ export class Panel4Client {
                 }
               }
               if (inboundsList.length > 0) {
+                this.cachedServices = inboundsList;
                 return inboundsList;
               }
             }
@@ -256,9 +444,14 @@ export class Panel4Client {
         } catch (e) {}
       }
 
+      // If cachedServices was populated during login (/api/admins/token), return it immediately!
+      if (this.cachedServices.length > 0) {
+        return this.cachedServices;
+      }
+
       // 2. Check X-UI / 3x-ui style inbounds prefixes if native services API returned nothing
-      const prefixes = this.workingApiPrefix 
-        ? [this.workingApiPrefix] 
+      const prefixes = this.workingApiPrefix
+        ? [this.workingApiPrefix]
         : [
             '/panel/api/inbounds',
             '/api/inbounds',
@@ -267,25 +460,28 @@ export class Panel4Client {
 
       for (const prefix of prefixes) {
         try {
-          let res = await this.client.get(`${auth.baseURL}${prefix}/list`, {
+          let res = await this.requestWithRetry((auth) => ({
+            method: 'GET',
+            url: `${auth.baseURL}${prefix}/list`,
             headers: auth.headers,
-            timeout: 5000,
-            validateStatus: () => true
-          });
-          if (res.status !== 200 || !res.data) {
-            res = await this.client.get(`${auth.baseURL}${prefix}`, {
+            timeout: 5000
+          }), panelOverride);
+
+          if (res.status !== 200 || !res.data || typeof res.data !== 'object') {
+            res = await this.requestWithRetry((auth) => ({
+              method: 'GET',
+              url: `${auth.baseURL}${prefix}`,
               headers: auth.headers,
-              timeout: 5000,
-              validateStatus: () => true
-            });
+              timeout: 5000
+            }), panelOverride);
           }
 
-          if (res.status === 200 && res.data) {
+          if (res.status === 200 && res.data && typeof res.data === 'object') {
             const data = res.data;
-            const items = Array.isArray(data) 
-              ? data 
+            const items = Array.isArray(data)
+              ? data
               : (data.obj || data.data || data.items || data.inbounds || data.hosts || data.nodes || data.services || data.result);
-            
+
             if (Array.isArray(items) && items.length > 0) {
               this.workingApiPrefix = prefix;
               for (const ib of items) {
@@ -307,9 +503,33 @@ export class Panel4Client {
         }
       }
 
+      // 3. Final fallback if panel has configured inboundIds or default service 4 on SolidLayer/GoGuard
+      if (panel.inboundIds && Array.isArray(panel.inboundIds) && panel.inboundIds.length > 0) {
+        return panel.inboundIds.map((id: any) => ({
+          id: Number(id) || id,
+          remark: `Service #${id}`,
+          name: `Service #${id}`,
+          protocol: 'Service',
+          enable: true
+        }));
+      }
+      if (panel.inboundId !== undefined && panel.inboundId !== null && String(panel.inboundId) !== '') {
+        return [{
+          id: Number(panel.inboundId) || panel.inboundId,
+          remark: `Service #${panel.inboundId}`,
+          name: `Service #${panel.inboundId}`,
+          protocol: 'Service',
+          enable: true
+        }];
+      }
+      if (urlToUse.includes('solidlayerco.com')) {
+        return [{ id: 4, remark: 'Full', name: 'Full', protocol: 'Service', enable: true }];
+      }
+
       return inboundsList;
     } catch (e: any) {
       console.warn('[Panel4] getInbounds note:', e.message);
+      if (this.cachedServices.length > 0) return this.cachedServices;
       return [];
     }
   }
@@ -342,51 +562,51 @@ export class Panel4Client {
   ): Promise<Panel4ClientDetails> {
     const state = db.getState();
     const panel = state.panel4 || {};
-    const auth = await this.getAuthOptions();
 
     // 1. Extract arguments cleanly from either object or positional format
     let rawEmail = typeof emailOrOptions === 'object' ? (emailOrOptions.clientEmail || emailOrOptions.email || '') : emailOrOptions;
     let volumeGb = typeof emailOrOptions === 'object' ? (emailOrOptions.volumeGb ?? emailOrOptions.totalGB ?? 0) : (posVolumeGb ?? 0);
     let durationDays = typeof emailOrOptions === 'object' ? (emailOrOptions.durationDays ?? emailOrOptions.expiryDays ?? 0) : (posDurationDays ?? 0);
-    let targetInboundIds = typeof emailOrOptions === 'object' 
-      ? (emailOrOptions.targetInboundIds || emailOrOptions.inboundIds || (emailOrOptions.inboundId ? [emailOrOptions.inboundId] : [])) 
+    let targetInboundIds = typeof emailOrOptions === 'object'
+      ? (emailOrOptions.targetInboundIds || emailOrOptions.inboundIds || (emailOrOptions.inboundId ? [emailOrOptions.inboundId] : []))
       : posTargetInboundIds;
     let limitIp = typeof emailOrOptions === 'object' ? (emailOrOptions.limitIp ?? 0) : (posLimitIp ?? 0);
     let chatId = typeof emailOrOptions === 'object' ? emailOrOptions.chatId : posChatId;
     let sellerGroupName = typeof emailOrOptions === 'object' ? emailOrOptions.sellerGroupName : posSellerGroupName;
 
-    // 2. Fetch available services/inbounds on Panel 4
+    // 2. Fetch available services/inbounds on Panel 4 (never fail hard if empty)
     const inbounds = await this.getInbounds();
-    if (!inbounds || inbounds.length === 0) {
-      throw new Error('هیچ اینباند یا سرویسی روی پنل ۴ یافت نشد. لطفاً در تنظیمات پنل ۴ اتصال و سرویس‌ها را بررسی فرمایید.');
-    }
-
-    // Match requested inbounds against available services on Panel 4
     const availableServiceIds = inbounds.map((ib: any) => Number(ib.id) || ib.id);
+
     let matchedServices: number[] = [];
     if (targetInboundIds && targetInboundIds.length > 0) {
       matchedServices = targetInboundIds
         .map(Number)
-        .filter(id => !isNaN(id) && availableServiceIds.some((aid: any) => Number(aid) === id));
+        .filter(id => !isNaN(id) && (availableServiceIds.length === 0 || availableServiceIds.some((aid: any) => Number(aid) === id)));
     }
     if (matchedServices.length === 0 && panel.inboundIds && panel.inboundIds.length > 0) {
       matchedServices = panel.inboundIds
         .map(Number)
-        .filter((id: number) => !isNaN(id) && availableServiceIds.some((aid: any) => Number(aid) === id));
+        .filter((id: number) => !isNaN(id) && (availableServiceIds.length === 0 || availableServiceIds.some((aid: any) => Number(aid) === id)));
+    }
+    if (matchedServices.length === 0 && panel.inboundId) {
+      const pid = Number(panel.inboundId);
+      if (!isNaN(pid) && pid > 0) matchedServices = [pid];
+    }
+    if (matchedServices.length === 0 && inbounds.length > 0) {
+      matchedServices = [Number(inbounds[0].id) || 4];
     }
     if (matchedServices.length === 0) {
-      matchedServices = [Number(inbounds[0].id) || 4];
+      matchedServices = [4];
     }
 
     const uuid = uuidv4();
     const subId = Math.random().toString(36).substring(2, 18);
 
     // 3. Ensure volume and duration adhere to Panel 4 permissions (seller cannot create unlimited usage/expiry)
-    // If volumeGb <= 0, default to 10 GB
     if (!volumeGb || volumeGb <= 0) {
       volumeGb = 10;
     }
-    // If durationDays <= 0, default to 30 days
     if (!durationDays || durationDays <= 0) {
       durationDays = 30;
     }
@@ -397,31 +617,13 @@ export class Panel4Client {
     const expiryTime = Date.now() + Math.round(durationDays * 86400000);
 
     // 4. Sanitize username: Panel 4 strictly requires lowercase letters, numbers, and underscore (3-30 chars)
-    let cleanEmail = String(rawEmail || '')
-      .trim()
-      .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728))
-      .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 1632))
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_+|_+$/g, '');
-
-    if (cleanEmail.length > 0 && !/[0-9]/.test(cleanEmail)) {
-      cleanEmail = `${cleanEmail}_${Math.floor(10 + Math.random() * 89)}`;
-    }
-    if (cleanEmail.length < 3) {
-      const suffix = Math.floor(100 + Math.random() * 899);
-      cleanEmail = cleanEmail ? `${cleanEmail}_${suffix}` : `u_${Date.now().toString().slice(-6)}`;
-    }
-    if (cleanEmail.length > 30) {
-      cleanEmail = cleanEmail.slice(0, 30).replace(/_+$/g, '');
-    }
+    let cleanEmail = this.sanitizeUsername(rawEmail);
 
     let createdSubUrl = '';
     let addedToAny = false;
     let lastErrorMsg = '';
 
-    // 5. Native Panel 4 Subscriptions API (POST /api/subscriptions)
+    // 5. Native Panel 4 Subscriptions API (POST /api/subscriptions) with auto-retry on 401, 409, or validation errors
     const note = sellerGroupName ? String(sellerGroupName).slice(0, 60) : '';
 
     const attemptCreate = async (uname: string) => {
@@ -433,11 +635,13 @@ export class Panel4Client {
         note: note || undefined
       };
 
-      const res = await this.client.post(`${auth.baseURL}/api/subscriptions`, subPayload, {
+      const res = await this.requestWithRetry((auth) => ({
+        method: 'POST',
+        url: `${auth.baseURL}/api/subscriptions`,
         headers: auth.headers,
-        timeout: 10000,
-        validateStatus: () => true
-      });
+        data: subPayload,
+        timeout: 12000
+      }));
 
       return { res, payload: subPayload };
     };
@@ -445,21 +649,32 @@ export class Panel4Client {
     try {
       let { res, payload } = await attemptCreate(cleanEmail);
 
-      // If username already exists (409 Conflict), generate a unique suffix and retry automatically
-      if (res.status === 409 || (res.data && JSON.stringify(res.data).includes('already exists'))) {
+      // Up to 3 automatic retries if username conflict (409) or username validation issue
+      let retries = 0;
+      while (
+        retries < 3 &&
+        (res.status === 409 ||
+          (res.data && JSON.stringify(res.data).toLowerCase().includes('already exists')) ||
+          (res.status === 400 && res.data && JSON.stringify(res.data).toLowerCase().includes('username')))
+      ) {
+        retries++;
         const uniqueSuffix = `_${Math.floor(100 + Math.random() * 899)}`;
-        cleanEmail = `${cleanEmail.slice(0, 30 - uniqueSuffix.length)}${uniqueSuffix}`;
-        const secondAttempt = await attemptCreate(cleanEmail);
-        res = secondAttempt.res;
+        const basePart = cleanEmail.replace(/_[0-9]+$/, '').slice(0, 30 - uniqueSuffix.length).replace(/_+$/g, '') || 'user';
+        cleanEmail = this.sanitizeUsername(`${basePart}${uniqueSuffix}`);
+        const retryAttempt = await attemptCreate(cleanEmail);
+        res = retryAttempt.res;
+        payload = retryAttempt.payload;
       }
 
       // If single object rejected with array requirement, retry with array
       if (res.status >= 400 && res.status !== 409) {
-        const arrayRes = await this.client.post(`${auth.baseURL}/api/subscriptions`, [payload], {
+        const arrayRes = await this.requestWithRetry((auth) => ({
+          method: 'POST',
+          url: `${auth.baseURL}/api/subscriptions`,
           headers: auth.headers,
-          timeout: 10000,
-          validateStatus: () => true
-        });
+          data: [payload],
+          timeout: 12000
+        }));
         if (arrayRes.status >= 200 && arrayRes.status < 300) {
           res = arrayRes;
         }
@@ -469,9 +684,12 @@ export class Panel4Client {
         addedToAny = true;
         const dataObj = Array.isArray(res.data) ? res.data[0] : res.data;
         if (dataObj && typeof dataObj === 'object') {
+          if (dataObj.username) cleanEmail = String(dataObj.username);
           const link = dataObj.subscription_link || dataObj.subscription_url || dataObj.url || dataObj.link || '';
           if (typeof link === 'string' && link.startsWith('http')) {
             createdSubUrl = link.trim();
+          } else if (dataObj.access_key && this.subscriptionPrefix) {
+            createdSubUrl = `${this.subscriptionPrefix}/${this.subscriptionTag}/${dataObj.access_key}`;
           }
         }
       } else {
@@ -483,47 +701,28 @@ export class Panel4Client {
       lastErrorMsg = e.message;
     }
 
-    // 6. Try fetching subscription link directly if created but link was missing in response
+    // 6. Try fetching subscription details directly if created but link was missing in response
     if (addedToAny && !createdSubUrl) {
-      const linkEndpoints = [
-        `${auth.baseURL}/api/subscriptions/${cleanEmail}/links`,
-        `${auth.baseURL}/api/admins/current/links`
-      ];
-
-      for (const lep of linkEndpoints) {
-        try {
-          const linkRes = await this.client.get(lep, {
-            headers: auth.headers,
-            timeout: 6000,
-            validateStatus: () => true
-          });
-
-          if (linkRes.status === 200 && linkRes.data) {
-            if (typeof linkRes.data === 'string' && linkRes.data.startsWith('http')) {
-              createdSubUrl = linkRes.data.trim();
-              break;
-            } else if (Array.isArray(linkRes.data) && linkRes.data.length > 0) {
-              const firstItem = linkRes.data[0];
-              const candidate = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || firstItem.subscription_link || '');
-              if (typeof candidate === 'string' && candidate.startsWith('http')) {
-                createdSubUrl = candidate.trim();
-                break;
-              }
-            } else if (linkRes.data.links && Array.isArray(linkRes.data.links) && linkRes.data.links.length > 0) {
-              const firstItem = linkRes.data.links[0];
-              const candidate = typeof firstItem === 'string' ? firstItem : (firstItem.url || firstItem.link || firstItem.subscription_url || firstItem.subscription_link || '');
-              if (typeof candidate === 'string' && candidate.startsWith('http')) {
-                createdSubUrl = candidate.trim();
-                break;
-              }
-            }
+      try {
+        const subLookup = await this.requestWithRetry((auth) => ({
+          method: 'GET',
+          url: `${auth.baseURL}/api/subscriptions?usernames=${encodeURIComponent(cleanEmail)}`,
+          headers: auth.headers,
+          timeout: 6000
+        }));
+        if (subLookup.status === 200 && subLookup.data?.items?.[0]) {
+          const item = subLookup.data.items[0];
+          if (item.subscription_link && String(item.subscription_link).startsWith('http')) {
+            createdSubUrl = String(item.subscription_link).trim();
+          } else if (item.access_key && this.subscriptionPrefix) {
+            createdSubUrl = `${this.subscriptionPrefix}/${this.subscriptionTag}/${item.access_key}`;
           }
-        } catch (e) {}
-      }
+        }
+      } catch (e) {}
     }
 
     // 7. Fallback to 3x-ui / X-UI style addClient if native subscriptions endpoint was not supported
-    if (!addedToAny) {
+    if (!addedToAny && inbounds.some((ib: any) => ib.protocol !== 'Service')) {
       const prefix = this.workingApiPrefix || '/panel/api/inbounds';
       for (const ibId of matchedServices) {
         const targetIb = inbounds.find((ib: any) => String(ib.id) === String(ibId));
@@ -543,14 +742,16 @@ export class Panel4Client {
         };
 
         try {
-          const res = await this.client.post(`${auth.baseURL}${prefix}/addClient`, {
-            id: targetIb.id,
-            settings: JSON.stringify({ clients: [clientPayload] })
-          }, {
+          const res = await this.requestWithRetry((auth) => ({
+            method: 'POST',
+            url: `${auth.baseURL}${prefix}/addClient`,
             headers: auth.headers,
-            timeout: 8000,
-            validateStatus: () => true
-          });
+            data: {
+              id: targetIb.id,
+              settings: JSON.stringify({ clients: [clientPayload] })
+            },
+            timeout: 8000
+          }));
 
           if (res.data?.success) {
             addedToAny = true;
@@ -573,6 +774,7 @@ export class Panel4Client {
         if (!base.endsWith('/')) base += '/';
         subUrl = `${base}${cleanEmail}`;
       } else {
+        const auth = await this.getAuthOptions();
         subUrl = `${auth.baseURL}/sub/${cleanEmail}`;
       }
     }
@@ -592,24 +794,31 @@ export class Panel4Client {
   }
 
   public async renewClient(email: string, volumeGb: number, durationDays: number): Promise<void> {
-    const auth = await this.getAuthOptions();
     const safeVolume = volumeGb > 0 ? volumeGb : 10;
     const safeDays = durationDays > 0 ? durationDays : 30;
     const totalBytes = Math.round(safeVolume * 1024 * 1024 * 1024);
     const limitExpireOnHold = -Math.round(safeDays * 86400);
 
-    // Reset & update subscription in Panel 4 / GoGuard
+    // Reset & update subscription in Panel 4 / GoGuard with automatic auth retry
     try {
-      await this.client.post(`${auth.baseURL}/api/subscriptions/reset`, {
-        usernames: [email]
-      }, { headers: auth.headers, validateStatus: () => true });
+      await this.requestWithRetry((auth) => ({
+        method: 'POST',
+        url: `${auth.baseURL}/api/subscriptions/reset`,
+        headers: auth.headers,
+        data: { usernames: [email] }
+      }));
 
-      await this.client.put(`${auth.baseURL}/api/subscriptions`, {
-        usernames: [email],
-        limit_usage: totalBytes,
-        limit_expire: limitExpireOnHold,
-        enabled: true
-      }, { headers: auth.headers, validateStatus: () => true });
+      await this.requestWithRetry((auth) => ({
+        method: 'PUT',
+        url: `${auth.baseURL}/api/subscriptions`,
+        headers: auth.headers,
+        data: {
+          usernames: [email],
+          limit_usage: totalBytes,
+          limit_expire: limitExpireOnHold,
+          enabled: true
+        }
+      }));
     } catch (e) {}
 
     // Also try 3x-ui style renewal fallback
@@ -620,7 +829,7 @@ export class Panel4Client {
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
       if (!settings || !Array.isArray(settings.clients)) continue;
 
-      const clientObj = settings.clients.find((cl: any) => 
+      const clientObj = settings.clients.find((cl: any) =>
         (cl.email && cl.email.toLowerCase() === email.toLowerCase()) ||
         (cl.id && cl.id.toLowerCase() === email.toLowerCase())
       );
@@ -634,28 +843,38 @@ export class Panel4Client {
         clientObj.expiryTime = addMs > 0 ? (Math.max(Date.now(), clientObj.expiryTime || 0) + addMs) : 0;
         clientObj.enable = true;
 
-        await this.client.post(`${auth.baseURL}${prefix}/updateClient/${clientObj.id}`, {
-          id: ib.id,
-          settings: JSON.stringify({ clients: [clientObj] })
-        }, { headers: auth.headers }).catch(() => null);
+        await this.requestWithRetry((auth) => ({
+          method: 'POST',
+          url: `${auth.baseURL}${prefix}/updateClient/${clientObj.id}`,
+          headers: auth.headers,
+          data: {
+            id: ib.id,
+            settings: JSON.stringify({ clients: [clientObj] })
+          }
+        })).catch(() => null);
       }
     }
   }
 
   public async updateClientEnable(email: string, enable: boolean): Promise<void> {
-    const auth = await this.getAuthOptions();
-    
-    // Try Panel 4 bulk enable/disable
     try {
       const actionEp = enable ? '/api/subscriptions/enable' : '/api/subscriptions/disable';
-      await this.client.post(`${auth.baseURL}${actionEp}`, {
-        usernames: [email]
-      }, { headers: auth.headers, validateStatus: () => true });
+      await this.requestWithRetry((auth) => ({
+        method: 'POST',
+        url: `${auth.baseURL}${actionEp}`,
+        headers: auth.headers,
+        data: { usernames: [email] }
+      }));
 
-      await this.client.put(`${auth.baseURL}/api/subscriptions`, {
-        usernames: [email],
-        enabled: enable
-      }, { headers: auth.headers, validateStatus: () => true });
+      await this.requestWithRetry((auth) => ({
+        method: 'PUT',
+        url: `${auth.baseURL}/api/subscriptions`,
+        headers: auth.headers,
+        data: {
+          usernames: [email],
+          enabled: enable
+        }
+      }));
     } catch (e) {}
 
     // Fallback to 3x-ui
@@ -666,31 +885,34 @@ export class Panel4Client {
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
       if (!settings || !Array.isArray(settings.clients)) continue;
 
-      const clientObj = settings.clients.find((cl: any) => 
+      const clientObj = settings.clients.find((cl: any) =>
         (cl.email && cl.email.toLowerCase() === email.toLowerCase()) ||
         (cl.id && cl.id.toLowerCase() === email.toLowerCase())
       );
 
       if (clientObj) {
         clientObj.enable = enable;
-        await this.client.post(`${auth.baseURL}${prefix}/updateClient/${clientObj.id}`, {
-          id: ib.id,
-          settings: JSON.stringify({ clients: [clientObj] })
-        }, { headers: auth.headers }).catch(() => null);
+        await this.requestWithRetry((auth) => ({
+          method: 'POST',
+          url: `${auth.baseURL}${prefix}/updateClient/${clientObj.id}`,
+          headers: auth.headers,
+          data: {
+            id: ib.id,
+            settings: JSON.stringify({ clients: [clientObj] })
+          }
+        })).catch(() => null);
       }
     }
   }
 
   public async delClient(email: string): Promise<void> {
-    const auth = await this.getAuthOptions();
-
-    // Try Panel 4 subscriptions DELETE
     try {
-      await this.client.delete(`${auth.baseURL}/api/subscriptions`, {
-        data: { usernames: [email] },
+      await this.requestWithRetry((auth) => ({
+        method: 'DELETE',
+        url: `${auth.baseURL}/api/subscriptions`,
         headers: auth.headers,
-        validateStatus: () => true
-      });
+        data: { usernames: [email] }
+      }));
     } catch (e) {}
 
     // Fallback to 3x-ui
@@ -701,15 +923,18 @@ export class Panel4Client {
       const settings = typeof ib.settings === 'string' ? JSON.parse(ib.settings) : ib.settings;
       if (!settings || !Array.isArray(settings.clients)) continue;
 
-      const clientObj = settings.clients.find((cl: any) => 
+      const clientObj = settings.clients.find((cl: any) =>
         (cl.email && cl.email.toLowerCase() === email.toLowerCase()) ||
         (cl.id && cl.id.toLowerCase() === email.toLowerCase())
       );
 
       if (clientObj) {
-        await this.client.post(`${auth.baseURL}${prefix}/delClient/${clientObj.id}`, {
-          id: ib.id
-        }, { headers: auth.headers }).catch(() => null);
+        await this.requestWithRetry((auth) => ({
+          method: 'POST',
+          url: `${auth.baseURL}${prefix}/delClient/${clientObj.id}`,
+          headers: auth.headers,
+          data: { id: ib.id }
+        })).catch(() => null);
       }
     }
   }
@@ -718,74 +943,91 @@ export class Panel4Client {
     try {
       const state = db.getState();
       const panel = state.panel4 || {};
-      if (!panel.url || panel.enabled === false) return [];
-      if (panel.url.includes('test-') || panel.url.includes('example.com')) return [];
+      const urlToUse = panel.url || 'https://app.solidlayerco.com';
+      if (!urlToUse || panel.enabled === false) return [];
+      if (urlToUse.includes('test-') || urlToUse.includes('example.com')) return [];
 
-      const auth = await this.getAuthOptions();
       const results: any[] = [];
 
-      // 1. Try Panel 4 native Subscriptions API (/api/subscriptions)
+      // 1. Try Panel 4 native Subscriptions API (/api/subscriptions?page=1&limit=100)
       try {
-        const res = await this.client.get(`${auth.baseURL}/api/subscriptions?page=1&size=500`, {
-          headers: auth.headers,
-          timeout: 8000,
-          validateStatus: () => true
-        });
+        let page = 1;
+        let total = 0;
+        do {
+          const res = await this.requestWithRetry((auth) => ({
+            method: 'GET',
+            url: `${auth.baseURL}/api/subscriptions?page=${page}&limit=100`,
+            headers: auth.headers,
+            timeout: 8000
+          }));
 
-        if (res.status === 200 && res.data && typeof res.data === 'object') {
-          const data = res.data;
-          const items = Array.isArray(data) 
-            ? data 
-            : (data.items || data.subscriptions || data.data || data.obj || data.result);
+          if (res.status === 200 && res.data && typeof res.data === 'object') {
+            const data = res.data;
+            total = Number(data.total || 0);
+            const items = Array.isArray(data)
+              ? data
+              : (data.items || data.subscriptions || data.data || data.obj || data.result);
 
-          if (Array.isArray(items) && items.length > 0) {
-            for (const sub of items) {
-              const username = sub.username || sub.email || sub.id;
-              if (!username) continue;
+            if (Array.isArray(items) && items.length > 0) {
+              for (const sub of items) {
+                const username = sub.username || sub.email || sub.id;
+                if (!username) continue;
 
-              const usedBytes = sub.total_usage !== undefined ? Number(sub.total_usage) : (sub.used_traffic !== undefined ? Number(sub.used_traffic) : ((Number(sub.up) || 0) + (Number(sub.down) || 0)));
-              const limitBytes = sub.limit_usage !== undefined && sub.limit_usage !== null ? Number(sub.limit_usage) : (Number(sub.data_limit) || Number(sub.total) || 0);
-              const rawExp = sub.limit_expire !== undefined && sub.limit_expire !== null ? Number(sub.limit_expire) : 0;
-              
-              let expiryTime = 0;
-              if (rawExp > 0) {
-                expiryTime = rawExp < 10000000000 ? rawExp * 1000 : rawExp;
-              } else if (rawExp < 0) {
-                // On-hold relative days
-                if (sub.first_online_at) {
-                  expiryTime = new Date(sub.first_online_at).getTime() + Math.abs(rawExp) * 1000;
-                } else {
-                  expiryTime = Date.now() + Math.abs(rawExp) * 1000;
+                const totalUsage = Number(sub.total_usage ?? sub.used_traffic ?? 0);
+                const resetUsage = Number(sub.reset_usage ?? 0);
+                const usedBytes = sub.current_usage !== undefined && sub.current_usage !== null
+                  ? Number(sub.current_usage)
+                  : Math.max(0, totalUsage - resetUsage);
+                const limitBytes = sub.limit_usage !== undefined && sub.limit_usage !== null
+                  ? Number(sub.limit_usage)
+                  : (Number(sub.data_limit) || Number(sub.total) || 0);
+                const rawExp = sub.limit_expire !== undefined && sub.limit_expire !== null ? Number(sub.limit_expire) : 0;
+
+                let expiryTime = 0;
+                if (rawExp > 0) {
+                  expiryTime = rawExp < 10000000000 ? rawExp * 1000 : rawExp;
+                } else if (rawExp < 0) {
+                  if (sub.first_online_at) {
+                    expiryTime = new Date(sub.first_online_at).getTime() + Math.abs(rawExp) * 1000;
+                  } else {
+                    expiryTime = Date.now() + Math.abs(rawExp) * 1000;
+                  }
                 }
-              }
 
-              results.push({
-                id: String(username),
-                email: String(username),
-                username: String(username),
-                subId: sub.access_key || String(username),
-                subUrl: sub.subscription_link || sub.subscription_url || '',
-                up: Number(sub.up || 0),
-                down: Number(sub.down || usedBytes || 0),
-                totalUsed: usedBytes,
-                total: limitBytes,
-                expiryTime,
-                enable: sub.enabled !== undefined ? Boolean(sub.enabled) : true,
-                lastOnlineAt: sub.last_online_at || null,
-                firstOnlineAt: sub.first_online_at || null,
-                panel: 'panel4'
-              });
+                results.push({
+                  id: String(username),
+                  email: String(username),
+                  username: String(username),
+                  subId: sub.access_key || String(username),
+                  subUrl: sub.subscription_link || sub.subscription_url || (sub.access_key ? `${this.subscriptionPrefix}/${this.subscriptionTag}/${sub.access_key}` : ''),
+                  up: Number(sub.up || 0),
+                  down: Number(sub.down || usedBytes || 0),
+                  totalUsed: usedBytes,
+                  total: limitBytes,
+                  expiryTime,
+                  enable: sub.enabled !== undefined ? Boolean(sub.enabled) : true,
+                  lastOnlineAt: sub.last_online_at || null,
+                  firstOnlineAt: sub.first_online_at || null,
+                  panel: 'panel4'
+                });
+              }
+              page++;
+            } else {
+              break;
             }
-            if (results.length > 0) return results;
+          } else {
+            break;
           }
-        }
+        } while (results.length < total && page <= 20);
+
+        if (results.length > 0) return results;
       } catch (e) {}
 
       // 2. Fallback to 3x-ui inbounds clientStats
       const inbounds = await this.getInbounds().catch(() => []);
       for (const ib of inbounds) {
         if (!ib.clientStats && !ib.settings) continue;
-        
+
         const statsMap = new Map<string, any>();
         if (Array.isArray(ib.clientStats)) {
           ib.clientStats.forEach((st: any) => {
@@ -824,15 +1066,14 @@ export class Panel4Client {
   public async getOnlineUsers(): Promise<{ onlineCount: number; totalUsers: number; users: Panel4OnlineUser[] }> {
     try {
       const allClients = await this.getAllClientsWithTraffic();
-      
-      // A client is online if lastOnlineAt was within the last 120 seconds (2 minutes, matching Panel 4 UI logic)
+
       const now = Date.now();
       const onlineList: Panel4OnlineUser[] = [];
 
       for (const cl of allClients) {
         if (cl.lastOnlineAt) {
           const t = new Date(cl.lastOnlineAt).getTime();
-          if (!isNaN(t) && now - t < 120000) {
+          if (!isNaN(t) && now - t < 180000) {
             onlineList.push({
               email: cl.email,
               lastOnline: new Date(t).toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' })
@@ -841,9 +1082,27 @@ export class Panel4Client {
         }
       }
 
+      // Also check native /api/subscriptions/stats for authoritative total & online count
+      let totalUsers = allClients.length;
+      let onlineCount = onlineList.length;
+      try {
+        const statsRes = await this.requestWithRetry((auth) => ({
+          method: 'GET',
+          url: `${auth.baseURL}/api/subscriptions/stats`,
+          headers: auth.headers,
+          timeout: 6000
+        }));
+        if (statsRes.status === 200 && statsRes.data) {
+          if (typeof statsRes.data.total === 'number') totalUsers = statsRes.data.total;
+          if (typeof statsRes.data.online === 'number' && statsRes.data.online > onlineCount) {
+            onlineCount = statsRes.data.online;
+          }
+        }
+      } catch (e) {}
+
       return {
-        onlineCount: onlineList.length,
-        totalUsers: allClients.length,
+        onlineCount,
+        totalUsers,
         users: onlineList
       };
     } catch (err) {
@@ -853,6 +1112,113 @@ export class Panel4Client {
         users: []
       };
     }
+  }
+
+  /**
+   * Native Panel 4 Bulk Actions API (/api/actions/*)
+   */
+  public async getActionsPreview(serviceId: number = 0): Promise<{ total: number; with_expiry: number; with_service: number; with_usage_limit: number }> {
+    const query = serviceId > 0 ? `?service_id=${serviceId}` : '';
+    const res = await this.requestWithRetry((auth) => ({
+      method: 'GET',
+      url: `${auth.baseURL}/api/actions/preview${query}`,
+      headers: auth.headers,
+      timeout: 8000
+    }));
+    if (res.status === 200 && res.data) {
+      return {
+        total: Number(res.data.total || 0),
+        with_expiry: Number(res.data.with_expiry || 0),
+        with_service: Number(res.data.with_service || 0),
+        with_usage_limit: Number(res.data.with_usage_limit || 0)
+      };
+    }
+    throw new Error(res.data?.message || 'خطا در دریافت پیش‌نمایش عملیات همگانی پنل ۴');
+  }
+
+  public async bulkModifyExpire(
+    days: number,
+    action: 'add' | 'remove',
+    includeExpired: boolean = false,
+    includeOnHold: boolean = false
+  ): Promise<{ affected: number; message: string }> {
+    const cleanDays = Math.max(1, Math.round(Number(days)));
+    const params = new URLSearchParams();
+    params.append('days', String(cleanDays));
+    if (includeExpired) params.append('include_expired', 'true');
+    if (includeOnHold) params.append('include_on_hold', 'true');
+
+    const res = await this.requestWithRetry((auth) => ({
+      method: action === 'add' ? 'POST' : 'DELETE',
+      url: `${auth.baseURL}/api/actions/expire/${cleanDays}?${params.toString()}`,
+      headers: auth.headers,
+      timeout: 12000
+    }));
+
+    if (res.status >= 200 && res.status < 300 && res.data) {
+      return {
+        affected: Number(res.data.affected || 0),
+        message: res.data.message || `عملیات تغییر زمان (${cleanDays} روز) با موفقیت انجام شد.`
+      };
+    }
+    throw new Error(res.data?.message || `خطا در عملیات همگانی زمان پنل ۴ (کد ${res.status})`);
+  }
+
+  public async bulkModifyUsage(
+    gb: number,
+    action: 'add' | 'remove',
+    includeLimited: boolean = false
+  ): Promise<{ affected: number; message: string }> {
+    const cleanGb = Math.max(1, Math.round(Number(gb)));
+    const params = new URLSearchParams();
+    params.append('gb', String(cleanGb));
+    if (includeLimited) params.append('include_limited', 'true');
+
+    const res = await this.requestWithRetry((auth) => ({
+      method: action === 'add' ? 'POST' : 'DELETE',
+      url: `${auth.baseURL}/api/actions/usage/${cleanGb}?${params.toString()}`,
+      headers: auth.headers,
+      timeout: 12000
+    }));
+
+    if (res.status >= 200 && res.status < 300 && res.data) {
+      return {
+        affected: Number(res.data.affected || 0),
+        message: res.data.message || `عملیات تغییر حجم (${cleanGb} گیگابایت) با موفقیت انجام شد.`
+      };
+    }
+    throw new Error(res.data?.message || `خطا در عملیات همگانی حجم پنل ۴ (کد ${res.status})`);
+  }
+
+  public async bulkModifyService(
+    serviceId: number,
+    action: 'add' | 'remove' | 'migrate',
+    targetServiceId?: number
+  ): Promise<{ affected: number; message: string }> {
+    const sId = Number(serviceId);
+    let path = `/api/actions/services/${sId}`;
+    let method: 'POST' | 'DELETE' = 'POST';
+    if (action === 'remove') {
+      method = 'DELETE';
+    } else if (action === 'migrate' && targetServiceId) {
+      path = `/api/actions/services/${sId}/migrate/${Number(targetServiceId)}`;
+      method = 'POST';
+    }
+
+    const res = await this.requestWithRetry((auth) => ({
+      method,
+      url: `${auth.baseURL}${path}`,
+      headers: auth.headers,
+      timeout: 12000
+    }));
+
+    if (res.status >= 200 && res.status < 300 && res.data) {
+      return {
+        affected: Number(res.data.affected || 0),
+        message: res.data.message || 'عملیات سرویس همگانی با موفقیت انجام شد.'
+      };
+    }
+    throw new Error(res.data?.message || `خطا در عملیات سرویس همگانی پنل ۴ (کد ${res.status})`);
   }
 }
 

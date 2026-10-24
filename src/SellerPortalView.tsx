@@ -108,7 +108,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
 
   const [customVolGb, setCustomVolGb] = useState<number>(20);
   const [customDurDays, setCustomDurDays] = useState<number>(30);
-  const [customSelectedPanel, setCustomSelectedPanel] = useState<string>('mrocean');
+  const [customSelectedCategoryId, setCustomSelectedCategoryId] = useState<string>('');
   const [customClientRemark, setCustomClientRemark] = useState<string>('');
   const [customClientSellingPrice, setCustomClientSellingPrice] = useState<string>('');
   const [orderingCustomVolume, setOrderingCustomVolume] = useState<boolean>(false);
@@ -311,7 +311,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
           volumeGb: vol,
           durationDays: dur,
           customName: customClientRemark.trim() || undefined,
-          panelType: customSelectedPanel || undefined
+          categoryId: customSelectedCategoryId || undefined
         })
       });
       const data = await res.json();
@@ -847,62 +847,42 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   </div>
                 )}
 
-                {/* 1. Panel Choice */}
+                {/* 1. Category / Group Choice */}
                 <div className="space-y-2.5">
                   <label className="block text-xs font-bold text-slate-200">
-                    🏢 انتخاب پنل سرور (پیشنهادی: مستر اوشن):
+                    📁 انتخاب گروه / دسته بندی محصول:
                   </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     <div
-                      onClick={() => setCustomSelectedPanel('mrocean')}
-                      className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between space-y-2 ${
-                        customSelectedPanel === 'mrocean'
+                      onClick={() => setCustomSelectedCategoryId('')}
+                      className={`cursor-pointer rounded-2xl p-3 border transition-all flex flex-col justify-between space-y-1.5 ${
+                        !customSelectedCategoryId
                           ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
                           : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
                       }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
-                          <span>🌊 مستر اوشن (Mr Ocean)</span>
-                        </span>
-                        <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">
-                          پیشنهادی ⭐
-                        </span>
+                      <div className="font-bold text-xs text-slate-100 flex items-center gap-1.5">
+                        <span>🌟 پیش‌فرض / همه گروه‌ها</span>
                       </div>
-                      <p className="text-[11px] text-slate-400">مناسب‌ترین پنل برای ساخت و مدیریت حجم‌های اختصاصی با سرعت بالا</p>
+                      <p className="text-[10px] text-slate-400">استفاده از تنظیمات پیش‌فرض پنل</p>
                     </div>
 
-                    <div
-                      onClick={() => setCustomSelectedPanel('sanaei')}
-                      className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between space-y-2 ${
-                        customSelectedPanel === 'sanaei'
-                          ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
-                          : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
-                          <span>🔵 سنایی (X-UI)</span>
-                        </span>
+                    {categories.map((cat) => (
+                      <div
+                        key={cat.id}
+                        onClick={() => setCustomSelectedCategoryId(cat.id)}
+                        className={`cursor-pointer rounded-2xl p-3 border transition-all flex flex-col justify-between space-y-1.5 ${
+                          customSelectedCategoryId === cat.id
+                            ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
+                            : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="font-bold text-xs text-slate-100 flex items-center gap-1.5 truncate">
+                          <span className="truncate">{cat.name}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 truncate">ساخت کانفیگ از این گروه</p>
                       </div>
-                      <p className="text-[11px] text-slate-400">ساخت بر روی سرور سنایی با پروتکل‌های V2Ray</p>
-                    </div>
-
-                    <div
-                      onClick={() => setCustomSelectedPanel('rebecca')}
-                      className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between space-y-2 ${
-                        customSelectedPanel === 'rebecca'
-                          ? 'bg-emerald-500/10 border-emerald-500 shadow-md shadow-emerald-500/10'
-                          : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
-                          <span>🟣 ربکا (Rebecca)</span>
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400">ساخت بر روی سرورهای پنل ربکا</p>
-                    </div>
+                    ))}
                   </div>
                 </div>
 

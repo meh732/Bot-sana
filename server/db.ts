@@ -256,9 +256,12 @@ const defaultState: AppState = {
     enabled: true
   },
   panel4: {
-    url: '',
-    username: '',
-    password: '',
+    url: 'https://app.solidlayerco.com',
+    username: 'meh7375',
+    password: 'X7k2jPCj5z#FH6',
+    apiKey: 'df34a8861140b16669963f4d9c95c8502beb01379dca16413d6b984cfc11ac51',
+    inboundId: 4,
+    inboundIds: [4],
     enabled: true
   },
   products: [],
@@ -387,6 +390,21 @@ class Database {
     if (!Array.isArray(sanitized.pendingPayments)) {
       sanitized.pendingPayments = [];
     }
+
+    // Sanitize panel4 to prevent losing credentials or storing masked passwords
+    const rawP4 = (rawState && typeof rawState.panel4 === 'object' && rawState.panel4 !== null) ? rawState.panel4 : {};
+    const defP4 = defaultState.panel4 || {};
+    sanitized.panel4 = {
+      ...defP4,
+      ...rawP4,
+      url: (rawP4.url && String(rawP4.url).trim() !== '') ? String(rawP4.url).trim() : defP4.url,
+      username: (rawP4.username && String(rawP4.username).trim() !== '') ? String(rawP4.username).trim() : defP4.username,
+      password: (rawP4.password && String(rawP4.password).trim() !== '' && rawP4.password !== '********') ? String(rawP4.password).trim() : defP4.password,
+      apiKey: (rawP4.apiKey && String(rawP4.apiKey).trim() !== '' && rawP4.apiKey !== '********') ? String(rawP4.apiKey).trim() : defP4.apiKey,
+      inboundId: rawP4.inboundId !== undefined && rawP4.inboundId !== '' ? rawP4.inboundId : defP4.inboundId,
+      inboundIds: Array.isArray(rawP4.inboundIds) && rawP4.inboundIds.length > 0 ? rawP4.inboundIds : defP4.inboundIds,
+      enabled: rawP4.enabled !== undefined ? Boolean(rawP4.enabled) : true
+    };
 
     return sanitized;
   }
