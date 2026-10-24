@@ -129,6 +129,12 @@ export interface Purchase {
   disabled?: boolean;
   isCustomVolume?: boolean;
   ratePerGb?: number;
+  isCancelled?: boolean;
+  cancelledAt?: string;
+  cancellationUsedBytes?: number;
+  cancellationUsedGb?: number;
+  cancellationCost?: number;
+  refundAmount?: number;
 }
 
 export interface UserTransaction {

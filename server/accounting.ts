@@ -204,7 +204,7 @@ export function getPeriodTimeRange(period: 'today' | 'monthly' | 'all'): { start
 
 export function getUserAccountingReport(user: User, period: 'today' | 'monthly' | 'all' = 'today'): UserAccountingReport {
   const { startMs, endMs, label: periodLabel } = getPeriodTimeRange(period);
-  const purchases = (user.purchases || []).filter(p => !p.isDeleted);
+  const purchases = (user.purchases || []).filter(p => !p.isDeleted || p.isCancelled);
 
   // Filter purchases in period
   const periodPurchases = purchases.filter(p => {
@@ -223,15 +223,22 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
   let totalOriginalAmount = 0;
 
   const salesItems: SalesItemDetail[] = periodPurchases.map((p, idx) => {
-    const vol = p.isPayAsYouGo ? 0 : (Number(p.volumeGb) || 0);
-    totalVolumeGb += vol;
+    const isCancelled = !!p.isCancelled;
+    let vol = p.isPayAsYouGo ? 0 : (Number(p.volumeGb) || 0);
+    let price = Number(p.price) || 0;
 
-    const price = Number(p.price) || 0;
-    const origPrice = Number(p.originalPrice) || price;
+    if (isCancelled) {
+      vol = Number(p.cancellationUsedGb) || 0;
+      price = Number(p.cancellationCost) || 0;
+    }
+
+    totalVolumeGb += vol;
+    totalSalesAmount += price;
+
+    const origPrice = isCancelled ? price : (Number(p.originalPrice) || price);
     const discount = p.discountAmount !== undefined ? p.discountAmount : Math.max(0, origPrice - price);
     const discountPct = p.discountPercent || (origPrice > 0 ? Math.round((discount / origPrice) * 100) : 0);
 
-    totalSalesAmount += price;
     totalOriginalAmount += origPrice;
     totalDiscounts += discount;
 
@@ -240,10 +247,17 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
     const timeStr = formatShamsiTime(dt);
     const { badge, label } = getPanelBadgeAndLabel(p.panelType);
 
+    let displayName = p.name || 'کانفیگ';
+    if (isCancelled) {
+      displayName = price === 0 
+        ? `[ابطال‌شده] ${displayName} (مصرف زیر ۱ گیگ - بدون هزینه)`
+        : `[ابطال‌شده] ${displayName} (مصرف واقعی: ${vol} گیگ)`;
+    }
+
     return {
       index: idx + 1,
       id: p.id || '',
-      name: p.name || 'کانفیگ',
+      name: displayName,
       volumeGb: vol,
       durationDays: p.durationDays || 0,
       price,

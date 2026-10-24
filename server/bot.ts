@@ -580,6 +580,228 @@ async function fetchSubscriptionLiveInfo(subUrl: string): Promise<{
   return null;
 }
 
+export async function getPurchaseLiveUsedBytes(purchase: any): Promise<number> {
+  if (!purchase) return 0;
+  let liveUsed = 0;
+
+  // 1. Try querying live subscription URL if present
+  let effectiveSubUrl = (purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || '').trim();
+  if (effectiveSubUrl) {
+    if (effectiveSubUrl.includes('/sub/sub/')) {
+      effectiveSubUrl = effectiveSubUrl.replace(/\/sub\/sub\//g, '/sub/');
+    }
+    try {
+      const liveSub = await fetchSubscriptionLiveInfo(effectiveSubUrl);
+      if (liveSub && typeof liveSub.totalUsed === 'number' && liveSub.totalUsed > 0) {
+        liveUsed = liveSub.totalUsed;
+      }
+    } catch {}
+  }
+
+  // 2. Try querying multiPanel.getAllClientsWithTraffic
+  if (liveUsed <= 0) {
+    try {
+      const allClients = await multiPanel.getAllClientsWithTraffic(true);
+      const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
+      const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) ||
+                          rebecca.extractSubToken(purchase.subUrl) || 
+                          rebecca.extractSubToken(purchase.sanaeiSubUrl);
+
+      const client = allClients.find((cl: any) => {
+        const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
+        const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
+        const clEmail = cl.email ? String(cl.email).trim().toLowerCase() : '';
+        return (targetSubId && (clSubId === targetSubId || clId === targetSubId)) ||
+               (cleanPId && (clEmail === cleanPId || clId === cleanPId));
+      });
+
+      if (client && typeof client.totalUsed === 'number' && client.totalUsed > 0) {
+        liveUsed = client.totalUsed;
+      }
+    } catch {}
+  }
+
+  const recordedUsed = Number(purchase.lastUsedBytes) || 0;
+  return Math.max(liveUsed, recordedUsed);
+}
+
+export async function cancelSellerPurchase(sellerChatId: number, purchaseId: string): Promise<{
+  success: boolean;
+  message: string;
+  usedBytes: number;
+  usedGb: number;
+  billedCost: number;
+  refundAmount: number;
+  newDebt: number;
+  purchase: any;
+}> {
+  const user = db.getUser(sellerChatId);
+  if (!user || !user.isSeller) {
+    throw new Error('حساب کاربری همکار معتبر نیست.');
+  }
+
+  const purchases = user.purchases || [];
+  const purchase = purchases.find((p: any) => 
+    p.id === purchaseId || 
+    p.subId === purchaseId || 
+    (p.id && String(p.id).toLowerCase() === String(purchaseId).toLowerCase())
+  );
+
+  if (!purchase) {
+    throw new Error('کانفیگ مورد نظر یافت نشد.');
+  }
+
+  if (purchase.isCancelled) {
+    throw new Error('این کانفیگ قبلاً ابطال شده است.');
+  }
+
+  // 1. Fetch exact live usage before deletion
+  const usedBytes = await getPurchaseLiveUsedBytes(purchase);
+  purchase.lastUsedBytes = usedBytes;
+
+  // 2. Delete from VPN panel (stop/terminate service on server)
+  try {
+    await multiPanel.delClient(purchase);
+  } catch (delErr: any) {
+    console.warn('[MultiPanel delete warning on cancellation]:', delErr.message);
+  }
+
+  // 3. Mathematical & Financial Settlement
+  const ONE_GB_BYTES = 1024 * 1024 * 1024;
+  const originalPrice = Number(purchase.price) || 0;
+  const originalVolGb = Number(purchase.volumeGb) || 0;
+  const state = db.getState();
+
+  // Determine rate per GB for this config
+  let ratePerGb = purchase.ratePerGb;
+  if (!ratePerGb || ratePerGb <= 0) {
+    if (originalVolGb > 0 && originalPrice > 0) {
+      ratePerGb = Math.round(originalPrice / originalVolGb);
+    } else {
+      const baseRate = user.customVolumePricePerGb || state.customVolumePricePerGb || 3000;
+      const discount = getSellerDiscountForProduct(user);
+      ratePerGb = discount > 0 ? Math.max(1, Math.round(baseRate * (1 - discount / 100))) : baseRate;
+    }
+  }
+
+  const rawUsedGb = usedBytes / ONE_GB_BYTES;
+  const usedGb = Number(rawUsedGb.toFixed(2));
+
+  let billedCost = 0;
+  let refundAmount = 0;
+  let statusSummary = '';
+
+  if (usedBytes < ONE_GB_BYTES) {
+    // CONDITION 1: Less than 1 GB used -> DO NOT APPLY TO RESELLER INVOICE / ZERO COST!
+    billedCost = 0;
+    refundAmount = originalPrice;
+
+    // Remove from debt & sales
+    user.debt = Math.max(0, (user.debt || 0) - refundAmount);
+    user.debtVolume = Math.max(0, (user.debtVolume || 0) - originalVolGb);
+    user.totalSales = Math.max(0, (user.totalSales || 0) - refundAmount);
+
+    statusSummary = `مصرف زیر ۱ گیگابایت (${(usedBytes / (1024 * 1024)).toFixed(1)} MB) - بدون اعمال هزینه در صورتحساب`;
+
+    recordUserTransaction(user, {
+      type: 'refund',
+      amount: refundAmount,
+      direction: 'credit',
+      description: `ابطال و توقف سرویس ${purchase.name} (${statusSummary} - عودت کامل وجه)`,
+      configName: purchase.name,
+      volumeGb: originalVolGb,
+      balanceAfter: user.balance,
+      debtAfter: user.debt,
+      createdAt: new Date().toISOString()
+    });
+  } else {
+    // CONDITION 2: More than or equal to 1 GB used -> Charge actual consumption per GB
+    billedCost = Math.min(originalPrice > 0 ? originalPrice : Infinity, Math.round(rawUsedGb * ratePerGb));
+    refundAmount = originalPrice > 0 ? Math.max(0, originalPrice - billedCost) : 0;
+
+    const unconsumedVolGb = Math.max(0, originalVolGb - usedGb);
+
+    if (refundAmount > 0) {
+      user.debt = Math.max(0, (user.debt || 0) - refundAmount);
+      user.debtVolume = Math.max(0, (user.debtVolume || 0) - unconsumedVolGb);
+      user.totalSales = Math.max(0, (user.totalSales || 0) - refundAmount);
+    } else if (originalPrice === 0 && billedCost > 0) {
+      // For PAYG services where initial price was 0
+      user.debt = (user.debt || 0) + billedCost;
+      user.debtVolume = (user.debtVolume || 0) + usedGb;
+      user.totalSales = (user.totalSales || 0) + billedCost;
+    }
+
+    statusSummary = `مصرف ${usedGb} گیگابایت با نرخ ${ratePerGb.toLocaleString()} ت/گیگ = هزینه مصرف ${billedCost.toLocaleString()} تومان (مابقی عودت داده شد)`;
+
+    if (refundAmount > 0) {
+      recordUserTransaction(user, {
+        type: 'refund',
+        amount: refundAmount,
+        direction: 'credit',
+        description: `ابطال و توقف سرویس ${purchase.name} (محاسبه مصرف واقعی: ${usedGb} گیگ = ${billedCost.toLocaleString()} ت - عودت مابقی)`,
+        configName: purchase.name,
+        volumeGb: unconsumedVolGb,
+        balanceAfter: user.balance,
+        debtAfter: user.debt,
+        createdAt: new Date().toISOString()
+      });
+    } else if (billedCost > 0 && originalPrice === 0) {
+      recordUserTransaction(user, {
+        type: 'settlement',
+        amount: billedCost,
+        direction: 'debit',
+        description: `تسویه مصرف واقعی در زمان ابطال سرویس ${purchase.name} (${usedGb} گیگ)`,
+        configName: purchase.name,
+        volumeGb: usedGb,
+        balanceAfter: user.balance,
+        debtAfter: user.debt,
+        createdAt: new Date().toISOString()
+      });
+    }
+  }
+
+  // 4. Update purchase state
+  purchase.isDeleted = true;
+  purchase.isCancelled = true;
+  purchase.disabled = true;
+  purchase.cancelledAt = new Date().toISOString();
+  purchase.cancellationUsedBytes = usedBytes;
+  purchase.cancellationUsedGb = usedGb;
+  purchase.cancellationCost = billedCost;
+  purchase.refundAmount = refundAmount;
+  purchase.ratePerGb = ratePerGb;
+
+  db.saveUser(user);
+
+  // 5. Notify seller via Telegram bot
+  if (bot) {
+    const notifyMsg = `🚫 <b>ابطال و توقف سرویس توسط همکار</b>\n\n` +
+      `📦 <b>سرویس:</b> ${escapeHtml(purchase.name)}\n` +
+      `🆔 <b>شناسه:</b> <code>${escapeHtml(String(purchase.id))}</code>\n` +
+      `📊 <b>میزان مصرف نهایی:</b> ${usedBytes < ONE_GB_BYTES ? `${(usedBytes / (1024 * 1024)).toFixed(1)} مگابایت (زیر ۱ گیگ)` : `${usedGb} گیگابایت`}\n` +
+      `💰 <b>هزینه اعمال‌شده در صورتحساب:</b> ${billedCost.toLocaleString()} تومان\n` +
+      (refundAmount > 0 ? `↩️ <b>مبلغ عودت‌داده‌شده به بدهی:</b> ${refundAmount.toLocaleString()} تومان\n` : '') +
+      `📉 <b>بدهی جدید همکار:</b> ${(user.debt || 0).toLocaleString()} تومان\n\n` +
+      `💡 <i>${usedBytes < ONE_GB_BYTES ? 'با توجه به مصرف کمتر از ۱ گیگابایت، هیچ هزینه‌ای در صورتحساب شما اعمال نگردید.' : 'هزینه منحصراً بر اساس مصرف واقعی محاسبه گردید.'}</i>`;
+
+    bot.sendMessage(sellerChatId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
+  }
+
+  return {
+    success: true,
+    message: usedBytes < ONE_GB_BYTES 
+      ? `سرویس متوقف و با موفقیت ابطال شد. با توجه به مصرف زیر ۱ گیگ (${(usedBytes / (1024 * 1024)).toFixed(1)} MB)، هیچ هزینه‌ای در صورتحساب شما لحاظ نگردید و مبلغ پکیج (${originalPrice.toLocaleString()} تومان) کسر شد.`
+      : `سرویس متوقف و با موفقیت ابطال شد. هزینه مصرف واقعی (${usedGb} گیگ = ${billedCost.toLocaleString()} تومان) در صورتحساب اعمال شده و مابقی مبلغ (${refundAmount.toLocaleString()} تومان) از بدهی شما کسر گردید.`,
+    usedBytes,
+    usedGb,
+    billedCost,
+    refundAmount,
+    newDebt: user.debt || 0,
+    purchase
+  };
+}
+
 async function sendServiceInfo(chatId: number, purchase: any) {
   if (!bot) return;
   bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات دقیق، حجم، زمان و لینک ساب از سرور...').catch(() => {});
@@ -1011,6 +1233,13 @@ async function sendServiceInfo(chatId: number, purchase: any) {
     inlineButtons.push([
       { text: '🤫 ارسال بدون نام و برند (مخصوص مشتری)', callback_data: `clean_customer_msg_${purchase.id}` }
     ]);
+
+    const currentUserObj = db.getUser(chatId);
+    if (currentUserObj && currentUserObj.isSeller && !purchase.isCancelled) {
+      inlineButtons.push([
+        { text: '🚫 توقف و ابطال کانفیگ', callback_data: `cancel_seller_cfg_${purchase.id}` }
+      ]);
+    }
 
     inlineButtons.push([
       { text: '📋 بازگشت به لیست خریدها', callback_data: 'user_purchases_list' }
@@ -6990,6 +7219,87 @@ export async function initBot() {
         }
       } catch (e: any) {
         bot!.sendMessage(chatId, `🔗 <b>لینک اشتراک سابسکریپشن:</b>\n<code>${escapeHtml(effectiveSubUrl)}</code>\n\n⚠️ کانکشن مستقیم در دسترس نبود؛ لطفاً لینک ساب فوق را در نرم‌افزار وارد و بروزرسانی نمایید.`, { parse_mode: 'HTML' });
+      }
+      return;
+    }
+
+    if (data && data.startsWith('cancel_seller_cfg_')) {
+      const purchaseId = data.replace('cancel_seller_cfg_', '');
+      const currentUser = db.getUser(chatId);
+      if (!currentUser || !currentUser.isSeller) {
+        answerQuery({ text: '❌ دسترسی فقط برای همکاران مجاز است.' });
+        return;
+      }
+
+      const userPurchases = currentUser.purchases || [];
+      const purchase = userPurchases.find((p: any) => 
+        String(p.id).trim().toLowerCase() === String(purchaseId).trim().toLowerCase() ||
+        (p.subId && String(p.subId).trim().toLowerCase() === String(purchaseId).trim().toLowerCase())
+      );
+
+      if (!purchase) {
+        answerQuery({ text: '❌ سرویس یافت نشد' });
+        return;
+      }
+
+      if (purchase.isCancelled) {
+        answerQuery({ text: '⚠️ این سرویس قبلاً ابطال شده است.' });
+        return;
+      }
+
+      answerQuery({ text: '🔍 در حال استعلام مصرف...' });
+      const usedBytes = await getPurchaseLiveUsedBytes(purchase);
+      const ONE_GB_BYTES = 1024 * 1024 * 1024;
+      const isUnderOneGb = usedBytes < ONE_GB_BYTES;
+      const usedGb = Number((usedBytes / ONE_GB_BYTES).toFixed(2));
+      const originalPrice = Number(purchase.price) || 0;
+      const originalVolGb = Number(purchase.volumeGb) || 0;
+
+      let ratePerGb = purchase.ratePerGb;
+      if (!ratePerGb || ratePerGb <= 0) {
+        if (originalVolGb > 0 && originalPrice > 0) {
+          ratePerGb = Math.round(originalPrice / originalVolGb);
+        } else {
+          const baseRate = currentUser.customVolumePricePerGb || db.getState().customVolumePricePerGb || 3000;
+          const discount = getSellerDiscountForProduct(currentUser);
+          ratePerGb = discount > 0 ? Math.max(1, Math.round(baseRate * (1 - discount / 100))) : baseRate;
+        }
+      }
+
+      const billedCost = isUnderOneGb ? 0 : Math.min(originalPrice > 0 ? originalPrice : Infinity, Math.round(usedGb * ratePerGb));
+      const refundAmount = isUnderOneGb ? originalPrice : Math.max(0, originalPrice - billedCost);
+
+      const confirmText = `⚠️ <b>درخواست توقف و ابطال کانفیگ همکار</b>\n\n` +
+        `📦 <b>سرویس:</b> ${escapeHtml(purchase.name)}\n` +
+        `🆔 <b>شناسه:</b> <code>${escapeHtml(String(purchase.id))}</code>\n` +
+        `📊 <b>میزان مصرف فعلی:</b> <b>${isUnderOneGb ? `${(usedBytes / (1024 * 1024)).toFixed(1)} مگابایت (زیر ۱ گیگ)` : `${usedGb} گیگابایت`}</b>\n\n` +
+        (isUnderOneGb 
+          ? `✅ <b>محاسبه مالی (مصرف زیر ۱ گیگ):</b>\nهیچ هزینه‌ای روی صورتحساب شما اعمال <b>نخواهد شد</b> و کل مبلغ پکیج (<b>${originalPrice.toLocaleString()} تومان</b>) از بدهی شما کسر و صفر می‌شود.\n\n` 
+          : `ℹ️ <b>محاسبه مالی (مصرف بالای ۱ گیگ):</b>\nفقط هزینه مصرف واقعی (${usedGb} گیگ × ${ratePerGb.toLocaleString()} ت = <b>${billedCost.toLocaleString()} تومان</b>) محاسبه شده و مابقی مبلغ پکیج (<b>${refundAmount.toLocaleString()} تومان</b>) به حساب شما عودت داده می‌شود.\n\n`) +
+        `آیا از توقف و ابطال نهایی این سرویس اطمینان دارید؟`;
+
+      bot!.sendMessage(chatId, confirmText, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🚫 تأیید توقف و ابطال نهایی', callback_data: `confirm_cancel_cfg_${purchase.id}` }],
+            [{ text: '🔙 انصراف و بازگشت', callback_data: `resend_link_${purchase.id}` }]
+          ]
+        }
+      });
+      return;
+    }
+
+    if (data && data.startsWith('confirm_cancel_cfg_')) {
+      const purchaseId = data.replace('confirm_cancel_cfg_', '');
+      answerQuery({ text: '⏳ در حال توقف و ابطال سرویس...' });
+      try {
+        const result = await cancelSellerPurchase(chatId, purchaseId);
+        bot!.sendMessage(chatId, `✅ <b>عملیات ابطال انجام شد</b>\n\n${result.message}\n\n📉 <b>بدهی جدید:</b> ${result.newDebt.toLocaleString()} تومان`, {
+          parse_mode: 'HTML'
+        });
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `❌ خطا در ابطال سرویس: ${err.message}`);
       }
       return;
     }

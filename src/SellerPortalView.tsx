@@ -31,7 +31,8 @@ import {
   Plus,
   Minus,
   Layers,
-  Download
+  Download,
+  Ban
 } from 'lucide-react';
 
 interface SellerPortalProps {
@@ -155,6 +156,26 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [isRenaming, setIsRenaming] = useState(false);
   const [deletingPurchase, setDeletingPurchase] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [cancelPreview, setCancelPreview] = useState<any>(null);
+  const [loadingCancelPreview, setLoadingCancelPreview] = useState(false);
+
+  useEffect(() => {
+    if (deletingPurchase && chatId) {
+      setLoadingCancelPreview(true);
+      setCancelPreview(null);
+      fetch(`/api/seller-portal/purchases/${chatId}/${deletingPurchase.id}/cancel-preview`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            setCancelPreview(data);
+          }
+        })
+        .catch(() => {})
+        .finally(() => setLoadingCancelPreview(false));
+    } else {
+      setCancelPreview(null);
+    }
+  }, [deletingPurchase, chatId]);
 
   useEffect(() => {
     if (chatId) {
@@ -447,10 +468,11 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       });
       const data = await res.json();
       if (data.success) {
+        alert(data.message || 'سرویس متوقف و با موفقیت ابطال شد.');
         setDeletingPurchase(null);
         fetchPortalInfo(chatId);
       } else {
-        alert('❌ خطا: ' + (data.message || 'حذف ناموفق بود'));
+        alert('❌ خطا: ' + (data.message || 'ابطال ناموفق بود'));
       }
     } catch (e: any) {
       alert('خطا در ارتباط با سرور: ' + e.message);
@@ -1308,6 +1330,11 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                                 {p.volumeGb} GB / {p.durationDays} روز
                               </span>
                             )}
+                            {p.isCancelled && (
+                              <span className="bg-rose-500/20 text-rose-400 text-[10px] px-2.5 py-0.5 rounded-full border border-rose-500/30 font-medium">
+                                ابطال‌شده {p.cancellationCost === 0 ? '(رایگان)' : `(${Number(p.cancellationCost).toLocaleString()} ت)`}
+                              </span>
+                            )}
                           </div>
                           <p className="text-[11px] text-slate-500 font-mono mt-1" dir="ltr">
                             ID: {p.id}
@@ -1402,13 +1429,19 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                             <span>لینک و QR</span>
                           </button>
 
-                          {/* Delete Button */}
+                          {/* Cancel / Stop Button */}
                           <button
+                            disabled={p.isCancelled}
                             onClick={() => setDeletingPurchase(p)}
-                            className="p-1.5 bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 rounded-xl transition"
-                            title="حذف کانفیگ"
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 ${
+                              p.isCancelled
+                                ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed border border-slate-700/40'
+                                : 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30'
+                            }`}
+                            title={p.isCancelled ? 'این سرویس قبلاً ابطال شده است' : 'توقف و ابطال کانفیگ (با محاسبه بازگشت وجه)'}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Ban className="w-3.5 h-3.5" />
+                            <span>{p.isCancelled ? 'ابطال‌شده' : 'توقف و ابطال'}</span>
                           </button>
                         </div>
                       </div>
@@ -2062,27 +2095,85 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Cancellation / Delete Confirmation Modal */}
       {deletingPurchase && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
-          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
-            <h3 className="font-bold text-rose-400 text-sm">حذف کامل کانفیگ</h3>
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-rose-400">
+              <Ban className="w-5 h-5 flex-shrink-0" />
+              <h3 className="font-bold text-sm">توقف و ابطال کانفیگ همکار</h3>
+            </div>
+            
             <p className="text-xs text-slate-300 leading-relaxed">
-              آیا از حذف کامل کانفیگ «{deletingPurchase.name || deletingPurchase.id}» اطمینان دارید؟ این عملیات کانفیگ را از سرور و لیست شما حذف خواهد کرد.
+              آیا از توقف و ابطال کانفیگ «<span className="text-white font-bold">{deletingPurchase.name || deletingPurchase.id}</span>» اطمینان دارید؟ با ابطال، این کانفیگ از سرور حذف شده و محاسبات مالی طبق قوانین همکاری انجام می‌شود:
             </p>
-            <div className="flex items-center justify-end gap-2 pt-2">
+
+            {loadingCancelPreview ? (
+              <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 flex items-center justify-center gap-2 text-xs text-slate-400">
+                <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                <span>در حال استعلام مصرف دقیق لحظه‌ای از سرور...</span>
+              </div>
+            ) : cancelPreview ? (
+              <div className="space-y-2.5">
+                <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 space-y-2 text-xs">
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span>میزان مصرف ثبت‌شده:</span>
+                    <span className="font-mono font-bold text-white">
+                      {cancelPreview.isUnderOneGb 
+                        ? `${(cancelPreview.usedBytes / (1024 * 1024)).toFixed(1)} مگابایت (زیر ۱ گیگ)`
+                        : `${cancelPreview.usedGb} گیگابایت`}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span>مبلغ اولیه پکیج:</span>
+                    <span className="font-mono text-slate-200">{(cancelPreview.originalPrice || 0).toLocaleString()} تومان</span>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span>هزینه اعمال‌شده در صورتحساب:</span>
+                    <span className={`font-mono font-bold ${cancelPreview.isUnderOneGb ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {cancelPreview.billedCost === 0 ? '۰ تومان (بدون هزینه)' : `${cancelPreview.billedCost.toLocaleString()} تومان`}
+                    </span>
+                  </div>
+                  {cancelPreview.refundAmount > 0 && (
+                    <div className="flex justify-between items-center text-emerald-400 pt-1 border-t border-slate-800">
+                      <span>مبلغ کسرشده از بدهی (عودت):</span>
+                      <span className="font-mono font-bold">+{cancelPreview.refundAmount.toLocaleString()} تومان</span>
+                    </div>
+                  )}
+                </div>
+
+                {cancelPreview.isUnderOneGb ? (
+                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-3 text-[11px] text-emerald-300 leading-relaxed flex items-start gap-2">
+                    <Check className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-400" />
+                    <span>
+                      <b>مصرف کمتر از ۱ گیگابایت:</b> با توجه به اینکه مصرف این کانفیگ زیر یک گیگ بوده است، <b>هیچ هزینه‌ای</b> در صورتحساب شما اعمال نمی‌شود و کل مبلغ به حساب شما عودت داده خواهد شد.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-2xl p-3 text-[11px] text-indigo-300 leading-relaxed flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-indigo-400" />
+                    <span>
+                      <b>مصرف بالای ۱ گیگابایت:</b> هزینه منحصراً بر اساس مصرف واقعی ({cancelPreview.usedGb} گیگابایت) روی صورتحساب اعمال شده و مابقی مبلغ پکیج از بدهی کسر می‌گردد.
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
               <button
                 onClick={() => setDeletingPurchase(null)}
-                className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-xl transition"
               >
                 انصراف
               </button>
               <button
                 onClick={handleDeletePurchase}
-                disabled={isDeleting}
-                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs rounded-xl"
+                disabled={isDeleting || loadingCancelPreview}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5"
               >
-                {isDeleting ? 'در حال حذف...' : 'تأیید حذف'}
+                {isDeleting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isDeleting ? 'در حال ابطال...' : 'تأیید توقف و ابطال'}</span>
               </button>
             </div>
           </div>

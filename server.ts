@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import { createServer as createViteServer } from "vite";
 import { db, recordUserTransaction } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct } from "./server/bot.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, cancelSellerPurchase, getPurchaseLiveUsedBytes } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
 import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions } from "./server/pdfGenerator.js";
 import { xui } from "./server/xui.js";
@@ -1672,7 +1672,7 @@ async function startServer() {
     }
   });
 
-  api.delete("/seller-portal/purchases/:chatId/:purchaseId", async (req, res) => {
+  api.get("/seller-portal/purchases/:chatId/:purchaseId/cancel-preview", async (req, res) => {
     try {
       const chatId = parseInt(req.params.chatId);
       const user = db.getUser(chatId);
@@ -1688,21 +1688,64 @@ async function startServer() {
 
       if (!purchase) return res.status(404).json({ success: false, message: 'کانفیگ یافت نشد.' });
 
-      try {
-        await multiPanel.delClient(purchase);
-      } catch (delErr: any) {
-        console.warn('[MultiPanel delete warning]:', delErr.message);
+      const usedBytes = await getPurchaseLiveUsedBytes(purchase);
+      const ONE_GB_BYTES = 1024 * 1024 * 1024;
+      const originalPrice = Number(purchase.price) || 0;
+      const originalVolGb = Number(purchase.volumeGb) || 0;
+      const state = db.getState();
+
+      let ratePerGb = purchase.ratePerGb;
+      if (!ratePerGb || ratePerGb <= 0) {
+        if (originalVolGb > 0 && originalPrice > 0) {
+          ratePerGb = Math.round(originalPrice / originalVolGb);
+        } else {
+          const baseRate = user.customVolumePricePerGb || state.customVolumePricePerGb || 3000;
+          const discount = getSellerDiscountForProduct(user);
+          ratePerGb = discount > 0 ? Math.max(1, Math.round(baseRate * (1 - discount / 100))) : baseRate;
+        }
       }
 
-      purchase.isDeleted = true;
-      db.saveUser(user);
+      const rawUsedGb = usedBytes / ONE_GB_BYTES;
+      const usedGb = Number(rawUsedGb.toFixed(2));
+      const isUnderOneGb = usedBytes < ONE_GB_BYTES;
+
+      const billedCost = isUnderOneGb ? 0 : Math.min(originalPrice > 0 ? originalPrice : Infinity, Math.round(rawUsedGb * ratePerGb));
+      const refundAmount = isUnderOneGb ? originalPrice : Math.max(0, originalPrice - billedCost);
 
       res.json({
         success: true,
-        message: 'کانفیگ با موفقیت حذف گردید.'
+        usedBytes,
+        usedGb,
+        isUnderOneGb,
+        originalPrice,
+        ratePerGb,
+        billedCost,
+        refundAmount
       });
     } catch (e: any) {
-      res.status(500).json({ success: false, message: e.message || 'خطا در حذف کانفیگ' });
+      res.status(500).json({ success: false, message: e.message || 'خطا در پیش‌نمایش ابطال' });
+    }
+  });
+
+  api.delete("/seller-portal/purchases/:chatId/:purchaseId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const purchaseId = req.params.purchaseId;
+      const result = await cancelSellerPurchase(chatId, purchaseId);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در توقف و ابطال کانفیگ' });
+    }
+  });
+
+  api.post("/seller-portal/purchases/:chatId/:purchaseId/cancel", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const purchaseId = req.params.purchaseId;
+      const result = await cancelSellerPurchase(chatId, purchaseId);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در توقف و ابطال کانفیگ' });
     }
   });
 
