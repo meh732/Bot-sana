@@ -17,6 +17,8 @@ import { panel4 } from "./server/panel4.js";
 import { multiPanel } from "./server/multiPanel.js";
 import { encryptData, decryptData } from "./server/crypto.js";
 
+const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+
 // Helpers to parse inbound IDs dynamically (supports string tags like "d1" or numbers like 1)
 function parseInboundId(val: any): string | number | undefined {
   if (val === undefined || val === null || val === '') return undefined;
@@ -1796,28 +1798,118 @@ async function startServer() {
 
   app.use("/api", api);
 
-  // Serve static files in production or when dist folder exists
-  const distPath = path.join(process.cwd(), 'dist');
-  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
+  // Dynamically resolve static assets directory across all deployment environments (PM2, systemd, local, dev, etc.)
+  const candidateDirs = [
+    currentDir,
+    path.join(currentDir, 'dist'),
+    path.join(process.cwd(), 'dist'),
+    process.cwd(),
+    path.resolve(currentDir, '..', 'dist'),
+    path.resolve(process.cwd(), '..', 'dist')
+  ];
 
-  if (process.env.NODE_ENV === "production" || hasDist) {
-    app.use(express.static(distPath, {
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html')) {
-          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-          res.setHeader('Pragma', 'no-cache');
-          res.setHeader('Expires', '0');
-        }
+  let resolvedDistDir: string | null = null;
+  for (const dir of candidateDirs) {
+    if (fs.existsSync(path.join(dir, 'index.html')) && fs.existsSync(path.join(dir, 'assets'))) {
+      resolvedDistDir = dir;
+      break;
+    }
+  }
+
+  if (!resolvedDistDir) {
+    for (const dir of candidateDirs) {
+      if (fs.existsSync(path.join(dir, 'index.html'))) {
+        resolvedDistDir = dir;
+        break;
       }
-    }));
+    }
+  }
+
+  const sendEmergencyHtml = (res: express.Response) => {
+    if (res.headersSent) return;
+    res.status(200).send(`<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>پنل همکار | ارتباط با سرور</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: Tahoma, Arial, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; }
+    .card { background: #1e293b; padding: 2rem; border-radius: 1rem; border: 1px solid #334155; max-width: 450px; width: 100%; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
+    .icon { font-size: 3rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.25rem; margin: 0 0 0.75rem 0; color: #60a5fa; }
+    p { font-size: 0.9rem; color: #94a3b8; line-height: 1.6; margin-bottom: 1.5rem; }
+    .btn { display: inline-block; background: #3b82f6; color: white; padding: 0.75rem 1.5rem; border-radius: 0.5rem; text-decoration: none; font-weight: bold; border: none; cursor: pointer; transition: background 0.2s; }
+    .btn:hover { background: #2563eb; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔄</div>
+    <h2>در حال آماده‌سازی پنل همکار...</h2>
+    <p>فایل‌های برنامه در حال بارگذاری هستند. لطفاً روی دکمه زیر کلیک کرده یا صفحه را مجدداً بارگذاری فرمایید.</p>
+    <button class="btn" onclick="location.reload()">بارگذاری مجدد صفحه</button>
+  </div>
+</body>
+</html>`);
+  };
+
+  const sendSpaHtml = (req: express.Request, res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+    if (resolvedDistDir) {
+      const distIndex = path.join(resolvedDistDir, 'index.html');
+      if (fs.existsSync(distIndex)) {
+        return res.sendFile(distIndex, (err) => {
+          if (err && !res.headersSent) {
+            sendEmergencyHtml(res);
+          }
+        });
+      }
+    }
+
+    const rootIndex = path.join(process.cwd(), 'index.html');
+    if (fs.existsSync(rootIndex)) {
+      return res.sendFile(rootIndex, (err) => {
+        if (err && !res.headersSent) {
+          sendEmergencyHtml(res);
+        }
+      });
+    }
+
+    sendEmergencyHtml(res);
+  };
+
+  // Explicit high-priority routes for Seller Portal
+  app.get(['/seller', '/seller/*', '/portal', '/portal/*'], (req, res, next) => {
+    if (!resolvedDistDir && process.env.NODE_ENV !== 'production') {
+      return next();
+    }
+    return sendSpaHtml(req, res);
+  });
+
+  // Serve static files in production or when dist folder exists
+  if (process.env.NODE_ENV === "production" || resolvedDistDir) {
+    if (resolvedDistDir) {
+      app.use(express.static(resolvedDistDir, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+          }
+        }
+      }));
+    }
+
     app.get('*', (req, res, next) => {
       if (req.originalUrl.startsWith('/api')) {
         return next();
       }
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.sendFile(path.join(distPath, 'index.html'));
+      return sendSpaHtml(req, res);
     });
   } else {
     const vite = await createViteServer({
@@ -1853,3 +1945,4 @@ async function startServer() {
 }
 
 startServer();
+

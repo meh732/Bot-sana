@@ -218,16 +218,23 @@ do_fresh_install() {
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
   nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund
 
-  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built binary release verified from repository.${NC}"
+  # Ensure dist directory exists
+  mkdir -p dist
+
+  # Always compile latest server.ts into dist/server.cjs with high-speed esbuild (takes ~80ms, 0% RAM spike)
+  echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+  npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+
+  if [ ! -f "dist/index.html" ]; then
+    echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npx vite build || true
   else
-    echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs 2>/dev/null || true
+    echo -e "${GREEN}✅ Pre-built frontend release verified from repository.${NC}"
   fi
 
-  echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
-  pm2 delete "sanaei-bot" 2>/dev/null
-  PORT=$PANEL_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" || pm2 start npm --name "sanaei-bot" -- run start
+  echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT} with working directory $PWD...${NC}"
+  pm2 delete "sanaei-bot" 2>/dev/null || true
+  PORT=$PANEL_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
   pm2 save
   pm2 startup
 
@@ -303,15 +310,19 @@ do_update() {
     echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
   fi
 
-  # 5. Use pre-built binaries from repository (0% build RAM consumed on VPS)
-  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built binary release verified from Git repository (0% build RAM used).${NC}"
+  # 5. Compile latest backend code with esbuild (takes ~80ms, 0% RAM spike)
+  mkdir -p dist
+  echo -e "\n${CYAN}>> Creating server bundle with lightweight esbuild...${NC}"
+  npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+
+  if [ ! -f "dist/index.html" ]; then
+    echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npx vite build || true
   else
-    echo -e "\n${CYAN}>> Creating server bundle with lightweight esbuild...${NC}"
-    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs 2>/dev/null || true
+    echo -e "${GREEN}✅ Pre-built frontend release verified from repository.${NC}"
   fi
 
-  echo -e "\n${CYAN}>> Restarting bot service...${NC}"
+  echo -e "\n${CYAN}>> Restarting bot service with PM2...${NC}"
   if command -v pm2 &> /dev/null; then
     pm2 delete "sanaei-bot" 2>/dev/null || true
     pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
@@ -326,7 +337,8 @@ do_update() {
       fi
     fi
 
-    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" || pm2 start npm --name "sanaei-bot" -- run start
+    echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
+    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
     pm2 save
   else
     pkill -9 -f "dist/server.cjs" 2>/dev/null || true

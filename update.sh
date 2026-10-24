@@ -117,12 +117,20 @@ else
     echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
 fi
 
-if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Using pre-built release from repository (0% RAM used for build).${NC}"
+# Ensure dist directory exists
+mkdir -p dist
+
+# Always compile latest server.ts into dist/server.cjs with high-speed esbuild (takes ~80ms, 0% RAM spike)
+echo -e "${CYAN}⚡ Compiling latest backend code into dist/server.cjs with esbuild...${NC}"
+npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+
+if [ ! -f "dist/index.html" ]; then
+    echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npx vite build || true
 else
-    echo -e "${CYAN}⚡ Bundling server with lightweight esbuild...${NC}"
-    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs 2>/dev/null || true
+    echo -e "${GREEN}✅ Frontend distribution assets verified (dist/index.html ready).${NC}"
 fi
+
 echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 
 # 5. Restart application service cleanly
@@ -130,7 +138,7 @@ echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
 
 if command -v pm2 &> /dev/null; then
     # Restart or start fresh
-    pm2 delete "sanaei-bot" 2>/dev/null
+    pm2 delete "sanaei-bot" 2>/dev/null || true
     pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
     pkill -9 -f "node.*server\.ts" 2>/dev/null || true
     pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
@@ -144,8 +152,8 @@ if command -v pm2 &> /dev/null; then
         fi
     fi
     
-    echo -e "${CYAN}>> Starting on port ${PORT_VAL}...${NC}"
-    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot"
+    echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
+    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --cwd "$PWD"
     pm2 save
     
     echo -e "${GREEN}✅ Service 'sanaei-bot' restarted under PM2.${NC}"
