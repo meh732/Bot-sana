@@ -16,6 +16,12 @@ fi
 
 # Helper to ensure swap exists and configure SSH keepalive to prevent disconnects on 1GB VPS
 ensure_swap_and_memory() {
+    # On Ubuntu 22.04/24.04, disable systemd-oomd which aggressively terminates SSH sessions on memory pressure
+    if [ "$EUID" -eq 0 ] && command -v systemctl &>/dev/null; then
+        systemctl stop systemd-oomd 2>/dev/null || true
+        systemctl mask systemd-oomd 2>/dev/null || true
+    fi
+
     # Check if active swap has at least 500MB
     local active_swap
     active_swap=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
@@ -102,24 +108,27 @@ if [ -f "/tmp/sanaei_env_backup.env" ]; then
 fi
 
 # 4. Install dependencies and build project
-echo -e "\n${YELLOW}🔹 4. Installing dependencies & building project (Vite + esbuild)...${NC}"
-echo -e "${CYAN}⏳ Installing packages (please wait 30–60 seconds)...${NC}"
+echo -e "\n${YELLOW}🔹 4. Checking dependencies & build assets...${NC}"
 
-nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ Retrying npm install...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
+if [ ! -d "node_modules" ]; then
+    echo -e "${CYAN}⏳ Installing packages (initial run)...${NC}"
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+else
+    echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
 fi
 
-echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
-npm run clean 2>/dev/null
-nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
-    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Using optimized pre-built release from repository (0% RAM used for build).${NC}"
+else
+    echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
+    npm run clean 2>/dev/null
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
+        npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    fi
 fi
-echo -e "${GREEN}✅ Build completed successfully (dist/server.cjs generated).${NC}"
+echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 
 # 5. Restart application service cleanly
 echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"

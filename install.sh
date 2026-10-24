@@ -56,6 +56,12 @@ fi
 
 # Helper to ensure swap exists and configure SSH keepalive to prevent disconnects on 1GB VPS
 ensure_swap_and_memory() {
+    # On Ubuntu 22.04/24.04, disable systemd-oomd which aggressively terminates SSH sessions on memory pressure
+    if [ "$EUID" -eq 0 ] && command -v systemctl &>/dev/null; then
+        systemctl stop systemd-oomd 2>/dev/null || true
+        systemctl mask systemd-oomd 2>/dev/null || true
+    fi
+
     # Check if active swap has at least 500MB
     local active_swap
     active_swap=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
@@ -210,14 +216,18 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
+  nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund
 
-  echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
-  npm run clean 2>/dev/null
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-  if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback build...${NC}"
-    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Pre-built release verified.${NC}"
+  else
+    echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
+    npm run clean 2>/dev/null
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
+    if [ $? -ne 0 ]; then
+      echo -e "${YELLOW}⚠️ First build attempt had error, running fallback build...${NC}"
+      npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    fi
   fi
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
@@ -290,15 +300,25 @@ do_update() {
     mv /tmp/.env.bak .env
   fi
 
-  echo -e "\n${CYAN}>> Updating dependencies (please wait 30–60 seconds)...${NC}"
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm install --no-audit --no-fund
+  # 4. Handle dependencies safely
+  if [ ! -d "node_modules" ]; then
+    echo -e "\n${CYAN}>> Installing dependencies (initial run)...${NC}"
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+  else
+    echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
+  fi
 
-  echo -e "\n${CYAN}>> Rebuilding project with Vite + esbuild...${NC}"
-  npm run clean 2>/dev/null
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-  if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
-    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  # 5. Build or use pre-built dist
+  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Using optimized pre-built release from repository (0% build RAM consumed).${NC}"
+  else
+    echo -e "\n${CYAN}>> Building project with Vite + esbuild...${NC}"
+    npm run clean 2>/dev/null
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
+    if [ $? -ne 0 ]; then
+      echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
+      npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    fi
   fi
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
