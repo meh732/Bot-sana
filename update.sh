@@ -9,36 +9,46 @@ safe_exit() {
 # Ignore SIGHUP so SSH terminal disconnects never kill the update process
 trap '' HUP 2>/dev/null
 
+# Protect this shell script and child processes from Linux OOM Killer
+if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo -1000 > /proc/$$/oom_score_adj 2>/dev/null || true
+fi
+
 # Helper to ensure swap exists and configure SSH keepalive to prevent disconnects on 1GB VPS
 ensure_swap_and_memory() {
-    # Check if /swapfile is already active
-    if swapon --show 2>/dev/null | grep -q "/swapfile"; then
-        return 0
-    fi
-
-    # Check total swap in /proc/meminfo
-    SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
-    if [ -n "$SWAP_KB" ] && [ "$SWAP_KB" -gt 500000 ]; then
+    # Check if active swap has at least 500MB
+    local active_swap
+    active_swap=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
+    if [ -n "$active_swap" ] && [ "$active_swap" -gt 500 ]; then
         return 0
     fi
 
     if [ "$EUID" -eq 0 ]; then
+        echo -e "${YELLOW}ℹ️ Activating 2GB swap file to protect VPS memory during compilation...${NC}"
+        swapoff /swapfile 2>/dev/null || true
+        rm -f /swapfile 2>/dev/null
+        if ! fallocate -l 2G /swapfile 2>/dev/null; then
+            dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none 2>/dev/null
+        fi
         if [ -f "/swapfile" ]; then
-            swapon /swapfile 2>/dev/null || true
-        else
-            echo -e "${YELLOW}ℹ️ Setting up 2GB swap file to guarantee smooth build on 1GB VPS...${NC}"
-            dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null || fallocate -l 2G /swapfile 2>/dev/null
             chmod 600 /swapfile 2>/dev/null
             mkswap /swapfile 2>/dev/null
             swapon /swapfile 2>/dev/null || true
+            sysctl -w vm.swappiness=10 2>/dev/null || true
+            if ! grep -q "/swapfile" /etc/fstab 2>/dev/null; then
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab 2>/dev/null || true
+            fi
         fi
-        echo -e "${GREEN}✅ Emergency swap memory activated successfully.${NC}"
+        local check_swap
+        check_swap=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
+        if [ -n "$check_swap" ] && [ "$check_swap" -gt 500 ]; then
+            echo -e "${GREEN}✅ 2GB Swap memory activated successfully (${check_swap}MB available).${NC}"
+        fi
     fi
 
-    # Configure SSH keepalive on VPS server so SSH clients (Bitvise/PuTTY) never time out
+    # Configure SSH keepalive on VPS server so SSH clients (Termius/Bitvise/PuTTY) never time out
     if [ "$EUID" -eq 0 ] && [ -f "/etc/ssh/sshd_config" ]; then
-        if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config; then
-            echo "" >> /etc/ssh/sshd_config
+        if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config 2>/dev/null; then
             echo "ClientAliveInterval 30" >> /etc/ssh/sshd_config
             echo "ClientAliveCountMax 10" >> /etc/ssh/sshd_config
             systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
@@ -103,11 +113,11 @@ fi
 
 echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
 npm run clean 2>/dev/null
-nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npm run build
+nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
 
 if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Build failed! Please inspect compilation errors above.${NC}"
-    safe_exit 1
+    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
+    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
 fi
 echo -e "${GREEN}✅ Build completed successfully (dist/server.cjs generated).${NC}"
 

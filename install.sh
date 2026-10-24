@@ -49,36 +49,46 @@ show_menu() {
   fi
 }
 
+# Protect this shell script and child processes from Linux OOM Killer
+if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo -1000 > /proc/$$/oom_score_adj 2>/dev/null || true
+fi
+
 # Helper to ensure swap exists and configure SSH keepalive to prevent disconnects on 1GB VPS
 ensure_swap_and_memory() {
-    # Check if /swapfile is already active
-    if swapon --show 2>/dev/null | grep -q "/swapfile"; then
-        return 0
-    fi
-
-    # Check total swap in /proc/meminfo
-    SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
-    if [ -n "$SWAP_KB" ] && [ "$SWAP_KB" -gt 500000 ]; then
+    # Check if active swap has at least 500MB
+    local active_swap
+    active_swap=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
+    if [ -n "$active_swap" ] && [ "$active_swap" -gt 500 ]; then
         return 0
     fi
 
     if [ "$EUID" -eq 0 ]; then
+        echo -e "${YELLOW}ℹ️ Activating 2GB swap file to protect VPS memory during compilation...${NC}"
+        swapoff /swapfile 2>/dev/null || true
+        rm -f /swapfile 2>/dev/null
+        if ! fallocate -l 2G /swapfile 2>/dev/null; then
+            dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none 2>/dev/null
+        fi
         if [ -f "/swapfile" ]; then
-            swapon /swapfile 2>/dev/null || true
-        else
-            echo -e "${YELLOW}ℹ️ Setting up 2GB swap file to guarantee smooth build on 1GB VPS...${NC}"
-            dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null || fallocate -l 2G /swapfile 2>/dev/null
             chmod 600 /swapfile 2>/dev/null
             mkswap /swapfile 2>/dev/null
             swapon /swapfile 2>/dev/null || true
+            sysctl -w vm.swappiness=10 2>/dev/null || true
+            if ! grep -q "/swapfile" /etc/fstab 2>/dev/null; then
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab 2>/dev/null || true
+            fi
         fi
-        echo -e "${GREEN}✅ Emergency swap memory activated successfully.${NC}"
+        local check_swap
+        check_swap=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
+        if [ -n "$check_swap" ] && [ "$check_swap" -gt 500 ]; then
+            echo -e "${GREEN}✅ 2GB Swap memory activated successfully (${check_swap}MB available).${NC}"
+        fi
     fi
 
-    # Configure SSH keepalive on VPS server so SSH clients (Bitvise/PuTTY) never time out
+    # Configure SSH keepalive on VPS server so SSH clients (Termius/Bitvise/PuTTY) never time out
     if [ "$EUID" -eq 0 ] && [ -f "/etc/ssh/sshd_config" ]; then
-        if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config; then
-            echo "" >> /etc/ssh/sshd_config
+        if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config 2>/dev/null; then
             echo "ClientAliveInterval 30" >> /etc/ssh/sshd_config
             echo "ClientAliveCountMax 10" >> /etc/ssh/sshd_config
             systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
@@ -204,7 +214,11 @@ do_fresh_install() {
 
   echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
   npm run clean 2>/dev/null
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=256" npm run build
+  nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback build...${NC}"
+    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  fi
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
   pm2 delete "sanaei-bot" 2>/dev/null
@@ -281,7 +295,11 @@ do_update() {
 
   echo -e "\n${CYAN}>> Rebuilding project with Vite + esbuild...${NC}"
   npm run clean 2>/dev/null
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npm run build
+  nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
+    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  fi
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
   if command -v pm2 &> /dev/null; then
@@ -325,55 +343,58 @@ do_restart() {
   fi
 }
 
-# Main Execution Flow
-CHOICE="${1:-}"
-
-if [ -z "$CHOICE" ]; then
-  if [ -t 0 ] || [ -c /dev/tty ]; then
-    while true; do
-      show_menu
-      case $CHOICE in
-        1|2|3|4|5)
-          break
-          ;;
-        *)
-          echo -e "${RED}❌ Invalid selection: '$CHOICE'. Please enter a number from 1 to 5.${NC}"
-          ;;
-      esac
-    done
+pause_and_continue() {
+  echo ""
+  if [ -c /dev/tty ]; then
+    read -p "Press [Enter] to return to menu..." _dummy </dev/tty || true
   else
-    # Non-interactive without CLI argument
-    echo -e "${YELLOW}ℹ️ Usage: bash install.sh [1-5]${NC}"
-    echo -e "  1: Fresh Installation"
-    echo -e "  2: Update Bot"
-    echo -e "  3: Restart Service"
-    echo -e "  4: Uninstall"
-    echo -e "  5: Exit"
-    safe_exit 1
+    read -p "Press [Enter] to return to menu..." _dummy || true
   fi
+}
+
+execute_action() {
+  local action="$1"
+  case $action in
+    1|install|fresh)
+      do_fresh_install
+      ;;
+    2|update)
+      do_update
+      ;;
+    3|restart)
+      do_restart
+      ;;
+    4|uninstall)
+      do_uninstall
+      echo -e "${GREEN}✅ All files and processes removed successfully.${NC}"
+      ;;
+    5|exit)
+      echo -e "${YELLOW}Exiting.${NC}"
+      safe_exit 0
+      ;;
+    *)
+      echo -e "${RED}❌ Invalid selection: '$action'. Please enter a number from 1 to 5.${NC}"
+      ;;
+  esac
+}
+
+# Main Execution Flow
+CLI_ARG="${1:-}"
+
+if [ -n "$CLI_ARG" ]; then
+  # Non-interactive CLI argument mode
+  execute_action "$CLI_ARG"
+  safe_exit 0
 fi
 
-case $CHOICE in
-  1|install|fresh)
-    do_fresh_install
-    ;;
-  2|update)
-    do_update
-    ;;
-  3|restart)
-    do_restart
-    ;;
-  4|uninstall)
-    do_uninstall
-    echo -e "${GREEN}✅ All files and processes removed successfully.${NC}"
-    ;;
-  5|exit)
+# Interactive Loop: never closes terminal abruptly
+while true; do
+  show_menu
+  if [ "$CHOICE" = "5" ] || [ "$CHOICE" = "exit" ]; then
     echo -e "${YELLOW}Exiting.${NC}"
     safe_exit 0
-    ;;
-  *)
-    echo -e "${RED}❌ Invalid selection: '$CHOICE'. Please enter a number from 1 to 5.${NC}"
-    safe_exit 1
-    ;;
-esac
+  fi
+  execute_action "$CHOICE"
+  pause_and_continue
+done
 
