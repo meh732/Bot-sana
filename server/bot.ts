@@ -3743,10 +3743,10 @@ export async function initBot() {
           sendPanel4ConnectionMenu(chatId);
           return;
         }
-        const mode = sessionType === 'p4_bulk_sub_days' ? 'subtract' : 'add';
+        const mode = sessionType === 'p4_bulk_sub_days' ? 'remove' : 'add';
         bot!.sendMessage(chatId, `⏳ در حال ${mode === 'add' ? 'افزودن' : 'کسر'} ${days} روز روی اشتراک‌های پنل ۴...`);
         try {
-          const res = await panel4.bulkModifyExpire(days, mode, { includeExpired: false, includeOnHold: false });
+          const res = await panel4.bulkModifyExpire(days, mode, false, false);
           bot!.sendMessage(chatId, `✅ <b>عملیات زمانی پنل ۴ انجام شد</b>\n\n📊 تعداد اشتراک‌های تحت تأثیر: <b>${res.affected}</b>\n💬 پیام سرور: <code>${escapeHtml(res.message)}</code>`, { parse_mode: 'HTML' });
         } catch (err: any) {
           bot!.sendMessage(chatId, `❌ خطا در عملیات زمانی پنل ۴: ${escapeHtml(err.message || String(err))}`, { parse_mode: 'HTML' });
@@ -3761,10 +3761,10 @@ export async function initBot() {
           sendPanel4ConnectionMenu(chatId);
           return;
         }
-        const mode = sessionType === 'p4_bulk_sub_gb' ? 'subtract' : 'add';
+        const mode = sessionType === 'p4_bulk_sub_gb' ? 'remove' : 'add';
         bot!.sendMessage(chatId, `⏳ در حال ${mode === 'add' ? 'افزودن' : 'کسر'} ${gb} گیگابایت روی اشتراک‌های پنل ۴...`);
         try {
-          const res = await panel4.bulkModifyUsage(gb, mode, { includeLimited: false });
+          const res = await panel4.bulkModifyUsage(gb, mode, false);
           bot!.sendMessage(chatId, `✅ <b>عملیات حجمی پنل ۴ انجام شد</b>\n\n📊 تعداد اشتراک‌های تحت تأثیر: <b>${res.affected}</b>\n💬 پیام سرور: <code>${escapeHtml(res.message)}</code>`, { parse_mode: 'HTML' });
         } catch (err: any) {
           bot!.sendMessage(chatId, `❌ خطا در عملیات حجمی پنل ۴: ${escapeHtml(err.message || String(err))}`, { parse_mode: 'HTML' });
@@ -7809,7 +7809,7 @@ export async function initBot() {
     } catch (e: any) {
         console.error('[Limit Check Worker Error]', e.message);
     }
-  }, 30 * 1000)); // Check every 30 seconds for near real-time PAYG billing & limits
+  }, 120 * 1000)); // Check every 2 minutes for PAYG billing & limits without overloading panel networks
 }
 
 export async function checkPaygReactivation(user: any) {

@@ -108,6 +108,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
 
   const [customVolGb, setCustomVolGb] = useState<number>(20);
   const [customDurDays, setCustomDurDays] = useState<number>(30);
+  const [customSelectedPanel, setCustomSelectedPanel] = useState<string>('mrocean');
   const [customSelectedCategoryId, setCustomSelectedCategoryId] = useState<string>('');
   const [customClientRemark, setCustomClientRemark] = useState<string>('');
   const [customClientSellingPrice, setCustomClientSellingPrice] = useState<string>('');
@@ -213,8 +214,9 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       });
       const data = await res.json();
       if (data.success) {
-        setChatId(String(data.chatId));
-        fetchPortalInfo(String(data.chatId));
+        const targetChatId = String(data.seller?.chatId || data.chatId || chatId);
+        setChatId(targetChatId);
+        fetchPortalInfo(targetChatId);
       } else {
         setError(data.message || 'نام کاربری یا کلمه عبور اشتباه است.');
         setLoading(false);
@@ -310,6 +312,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         body: JSON.stringify({
           volumeGb: vol,
           durationDays: dur,
+          panelType: customSelectedPanel || undefined,
           customName: customClientRemark.trim() || undefined,
           categoryId: customSelectedCategoryId || undefined
         })

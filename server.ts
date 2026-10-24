@@ -361,11 +361,13 @@ async function startServer() {
       if (isNaN(numDays) || numDays <= 0) {
         return res.status(400).json({ success: false, message: 'تعداد روز باید یک عدد صحیح بزرگتر از صفر باشد.' });
       }
-      const mode = action === 'subtract' ? 'subtract' : 'add';
-      const result = await panel4.bulkModifyExpire(numDays, mode, {
-        includeExpired: Boolean(includeExpired),
-        includeOnHold: Boolean(includeOnHold)
-      });
+      const mode = action === 'subtract' ? 'remove' : 'add';
+      const result = await panel4.bulkModifyExpire(
+        numDays, 
+        mode, 
+        Boolean(includeExpired),
+        Boolean(includeOnHold)
+      );
       res.json({ success: true, ...result });
     } catch (e: any) {
       res.status(400).json({ success: false, message: e.message });
@@ -379,10 +381,8 @@ async function startServer() {
       if (isNaN(numGb) || numGb <= 0) {
         return res.status(400).json({ success: false, message: 'مقدار حجم (گیگابایت) باید یک عدد صحیح بزرگتر از صفر باشد.' });
       }
-      const mode = action === 'subtract' ? 'subtract' : 'add';
-      const result = await panel4.bulkModifyUsage(numGb, mode, {
-        includeLimited: Boolean(includeLimited)
-      });
+      const mode = action === 'subtract' ? 'remove' : 'add';
+      const result = await panel4.bulkModifyUsage(numGb, mode, Boolean(includeLimited));
       res.json({ success: true, ...result });
     } catch (e: any) {
       res.status(400).json({ success: false, message: e.message });
@@ -1124,158 +1124,179 @@ async function startServer() {
 
   // --- Seller Storefront Web Portal API Endpoints ---
   api.post("/seller-portal/login", (req, res) => {
-    const { username, password, chatId } = req.body;
-    const state = db.getState();
-    const allUsers = state.users || [];
+    try {
+      const { username, password, chatId } = req.body;
+      const state = db.getState();
+      const allUsers = state.users || [];
 
-    let targetSeller: any = null;
-    if (chatId) {
-      targetSeller = allUsers.find((u: any) => String(u.chatId) === String(chatId));
-    }
-    if (!targetSeller && username) {
-      const uLower = String(username).trim().toLowerCase();
-      targetSeller = allUsers.find((u: any) => 
-        (u.portalUsername && String(u.portalUsername).toLowerCase() === uLower) ||
-        (u.username && String(u.username).toLowerCase() === uLower) ||
-        (String(u.chatId) === uLower)
-      );
-    }
+      let targetSeller: any = null;
+      const cleanUsername = username ? String(username).trim().toLowerCase() : '';
+      const cleanChatId = chatId ? String(chatId).trim().toLowerCase() : '';
 
-    if (!targetSeller) {
-      return res.status(404).json({ success: false, message: 'همکار فروشنده‌ای با این مشخصات یافت نشد.' });
-    }
-
-    if (!targetSeller.isSeller) {
-      return res.status(403).json({ success: false, message: 'دسترسی همکار شما توسط مدیریت لغو گردیده است و امکان ورود به پورتال وجود ندارد.' });
-    }
-
-    if (targetSeller.portalPassword && password) {
-      if (String(password).trim() !== String(targetSeller.portalPassword).trim()) {
-        return res.status(401).json({ success: false, message: 'کلمه عبور وارد شده اشتباه است.' });
+      if (cleanChatId && /^\d+$/.test(cleanChatId)) {
+        targetSeller = allUsers.find((u: any) => String(u.chatId) === cleanChatId);
       }
-    }
-
-    res.json({
-      success: true,
-      seller: {
-        chatId: targetSeller.chatId,
-        username: targetSeller.username,
-        portalUsername: targetSeller.portalUsername || targetSeller.username || `seller_${targetSeller.chatId}`,
-        name: targetSeller.name || targetSeller.username || `همکار ${targetSeller.chatId}`,
-        debt: targetSeller.debt || 0,
-        debtLimit: targetSeller.debtLimit || 0,
-        isUnlimitedLimit: !!targetSeller.isUnlimitedLimit,
-        customDisplayPrices: targetSeller.customDisplayPrices || {},
-        showCustomPricesOnly: targetSeller.showCustomPricesOnly ?? true
+      if (!targetSeller && (cleanUsername || cleanChatId)) {
+        const queryTerm = cleanUsername || cleanChatId;
+        targetSeller = allUsers.find((u: any) => 
+          (u.portalUsername && String(u.portalUsername).toLowerCase() === queryTerm) ||
+          (u.username && String(u.username).toLowerCase() === queryTerm) ||
+          (String(u.chatId) === queryTerm)
+        );
       }
-    });
+
+      if (!targetSeller) {
+        return res.status(404).json({ success: false, message: 'همکار فروشنده‌ای با این مشخصات یافت نشد.' });
+      }
+
+      if (!targetSeller.isSeller) {
+        return res.status(403).json({ success: false, message: 'دسترسی همکار شما توسط مدیریت لغو گردیده است و امکان ورود به پورتال وجود ندارد.' });
+      }
+
+      if (targetSeller.portalPassword) {
+        if (!password || String(password).trim() !== String(targetSeller.portalPassword).trim()) {
+          return res.status(401).json({ success: false, message: 'کلمه عبور وارد شده اشتباه است.' });
+        }
+      }
+
+      res.json({
+        success: true,
+        seller: {
+          chatId: targetSeller.chatId,
+          username: targetSeller.username,
+          portalUsername: targetSeller.portalUsername || targetSeller.username || `seller_${targetSeller.chatId}`,
+          name: targetSeller.name || targetSeller.username || `همکار ${targetSeller.chatId}`,
+          debt: targetSeller.debt || 0,
+          debtLimit: targetSeller.debtLimit || 0,
+          isUnlimitedLimit: !!targetSeller.isUnlimitedLimit,
+          customDisplayPrices: targetSeller.customDisplayPrices || {},
+          showCustomPricesOnly: targetSeller.showCustomPricesOnly ?? true
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || 'خطا در ورود به پورتال.' });
+    }
   });
 
-  api.get("/seller-portal/info/:chatId", (req, res) => {
-    const chatId = parseInt(req.params.chatId);
-    const user = db.getUser(chatId);
-    if (!user || !user.isSeller) {
-      return res.status(404).json({ success: false, message: 'پنل همکار یافت نشد یا دسترسی غیرمجاز است.' });
-    }
+  api.get("/seller-portal/info/:identifier", (req, res) => {
+    try {
+      const identifier = req.params.identifier;
+      const state = db.getState();
+      const allUsers = state.users || [];
 
-    const state = db.getState();
-    const categories = (state.categories || []).filter((c: any) => !c.disabled);
-    const activeCategoryIds = new Set(categories.map((c: any) => String(c.id)));
-    
-    // Only return products that are strictly ready for sale:
-    // 1. Not disabled
-    // 2. Category must not be disabled
-    // 3. Must be ready for sale (valid volume/days or pay-as-you-go or valid price)
-    const products = (state.products || [])
-      .filter((p: any) => {
-        if (!p || p.disabled === true || p.enabled === false) return false;
-        if (p.categoryId && !activeCategoryIds.has(String(p.categoryId))) return false;
-        const isReady = !!p.isPayAsYouGo || (Number(p.volumeGb || 0) > 0 && Number(p.durationDays || 0) > 0) || Number(p.price || 0) > 0;
-        return isReady;
-      })
-      .map((p: any) => {
-        const isPAYG = !!p.isPayAsYouGo;
-        const sellerDiscount = getSellerDiscountForProduct(user, p);
-        let realWholesalePrice = isPAYG ? 0 : p.price;
-        if (sellerDiscount > 0 && !isPAYG) {
-          realWholesalePrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
-        }
+      let user: any = null;
+      if (/^\d+$/.test(identifier)) {
+        user = db.getUser(parseInt(identifier));
+      }
+      if (!user) {
+        const uLower = String(identifier).trim().toLowerCase();
+        user = allUsers.find((u: any) => 
+          (u.portalUsername && String(u.portalUsername).toLowerCase() === uLower) ||
+          (u.username && String(u.username).toLowerCase() === uLower) ||
+          (String(u.chatId) === uLower)
+        );
+      }
 
-        const customPrice = user.customDisplayPrices?.[p.id];
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'پنل همکار یافت نشد یا دسترسی غیرمجاز است.' });
+      }
 
-        return {
-          id: p.id,
-          name: p.name,
-          volumeGb: p.volumeGb,
-          durationDays: p.durationDays,
-          categoryId: p.categoryId,
-          isPayAsYouGo: !!p.isPayAsYouGo,
-          panelType: p.panelType,
-          originalPrice: p.price,
-          realWholesalePrice, // Real price charged to seller
-          sellerDiscount,
-          customDisplayPrice: customPrice !== undefined ? customPrice : null
-        };
+      const categories = (state.categories || []).filter((c: any) => !c.disabled);
+      const activeCategoryIds = new Set(categories.map((c: any) => String(c.id)));
+      
+      const products = (state.products || [])
+        .filter((p: any) => {
+          if (!p || p.disabled === true || p.enabled === false) return false;
+          if (p.categoryId && !activeCategoryIds.has(String(p.categoryId))) return false;
+          const isReady = !!p.isPayAsYouGo || (Number(p.volumeGb || 0) > 0 && Number(p.durationDays || 0) > 0) || Number(p.price || 0) > 0;
+          return isReady;
+        })
+        .map((p: any) => {
+          const isPAYG = !!p.isPayAsYouGo;
+          const sellerDiscount = getSellerDiscountForProduct(user, p);
+          let realWholesalePrice = isPAYG ? 0 : p.price;
+          if (sellerDiscount > 0 && !isPAYG) {
+            realWholesalePrice = Math.max(0, Math.round(p.price * (1 - sellerDiscount / 100)));
+          }
+
+          const customPrice = user.customDisplayPrices?.[p.id];
+
+          return {
+            id: p.id,
+            name: p.name,
+            volumeGb: p.volumeGb,
+            durationDays: p.durationDays,
+            categoryId: p.categoryId,
+            isPayAsYouGo: !!p.isPayAsYouGo,
+            panelType: p.panelType,
+            originalPrice: p.price,
+            realWholesalePrice,
+            sellerDiscount,
+            customDisplayPrice: customPrice !== undefined ? customPrice : null
+          };
+        });
+
+      const productCatIds = new Set(products.map((p: any) => String(p.categoryId)).filter(Boolean));
+      const activeCategories = categories.filter((c: any) => productCatIds.has(String(c.id)));
+
+      const reportToday = getUserAccountingReport(user, 'today');
+      const reportMonthly = getUserAccountingReport(user, 'monthly');
+      const reportAll = getUserAccountingReport(user, 'all');
+
+      res.json({
+        success: true,
+        seller: {
+          chatId: user.chatId,
+          username: user.username,
+          portalUsername: user.portalUsername || user.username || `seller_${user.chatId}`,
+          name: user.name || user.username || `همکار ${user.chatId}`,
+          debt: user.debt || 0,
+          debtLimit: user.debtLimit || 0,
+          isUnlimitedLimit: isSellerUnlimitedLimit(user),
+          debtVolume: user.debtVolume || 0,
+          totalSales: user.totalSales || 0,
+          totalPayments: user.totalPayments || 0,
+          sellerDiscount: user.sellerDiscount || 0,
+          customDisplayPrices: user.customDisplayPrices || {},
+          showCustomPricesOnly: user.showCustomPricesOnly ?? true,
+          purchases: (user.purchases || []).filter((p: any) => !p.isDeleted),
+          transactions: user.transactions || []
+        },
+        accounting: {
+          today: reportToday,
+          monthly: reportMonthly,
+          all: reportAll
+        },
+        bankInfo: {
+          cardNumber: state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸',
+          cardHolder: state.cardHolder || 'مدیریت حساب'
+        },
+        freeTest: {
+          enabled: state.freeTestEnabled !== false,
+          volumeGb: state.freeTestVolumeGb !== undefined ? Number(state.freeTestVolumeGb) : 1,
+          durationDays: state.freeTestDurationDays !== undefined ? Number(state.freeTestDurationDays) : 3
+        },
+        customVolume: {
+          enabled: state.customVolumeEnabled !== false,
+          pricePerGb: user.customVolumePricePerGb || state.customVolumePricePerGb || 3000,
+          sellerDiscount: user.sellerDiscount || 0,
+          finalPricePerGb: Math.max(0, Math.round((user.customVolumePricePerGb || state.customVolumePricePerGb || 3000) * (1 - (user.sellerDiscount || 0) / 100))),
+          minGb: state.customVolumeMinGb || 1,
+          defaultDays: state.customVolumeDefaultDays || 30,
+          defaultPanel: state.customVolumePanelType || 'mrocean',
+          availablePanels: [
+            ...(state.mroceanPanel?.url ? [{ id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊 - پیشنهادی' }] : [{ id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊' }]),
+            ...(state.panel?.url ? [{ id: 'sanaei', name: 'سنایی (X-UI) 🔵' }] : []),
+            ...(state.rebeccaPanel?.url ? [{ id: 'rebecca', name: 'ربکا (Rebecca) 🟣' }] : [])
+          ]
+        },
+        categories: activeCategories,
+        products
       });
-
-    // Only return categories that actually have active ready products
-    const productCatIds = new Set(products.map((p: any) => String(p.categoryId)).filter(Boolean));
-    const activeCategories = categories.filter((c: any) => productCatIds.has(String(c.id)));
-
-    const reportToday = getUserAccountingReport(user, 'today');
-    const reportMonthly = getUserAccountingReport(user, 'monthly');
-    const reportAll = getUserAccountingReport(user, 'all');
-
-    res.json({
-      success: true,
-      seller: {
-        chatId: user.chatId,
-        username: user.username,
-        portalUsername: user.portalUsername || user.username || `seller_${user.chatId}`,
-        name: user.name || user.username || `همکار ${user.chatId}`,
-        debt: user.debt || 0,
-        debtLimit: user.debtLimit || 0,
-        isUnlimitedLimit: isSellerUnlimitedLimit(user),
-        debtVolume: user.debtVolume || 0,
-        totalSales: user.totalSales || 0,
-        totalPayments: user.totalPayments || 0,
-        sellerDiscount: user.sellerDiscount || 0,
-        customDisplayPrices: user.customDisplayPrices || {},
-        showCustomPricesOnly: user.showCustomPricesOnly ?? true,
-        purchases: (user.purchases || []).filter((p: any) => !p.isDeleted),
-        transactions: user.transactions || []
-      },
-      accounting: {
-        today: reportToday,
-        monthly: reportMonthly,
-        all: reportAll
-      },
-      bankInfo: {
-        cardNumber: state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸',
-        cardHolder: state.cardHolder || 'مدیریت حساب'
-      },
-      freeTest: {
-        enabled: state.freeTestEnabled !== false,
-        volumeGb: state.freeTestVolumeGb !== undefined ? Number(state.freeTestVolumeGb) : 1,
-        durationDays: state.freeTestDurationDays !== undefined ? Number(state.freeTestDurationDays) : 3
-      },
-      customVolume: {
-        enabled: state.customVolumeEnabled !== false,
-        pricePerGb: user.customVolumePricePerGb || state.customVolumePricePerGb || 3000,
-        sellerDiscount: user.sellerDiscount || 0,
-        finalPricePerGb: Math.max(0, Math.round((user.customVolumePricePerGb || state.customVolumePricePerGb || 3000) * (1 - (user.sellerDiscount || 0) / 100))),
-        minGb: state.customVolumeMinGb || 1,
-        defaultDays: state.customVolumeDefaultDays || 30,
-        defaultPanel: state.customVolumePanelType || 'mrocean',
-        availablePanels: [
-          ...(state.mroceanPanel?.url ? [{ id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊 - پیشنهادی' }] : [{ id: 'mrocean', name: 'مستر اوشن (Mr Ocean) 🌊' }]),
-          ...(state.panel?.url ? [{ id: 'sanaei', name: 'سنایی (X-UI) 🔵' }] : []),
-          ...(state.rebeccaPanel?.url ? [{ id: 'rebecca', name: 'ربکا (Rebecca) 🟣' }] : [])
-        ]
-      },
-      categories: activeCategories,
-      products
-    });
+    } catch (err: any) {
+      console.error('[Seller Portal Info Error]', err);
+      res.status(500).json({ success: false, message: 'خطا در بارگذاری اطلاعات پورتال همکار: ' + (err.message || String(err)) });
+    }
   });
 
   api.get("/seller-portal/download-pdf/:chatId", async (req, res) => {

@@ -293,6 +293,8 @@ export class MultiPanelService {
     const panel4SubId = panel4Details?.subId || '';
     const primarySubId = sanaeiSubId || rebeccaSubId || mroceanSubId || panel4SubId || '';
 
+    this.invalidateTrafficCache();
+
     return {
       panelType,
       clientEmail,
@@ -310,16 +312,33 @@ export class MultiPanelService {
     };
   }
 
+  private trafficCache: { data: UnifiedTrafficClient[]; timestamp: number } | null = null;
+  private trafficCacheTtlMs = 60 * 1000; // 60 seconds TTL
+
+  public invalidateTrafficCache(): void {
+    this.trafficCache = null;
+  }
+
   /**
-   * Retrieves all clients and traffic data across all connected panels
+   * Retrieves all clients and traffic data across all connected panels in parallel with caching
    */
-  public async getAllClientsWithTraffic(): Promise<UnifiedTrafficClient[]> {
+  public async getAllClientsWithTraffic(forceRefresh: boolean = false): Promise<UnifiedTrafficClient[]> {
+    const now = Date.now();
+    if (!forceRefresh && this.trafficCache && (now - this.trafficCache.timestamp < this.trafficCacheTtlMs)) {
+      return this.trafficCache.data;
+    }
+
     const results: UnifiedTrafficClient[] = [];
 
-    // Sanaei clients
-    try {
-      const sanaeiClients = await xui.getAllClientsWithTraffic().catch(() => []);
-      for (const cl of sanaeiClients) {
+    const [sanaeiRes, rebeccaRes, mroceanRes, p4Res] = await Promise.allSettled([
+      xui.getAllClientsWithTraffic().catch(() => []),
+      rebecca.getAllClientsWithTraffic().catch(() => []),
+      mrocean.getAllClientsWithTraffic().catch(() => []),
+      panel4.getAllClientsWithTraffic().catch(() => [])
+    ]);
+
+    if (sanaeiRes.status === 'fulfilled' && Array.isArray(sanaeiRes.value)) {
+      for (const cl of sanaeiRes.value) {
         results.push({
           id: cl.id || cl.email,
           email: cl.email,
@@ -333,12 +352,10 @@ export class MultiPanelService {
           panel: 'sanaei'
         });
       }
-    } catch (e) {}
+    }
 
-    // Rebecca clients
-    try {
-      const rebeccaClients = await rebecca.getAllClientsWithTraffic().catch(() => []);
-      for (const cl of rebeccaClients) {
+    if (rebeccaRes.status === 'fulfilled' && Array.isArray(rebeccaRes.value)) {
+      for (const cl of rebeccaRes.value) {
         results.push({
           id: cl.id || cl.email,
           email: cl.email,
@@ -354,12 +371,10 @@ export class MultiPanelService {
           panel: 'rebecca'
         });
       }
-    } catch (e) {}
+    }
 
-    // Mr Ocean clients
-    try {
-      const mroceanClients = await mrocean.getAllClientsWithTraffic().catch(() => []);
-      for (const cl of mroceanClients) {
+    if (mroceanRes.status === 'fulfilled' && Array.isArray(mroceanRes.value)) {
+      for (const cl of mroceanRes.value) {
         results.push({
           id: cl.id || cl.email,
           email: cl.email,
@@ -375,12 +390,10 @@ export class MultiPanelService {
           panel: 'mrocean'
         });
       }
-    } catch (e) {}
+    }
 
-    // Panel 4 clients
-    try {
-      const p4Clients = await panel4.getAllClientsWithTraffic().catch(() => []);
-      for (const cl of p4Clients) {
+    if (p4Res.status === 'fulfilled' && Array.isArray(p4Res.value)) {
+      for (const cl of p4Res.value) {
         results.push({
           id: cl.id || cl.email,
           email: cl.email,
@@ -394,8 +407,9 @@ export class MultiPanelService {
           panel: 'panel4'
         });
       }
-    } catch (e) {}
+    }
 
+    this.trafficCache = { data: results, timestamp: now };
     return results;
   }
 
@@ -506,6 +520,7 @@ export class MultiPanelService {
     if (!anySuccess) {
       throw new Error('تمدید سرویس در سرورها با خطا مواجه شد. لطفاً اتصال پنل‌ها را بررسی فرمایید.');
     }
+    this.invalidateTrafficCache();
   }
 
   /**

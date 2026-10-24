@@ -1012,6 +1012,9 @@ export class Panel4Client {
                 });
               }
               page++;
+              if (items.length < 100) {
+                break;
+              }
             } else {
               break;
             }
@@ -1117,7 +1120,18 @@ export class Panel4Client {
   /**
    * Native Panel 4 Bulk Actions API (/api/actions/*)
    */
-  public async getActionsPreview(serviceId: number = 0): Promise<{ total: number; with_expiry: number; with_service: number; with_usage_limit: number }> {
+  public async getActionsPreview(serviceId: number = 0): Promise<{ 
+    total: number; 
+    active?: number;
+    on_hold?: number;
+    expired?: number;
+    limited?: number;
+    finite?: number;
+    unlimited?: number;
+    with_expiry: number; 
+    with_service: number; 
+    with_usage_limit: number;
+  }> {
     const query = serviceId > 0 ? `?service_id=${serviceId}` : '';
     const res = await this.requestWithRetry((auth) => ({
       method: 'GET',
@@ -1128,6 +1142,12 @@ export class Panel4Client {
     if (res.status === 200 && res.data) {
       return {
         total: Number(res.data.total || 0),
+        active: Number(res.data.active || 0),
+        on_hold: Number(res.data.on_hold || 0),
+        expired: Number(res.data.expired || 0),
+        limited: Number(res.data.limited || 0),
+        finite: Number(res.data.finite || 0),
+        unlimited: Number(res.data.unlimited || 0),
         with_expiry: Number(res.data.with_expiry || 0),
         with_service: Number(res.data.with_service || 0),
         with_usage_limit: Number(res.data.with_usage_limit || 0)

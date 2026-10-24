@@ -550,13 +550,50 @@ class Database {
     }
   }
 
-  private save() {
+  private saveTimer: NodeJS.Timeout | null = null;
+  private pendingSave = false;
+
+  public saveImmediate() {
     try {
-      fs.writeFileSync(DB_PATH, JSON.stringify(this.state, null, 2));
-      this.triggerAutoBackup();
-    } catch (e) {
-      console.error('Failed to save db.json', e);
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      this.pendingSave = false;
+      const data = JSON.stringify(this.state);
+      const tempPath = `${DB_PATH}.tmp`;
+      fs.writeFileSync(tempPath, data, 'utf8');
+      fs.renameSync(tempPath, DB_PATH);
+    } catch (e: any) {
+      console.error('Failed to save db.json immediately:', e.message);
     }
+  }
+
+  private save() {
+    if (this.pendingSave) return;
+    this.pendingSave = true;
+
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+    }
+
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.pendingSave = false;
+      try {
+        const data = JSON.stringify(this.state);
+        const tempPath = `${DB_PATH}.tmp`;
+        fs.writeFile(tempPath, data, 'utf8', (err) => {
+          if (!err) {
+            fs.rename(tempPath, DB_PATH, () => {});
+          } else {
+            fs.writeFileSync(DB_PATH, data, 'utf8');
+          }
+        });
+      } catch (e: any) {
+        console.error('Failed to save db.json asynchronously:', e.message);
+      }
+    }, 200);
   }
 
   public getState() {
