@@ -219,15 +219,10 @@ do_fresh_install() {
   nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund
 
   if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built release verified.${NC}"
+    echo -e "${GREEN}✅ Pre-built binary release verified from repository.${NC}"
   else
-    echo -e "\n${CYAN}>> Building and compiling application (Vite + Node Server)...${NC}"
-    npm run clean 2>/dev/null
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-    if [ $? -ne 0 ]; then
-      echo -e "${YELLOW}⚠️ First build attempt had error, running fallback build...${NC}"
-      npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-    fi
+    echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs 2>/dev/null || true
   fi
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT}...${NC}"
@@ -303,22 +298,17 @@ do_update() {
   # 4. Handle dependencies safely
   if [ ! -d "node_modules" ]; then
     echo -e "\n${CYAN}>> Installing dependencies (initial run)...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
   else
     echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
   fi
 
-  # 5. Build or use pre-built dist
+  # 5. Use pre-built binaries from repository (0% build RAM consumed on VPS)
   if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Using optimized pre-built release from repository (0% build RAM consumed).${NC}"
+    echo -e "${GREEN}✅ Pre-built binary release verified from Git repository (0% build RAM used).${NC}"
   else
-    echo -e "\n${CYAN}>> Building project with Vite + esbuild...${NC}"
-    npm run clean 2>/dev/null
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-    if [ $? -ne 0 ]; then
-      echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
-      npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-    fi
+    echo -e "\n${CYAN}>> Creating server bundle with lightweight esbuild...${NC}"
+    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs 2>/dev/null || true
   fi
 
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"

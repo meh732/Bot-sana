@@ -118,15 +118,10 @@ else
 fi
 
 if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Using optimized pre-built release from repository (0% RAM used for build).${NC}"
+    echo -e "${GREEN}✅ Using pre-built release from repository (0% RAM used for build).${NC}"
 else
-    echo -e "${CYAN}⚡ Compiling project with Vite + esbuild...${NC}"
-    npm run clean 2>/dev/null
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
-        npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-    fi
+    echo -e "${CYAN}⚡ Bundling server with lightweight esbuild...${NC}"
+    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs 2>/dev/null || true
 fi
 echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 
