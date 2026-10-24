@@ -6,14 +6,6 @@ safe_exit() {
     return $code 2>/dev/null || exit $code
 }
 
-# Ignore SIGHUP
-trap '' HUP 2>/dev/null
-
-# Protect this shell script and child processes from Linux OOM Killer
-if [ -f "/proc/$$/oom_score_adj" ]; then
-    echo -1000 > /proc/$$/oom_score_adj 2>/dev/null || true
-fi
-
 # --- Terminal Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -54,13 +46,14 @@ echo -e "${GREEN}✅ Stale processes stopped.${NC}"
 # 3. Clean and build the project to ensure correct compilation
 echo -e "${YELLOW}🔹 3. Compiling and building project to apply code changes...${NC}"
 npm run clean 2>/dev/null
-nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
+npm run build
 
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
-    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✅ Project built and compiled successfully.${NC}"
+else
+    echo -e "${RED}❌ Build error! Please review the compilation errors above.${NC}"
+    safe_exit 1
 fi
-echo -e "${GREEN}✅ Project built and compiled successfully.${NC}"
 
 # 4. Start the application
 echo -e "${BLUE}===============================================${NC}"
