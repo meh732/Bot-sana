@@ -32,7 +32,9 @@ import {
   Minus,
   Layers,
   Download,
-  Ban
+  Ban,
+  Key,
+  Info
 } from 'lucide-react';
 
 interface SellerPortalProps {

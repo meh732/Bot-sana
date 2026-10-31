@@ -2168,14 +2168,14 @@ async function startServer() {
           'api'
         );
       } else if (volumeGb !== undefined && Number(volumeGb) > 0) {
-        purchase = await executeSellerCustomVolumePurchase(
-          seller.chatId,
-          Number(volumeGb),
-          Number(durationDays) || 30,
-          panelType ? String(panelType) : undefined,
-          customName ? String(customName) : undefined,
-          'api'
-        );
+        purchase = await executeSellerCustomVolumePurchase({
+          sellerChatId: seller.chatId,
+          volumeGb: Number(volumeGb),
+          durationDays: Number(durationDays) || 30,
+          panelType: panelType ? (String(panelType) as any) : undefined,
+          customName: customName ? String(customName) : undefined,
+          source: 'api'
+        });
       } else {
         return res.status(400).json({
           success: false,
@@ -2339,25 +2339,26 @@ async function startServer() {
       const usedBytes = liveBytes !== null ? liveBytes : Number(purchase.lastUsedBytes || 0);
       const usedGb = Number((usedBytes / (1024 * 1024 * 1024)).toFixed(3));
 
+      const pAny = purchase as any;
       return res.json({
         success: true,
         status: true,
         ok: true,
         config: {
-          id: purchase.id,
-          username: purchase.email,
-          productName: purchase.productName,
-          volumeGb: purchase.volumeGb,
+          id: pAny.id,
+          username: pAny.email || pAny.customName || pAny.username || '',
+          productName: pAny.productName || pAny.name || '',
+          volumeGb: pAny.volumeGb,
           usedGb,
           usedBytes,
-          remainingGb: Math.max(0, Number(((purchase.volumeGb || 0) - usedGb).toFixed(3))),
-          durationDays: purchase.durationDays,
-          purchasedAt: purchase.purchasedAt,
-          expiresAt: purchase.expiresAt,
-          isCanceledBySeller: !!purchase.isCanceledBySeller,
-          disabled: !!purchase.disabled,
-          subUrl: purchase.subUrl || '',
-          price: purchase.price || 0
+          remainingGb: Math.max(0, Number(((pAny.volumeGb || 0) - usedGb).toFixed(3))),
+          durationDays: pAny.durationDays,
+          purchasedAt: pAny.purchasedAt || pAny.date || '',
+          expiresAt: pAny.expiresAt || pAny.expiredAt || '',
+          isCanceledBySeller: !!pAny.isCanceledBySeller,
+          disabled: !!pAny.disabled,
+          subUrl: pAny.subUrl || '',
+          price: pAny.price || 0
         }
       });
     } catch (e: any) {
