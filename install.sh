@@ -297,13 +297,25 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT} with working directory $PWD...${NC}"
-  if ! pm2 ping &>/dev/null; then
-    pkill -9 -f "PM2" 2>/dev/null || true
+  # Completely kill stale PM2 daemon and clear stale socket files
+  pm2 kill 2>/dev/null || true
+  pkill -9 -f "PM2" 2>/dev/null || true
+  rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
+
+  # Ensure dist/server.cjs exists before PM2 start
+  if [ ! -f "$PWD/dist/server.cjs" ]; then
+    echo -e "${YELLOW}>> Recompiling dist/server.cjs with esbuild...${NC}"
+    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
   fi
-  pm2 delete "sanaei-bot" 2>/dev/null || true
-  PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
+
+  PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD"
   pm2 save 2>/dev/null || true
   pm2 startup 2>/dev/null || true
+
+  sleep 2
+  echo -e "${GREEN}✅ PM2 Process Status:${NC}"
+  pm2 status sanaei-bot
+  pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
 
   SERVER_IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com || echo "YOUR_SERVER_IP")
 

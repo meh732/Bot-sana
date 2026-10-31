@@ -191,14 +191,12 @@ echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
 
 if command -v pm2 &> /dev/null; then
-    # If PM2 daemon itself has a broken cwd (uv_cwd error), kill and respawn PM2 daemon cleanly
-    if ! pm2 ping &>/dev/null; then
-        echo -e "${YELLOW}ℹ️ Resetting stale PM2 daemon...${NC}"
-        pkill -9 -f "PM2" 2>/dev/null || true
-    fi
+    # Completely kill stale PM2 daemon and clear stale socket files
+    pm2 kill 2>/dev/null || true
+    pkill -9 -f "PM2" 2>/dev/null || true
+    rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
 
-    # Restart or start fresh
-    pm2 delete "sanaei-bot" 2>/dev/null || true
+    # Kill any stale node/server processes
     pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
     pkill -9 -f "node.*server\.ts" 2>/dev/null || true
     pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
@@ -219,9 +217,15 @@ if command -v pm2 &> /dev/null; then
     if command -v iptables &>/dev/null; then
         iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
     fi
+
+    # Ensure dist/server.cjs exists
+    if [ ! -f "$PWD/dist/server.cjs" ]; then
+        echo -e "${YELLOW}>> Recompiling dist/server.cjs with esbuild...${NC}"
+        npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    fi
     
     echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD"
     pm2 save 2>/dev/null || true
 
     sleep 2
