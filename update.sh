@@ -131,15 +131,22 @@ if [ -f "/tmp/sanaei_env_backup.env" ]; then
     echo -e "${GREEN}✅ Configuration .env restored successfully.${NC}"
 fi
 
-# 4. Install dependencies and build project
-echo -e "\n${YELLOW}🔹 4. Checking dependencies & build assets...${NC}"
+# 4. Install dependencies and verify pre-built assets
+echo -e "\n${YELLOW}🔹 4. Checking backend runtime dependencies & build assets...${NC}"
 
-if [ ! -d "node_modules" ] || [ ! -d "node_modules/@tailwindcss/vite" ] || [ ! -d "node_modules/esbuild" ] || [ ! -d "node_modules/express" ]; then
-    echo -e "${CYAN}⏳ Installing/updating packages...${NC}"
-    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --prefer-offline --no-audit --no-fund --legacy-peer-deps || \
-    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --no-audit --no-fund
+# Kill any stuck background npm install processes that could collide on node_modules
+pkill -9 -f "npm install" 2>/dev/null || true
+
+if [ ! -d "node_modules/express" ] || [ ! -d "node_modules/node-telegram-bot-api" ] || [ ! -d "node_modules/pdfkit" ] || [ ! -d "node_modules/qrcode" ]; then
+    echo -e "${CYAN}⏳ Installing lightweight backend runtime packages...${NC}"
+    if ! nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps; then
+        echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
+        rm -rf node_modules 2>/dev/null || true
+        npm cache clean --force 2>/dev/null || true
+        nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps
+    fi
 else
-    echo -e "${GREEN}✅ Dependencies verified (node_modules complete, skipping heavy re-install).${NC}"
+    echo -e "${GREEN}✅ Backend runtime dependencies verified (skipping heavy re-install).${NC}"
 fi
 
 ensure_valid_cwd
@@ -147,22 +154,17 @@ ensure_valid_cwd
 # Ensure dist directory exists
 mkdir -p dist
 
-# Always compile latest server.ts into dist/server.cjs with high-speed esbuild (takes ~80ms, 0% RAM spike)
-echo -e "${CYAN}⚡ Compiling latest backend code into dist/server.cjs with esbuild...${NC}"
 if [ -x "./node_modules/.bin/esbuild" ]; then
-    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    echo -e "${CYAN}⚡ Updating dist/server.cjs with local esbuild...${NC}"
+    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
+elif [ ! -f "dist/server.cjs" ]; then
+    echo -e "${CYAN}⚡ Compiling dist/server.cjs with esbuild...${NC}"
+    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
 else
-    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    echo -e "${GREEN}✅ Latest pre-built backend bundle (dist/server.cjs) loaded from repository.${NC}"
 fi
 
-if [ ! -f "dist/index.html" ]; then
-    echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
-    if [ -x "./node_modules/.bin/vite" ]; then
-        nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
-    else
-        nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" npx vite build || true
-    fi
-else
+if [ -f "dist/index.html" ]; then
     echo -e "${GREEN}✅ Frontend distribution assets verified (dist/index.html ready).${NC}"
 fi
 

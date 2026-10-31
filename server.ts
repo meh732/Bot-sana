@@ -5,7 +5,6 @@ import cors from "cors";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
-import { createServer as createViteServer } from "vite";
 import { db, recordUserTransaction, ensureSellerApiKey, generateSellerApiKey } from "./server/db.js";
 import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, cancelSellerPurchase, getPurchaseLiveUsedBytes } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
@@ -2524,6 +2523,7 @@ async function startServer() {
       return sendSpaHtml(req, res);
     });
   } else {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: {
         middlewareMode: true,

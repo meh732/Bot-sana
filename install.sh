@@ -243,31 +243,35 @@ do_fresh_install() {
     echo "PANEL_PASSWORD=$PANEL_PASS" >> .env
   fi
 
-  echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --no-audit --no-fund
+  echo -e "\n${CYAN}>> Installing lightweight backend runtime dependencies...${NC}"
+  pkill -9 -f "npm install" 2>/dev/null || true
+  if ! nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps; then
+    echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
+    rm -rf node_modules 2>/dev/null || true
+    npm cache clean --force 2>/dev/null || true
+    nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps
+  fi
 
   ensure_valid_cwd "$PWD"
 
   # Ensure dist directory exists
   mkdir -p dist
 
-  # Always compile latest server.ts into dist/server.cjs with high-speed esbuild (takes ~80ms, 0% RAM spike)
-  echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+  # If esbuild binary is locally installed, re-bundle server.ts; otherwise use the pre-built dist/server.cjs from repository
   if [ -x "./node_modules/.bin/esbuild" ]; then
-    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    echo -e "\n${CYAN}>> Updating backend bundle with local esbuild...${NC}"
+    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
+  elif [ ! -f "dist/server.cjs" ]; then
+    echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
   else
-    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    echo -e "${GREEN}✅ Pre-built backend bundle (dist/server.cjs) verified from repository.${NC}"
   fi
 
-  if [ ! -f "dist/index.html" ]; then
-    echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
-    if [ -x "./node_modules/.bin/vite" ]; then
-      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
-    else
-      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" npx vite build || true
-    fi
-  else
-    echo -e "${GREEN}✅ Pre-built frontend release verified from repository.${NC}"
+  if [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Pre-built frontend release (dist/index.html) verified from repository.${NC}"
+  elif [ -x "./node_modules/.bin/vite" ]; then
+    nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
   fi
 
   ensure_valid_cwd "$PWD"
@@ -350,35 +354,36 @@ do_update() {
     cp ../.env.bak .env
   fi
 
-  # 4. Handle dependencies safely (verify critical build packages like @tailwindcss/vite & esbuild exist)
-  if [ ! -d "node_modules" ] || [ ! -d "node_modules/@tailwindcss/vite" ] || [ ! -d "node_modules/esbuild" ] || [ ! -d "node_modules/express" ]; then
-    echo -e "\n${CYAN}>> Installing/updating required packages...${NC}"
-    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --prefer-offline --no-audit --no-fund --legacy-peer-deps || \
-    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --no-audit --no-fund
+  # 4. Handle runtime dependencies safely (skip heavy frontend devDependencies since dist/ is pre-built)
+  pkill -9 -f "npm install" 2>/dev/null || true
+  if [ ! -d "node_modules/express" ] || [ ! -d "node_modules/node-telegram-bot-api" ] || [ ! -d "node_modules/pdfkit" ] || [ ! -d "node_modules/qrcode" ]; then
+    echo -e "\n${CYAN}>> Installing lightweight backend runtime packages...${NC}"
+    if ! nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps; then
+      echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
+      rm -rf node_modules 2>/dev/null || true
+      npm cache clean --force 2>/dev/null || true
+      nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps
+    fi
   else
-    echo -e "${GREEN}✅ Dependencies verified (node_modules complete, skipping heavy re-install).${NC}"
+    echo -e "${GREEN}✅ Backend runtime dependencies verified (skipping heavy re-install).${NC}"
   fi
 
   ensure_valid_cwd "$TARGET_DIR"
 
-  # 5. Compile latest backend code with esbuild (takes ~80ms, 0% RAM spike)
+  # 5. Verify pre-built dist/server.cjs and dist/index.html from repository
   mkdir -p dist
-  echo -e "\n${CYAN}>> Creating server bundle with lightweight esbuild...${NC}"
   if [ -x "./node_modules/.bin/esbuild" ]; then
-    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    echo -e "\n${CYAN}>> Updating server bundle with local esbuild...${NC}"
+    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
+  elif [ ! -f "dist/server.cjs" ]; then
+    echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
   else
-    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    echo -e "${GREEN}✅ Latest pre-built server bundle (dist/server.cjs) loaded from repository.${NC}"
   fi
 
-  if [ ! -f "dist/index.html" ]; then
-    echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
-    if [ -x "./node_modules/.bin/vite" ]; then
-      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
-    else
-      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" npx vite build || true
-    fi
-  else
-    echo -e "${GREEN}✅ Pre-built frontend release verified from repository.${NC}"
+  if [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Pre-built frontend release (dist/index.html) verified from repository.${NC}"
   fi
 
   ensure_valid_cwd "$TARGET_DIR"
