@@ -1,4 +1,10 @@
-import PDFDocument from 'pdfkit';
+let PDFDocument: any = null;
+try {
+  // @ts-ignore
+  PDFDocument = require('pdfkit');
+} catch {
+  PDFDocument = null;
+}
 import fs from 'fs';
 import path from 'path';
 // @ts-ignore
@@ -40,6 +46,9 @@ export interface PdfRangeOptions {
 export async function generateUserStatementPdf(user: User, options: PdfRangeOptions = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
+      if (!PDFDocument) {
+        return reject(new Error('PDF generator module (pdfkit) is not loaded'));
+      }
       const doc = new PDFDocument({ margin: 30, size: 'A4' });
       const buffers: Buffer[] = [];
 

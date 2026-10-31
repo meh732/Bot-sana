@@ -257,35 +257,18 @@ do_fresh_install() {
     safe_exit 1
   fi
 
-  echo -e "\n${CYAN}>> Installing lightweight backend runtime dependencies...${NC}"
-  pkill -9 -f "npm install" 2>/dev/null || true
-  if ! nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund; then
-    echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
-    rm -rf node_modules package-lock.json /root/.npm ~/.npm 2>/dev/null || true
-    npm cache clean --force 2>/dev/null || true
-    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund
-  fi
-
-  ensure_valid_cwd "$PWD"
-
-  # Ensure dist directory exists
-  mkdir -p dist
-
-  # If esbuild binary is locally installed, re-bundle ./server.ts; otherwise use the pre-built dist/server.cjs from repository
-  if [ -x "./node_modules/.bin/esbuild" ]; then
-    echo -e "\n${CYAN}>> Updating backend bundle with local esbuild...${NC}"
-    ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
-  elif [ ! -f "dist/server.cjs" ]; then
-    echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  # Check for pre-built distribution bundle
+  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Pre-built standalone backend (dist/server.cjs) and frontend (dist/index.html) verified.${NC}"
+    echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
   else
-    echo -e "${GREEN}✅ Pre-built backend bundle (dist/server.cjs) verified from repository.${NC}"
-  fi
-
-  if [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built frontend release (dist/index.html) verified from repository.${NC}"
-  elif [ -x "./node_modules/.bin/vite" ]; then
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
+    echo -e "\n${CYAN}>> Installing lightweight backend runtime dependencies...${NC}"
+    pkill -9 -f "npm install" 2>/dev/null || true
+    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
+    if [ ! -f "dist/server.cjs" ]; then
+      echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+      npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
+    fi
   fi
 
   # Allow port in firewall (ufw & iptables) so panel is accessible from outside
@@ -302,13 +285,11 @@ do_fresh_install() {
   pkill -9 -f "PM2" 2>/dev/null || true
   rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
 
-  # Ensure dist/server.cjs exists before PM2 start
-  if [ ! -f "$PWD/dist/server.cjs" ]; then
-    echo -e "${YELLOW}>> Recompiling dist/server.cjs with esbuild...${NC}"
-    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-  fi
+  # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
+  cd /root 2>/dev/null && cd "$PWD" 2>/dev/null || true
 
-  PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD"
+  PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || \
+  PORT=$PANEL_PORT NODE_ENV=production nohup node "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
   pm2 save 2>/dev/null || true
   pm2 startup 2>/dev/null || true
 
@@ -398,66 +379,57 @@ do_update() {
     safe_exit 1
   fi
 
-  # 4. Handle runtime dependencies safely (skip heavy frontend devDependencies since dist/ is pre-built)
-  pkill -9 -f "npm install" 2>/dev/null || true
-  if [ ! -d "node_modules/express" ] || [ ! -d "node_modules/node-telegram-bot-api" ] || [ ! -d "node_modules/pdfkit" ] || [ ! -d "node_modules/qrcode" ]; then
+  # 4. Check for pre-built distribution bundle
+  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Pre-built standalone backend (dist/server.cjs) and frontend (dist/index.html) ready.${NC}"
+    echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
+  else
+    pkill -9 -f "npm install" 2>/dev/null || true
     echo -e "\n${CYAN}>> Installing lightweight backend runtime packages...${NC}"
-    if ! nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund; then
-      echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
-      rm -rf node_modules package-lock.json /root/.npm ~/.npm 2>/dev/null || true
-      npm cache clean --force 2>/dev/null || true
-      nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund
+    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
+    if [ ! -f "dist/server.cjs" ]; then
+      echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
+      npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
     fi
-  else
-    echo -e "${GREEN}✅ Backend runtime dependencies verified (skipping heavy re-install).${NC}"
   fi
-
-  ensure_valid_cwd "$TARGET_DIR"
-
-  # 5. Verify pre-built dist/server.cjs and dist/index.html from repository
-  mkdir -p dist
-  if [ -x "./node_modules/.bin/esbuild" ]; then
-    echo -e "\n${CYAN}>> Updating server bundle with local esbuild...${NC}"
-    ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
-  elif [ ! -f "dist/server.cjs" ]; then
-    echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-  else
-    echo -e "${GREEN}✅ Latest pre-built server bundle (dist/server.cjs) loaded from repository.${NC}"
-  fi
-
-  if [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built frontend release (dist/index.html) verified from repository.${NC}"
-  fi
-
-  ensure_valid_cwd "$TARGET_DIR"
 
   echo -e "\n${CYAN}>> Restarting bot service with PM2...${NC}"
+  # Completely kill stale PM2 daemon and clear stale socket files
+  pm2 kill 2>/dev/null || true
+  pkill -9 -f "PM2" 2>/dev/null || true
+  rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
+
+  # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
+  cd /root 2>/dev/null && cd "$TARGET_DIR" 2>/dev/null || true
+
+  pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
+  pkill -9 -f "node.*server\.ts" 2>/dev/null || true
+  pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
+
+  PORT_VAL=2020
+  if [ -f ".env" ]; then
+    ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
+    if [ -n "$ENV_PORT" ]; then
+      PORT_VAL="$ENV_PORT"
+    fi
+  fi
+
+  # Allow port in firewall (ufw & iptables) so panel is accessible from outside
+  if command -v ufw &>/dev/null; then
+    ufw allow ${PORT_VAL}/tcp 2>/dev/null || true
+  fi
+  if command -v iptables &>/dev/null; then
+    iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
+  fi
+
+  echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $TARGET_DIR...${NC}"
   if command -v pm2 &> /dev/null; then
-    # If PM2 daemon itself has a broken cwd (uv_cwd error), kill and respawn PM2 daemon cleanly
-    if ! pm2 ping &>/dev/null; then
-      echo -e "${YELLOW}ℹ️ Resetting stale PM2 daemon...${NC}"
-      pkill -9 -f "PM2" 2>/dev/null || true
-    fi
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
-    pkill -9 -f "node.*server\.ts" 2>/dev/null || true
-    pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
-
-    PORT_VAL=2020
-    if [ -f ".env" ]; then
-      ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
-      if [ -n "$ENV_PORT" ]; then
-        PORT_VAL="$ENV_PORT"
-      fi
-    fi
-
-    echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" || \
+    PORT=$PORT_VAL NODE_ENV=production nohup node "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
     pm2 save 2>/dev/null || true
   else
-    pkill -9 -f "dist/server.cjs" 2>/dev/null || true
-    nohup npm start > bot_output.log 2>&1 &
+    PORT=$PORT_VAL NODE_ENV=production nohup node "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
   fi
 
   echo -e "\n${GREEN}=============================================${NC}"

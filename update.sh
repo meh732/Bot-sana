@@ -143,89 +143,59 @@ if [ ! -f "package.json" ]; then
     safe_exit 1
 fi
 
-# 4. Install dependencies and verify pre-built assets
-echo -e "\n${YELLOW}🔹 4. Checking backend runtime dependencies & build assets...${NC}"
+# 4. Check pre-built backend bundle & frontend assets
+echo -e "\n${YELLOW}🔹 4. Verifying pre-built application binaries...${NC}"
 
-# Kill any stuck background npm install processes that could collide on node_modules
-pkill -9 -f "npm install" 2>/dev/null || true
-
-if [ ! -d "node_modules/express" ] || [ ! -d "node_modules/node-telegram-bot-api" ] || [ ! -d "node_modules/pdfkit" ] || [ ! -d "node_modules/qrcode" ]; then
-    echo -e "${CYAN}⏳ Installing lightweight backend runtime packages...${NC}"
-    if ! nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund; then
-        echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
-        rm -rf node_modules package-lock.json /root/.npm ~/.npm 2>/dev/null || true
-        npm cache clean --force 2>/dev/null || true
-        nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund
+if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}✅ Pre-built standalone application (dist/server.cjs) and frontend (dist/index.html) verified.${NC}"
+    echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
+else
+    # Fallback only if dist is missing
+    echo -e "${YELLOW}⚠️ Pre-built bundle not found. Falling back to build...${NC}"
+    pkill -9 -f "npm install" 2>/dev/null || true
+    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
+    if [ ! -f "dist/server.cjs" ]; then
+        npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
     fi
-else
-    echo -e "${GREEN}✅ Backend runtime dependencies verified (skipping heavy re-install).${NC}"
 fi
-
-ensure_valid_cwd
-
-# Ensure dist directory exists
-mkdir -p dist
-
-if [ -x "./node_modules/.bin/esbuild" ]; then
-    echo -e "${CYAN}⚡ Updating dist/server.cjs with local esbuild...${NC}"
-    ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
-elif [ ! -f "dist/server.cjs" ]; then
-    echo -e "${CYAN}⚡ Compiling dist/server.cjs with esbuild...${NC}"
-    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-else
-    echo -e "${GREEN}✅ Latest pre-built backend bundle (dist/server.cjs) loaded from repository.${NC}"
-fi
-
-if [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Frontend distribution assets verified (dist/index.html ready).${NC}"
-else
-    echo -e "${YELLOW}>> Frontend distribution assets missing. Building with Vite...${NC}"
-    npx --yes vite build || true
-fi
-
-ensure_valid_cwd
-
-echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 
 # 5. Restart application service cleanly
 echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
 
+# Completely kill stale PM2 daemon and clear stale socket files
+pm2 kill 2>/dev/null || true
+pkill -9 -f "PM2" 2>/dev/null || true
+rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
+
+# Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
+CURR_DIR="$(pwd -P 2>/dev/null || pwd)"
+cd /root 2>/dev/null && cd "$CURR_DIR" 2>/dev/null || true
+
+pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
+pkill -9 -f "node.*server\.ts" 2>/dev/null || true
+pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
+
+PORT_VAL=2020
+if [ -f ".env" ]; then
+    ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
+    if [ -n "$ENV_PORT" ]; then
+        PORT_VAL="$ENV_PORT"
+    fi
+fi
+
+# Allow port in firewall (ufw & iptables) so panel is accessible from outside
+if command -v ufw &>/dev/null; then
+    ufw allow ${PORT_VAL}/tcp 2>/dev/null || true
+fi
+if command -v iptables &>/dev/null; then
+    iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
+fi
+
+echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $CURR_DIR...${NC}"
 if command -v pm2 &> /dev/null; then
-    # Completely kill stale PM2 daemon and clear stale socket files
-    pm2 kill 2>/dev/null || true
-    pkill -9 -f "PM2" 2>/dev/null || true
-    rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
-
-    # Kill any stale node/server processes
-    pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
-    pkill -9 -f "node.*server\.ts" 2>/dev/null || true
-    pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
-    
-    # Load port from .env if present
-    PORT_VAL=2020
-    if [ -f ".env" ]; then
-        ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
-        if [ -n "$ENV_PORT" ]; then
-            PORT_VAL="$ENV_PORT"
-        fi
-    fi
-
-    # Allow port in firewall (ufw & iptables) so panel is accessible from outside
-    if command -v ufw &>/dev/null; then
-        ufw allow ${PORT_VAL}/tcp 2>/dev/null || true
-    fi
-    if command -v iptables &>/dev/null; then
-        iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
-    fi
-
-    # Ensure dist/server.cjs exists
-    if [ ! -f "$PWD/dist/server.cjs" ]; then
-        echo -e "${YELLOW}>> Recompiling dist/server.cjs with esbuild...${NC}"
-        npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
-    fi
-    
-    echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD"
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" || \
+    PORT=$PORT_VAL NODE_ENV=production nohup node "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
     pm2 save 2>/dev/null || true
 
     sleep 2
