@@ -220,16 +220,25 @@ do_fresh_install() {
   export PWD=$(pwd -P 2>/dev/null || pwd)
 
   echo -e "\n${CYAN}>> Cloning latest repository code from GitHub...${NC}"
-  git clone "$GIT_URL" "$DIR_NAME"
+  rm -rf "$DIR_NAME" 2>/dev/null || true
+  git clone "$GIT_URL" "$DIR_NAME" 2>/dev/null || true
   
-  if [ ! -d "$DIR_NAME" ]; then
+  if [ ! -f "$DIR_NAME/package.json" ]; then
     echo -e "${YELLOW}>> Trying fallback repository...${NC}"
-    git clone "$FALLBACK_GIT_URL" "$DIR_NAME"
+    rm -rf "$DIR_NAME" 2>/dev/null || true
+    git clone "$FALLBACK_GIT_URL" "$DIR_NAME" 2>/dev/null || true
   fi
 
-  if [ ! -d "$DIR_NAME" ]; then
-    echo -e "${RED}❌ Error: Failed to clone repository from GitHub.${NC}"
-    echo -e "${YELLOW}Please check your internet connection or verify the repository URL: $GIT_URL${NC}"
+  if [ ! -f "$DIR_NAME/package.json" ]; then
+    echo -e "${YELLOW}>> Trying archive download fallback...${NC}"
+    mkdir -p "$DIR_NAME"
+    curl -fsSL "https://codeload.github.com/meh732/Bot-sana/tar.gz/refs/heads/main" | tar -xz -C "$DIR_NAME" --strip-components=1 2>/dev/null || \
+    curl -fsSL "https://codeload.github.com/meh732/botsel/tar.gz/refs/heads/main" | tar -xz -C "$DIR_NAME" --strip-components=1 2>/dev/null || true
+  fi
+
+  if [ ! -f "$DIR_NAME/package.json" ]; then
+    echo -e "${RED}❌ Error: Failed to download repository files from GitHub.${NC}"
+    echo -e "${YELLOW}Please verify internet connection or GitHub access on this VPS.${NC}"
     safe_exit 1
   fi
 
@@ -241,6 +250,11 @@ do_fresh_install() {
   if [ -n "$PANEL_USER" ] && [ -n "$PANEL_PASS" ]; then
     echo "PANEL_USERNAME=$PANEL_USER" >> .env
     echo "PANEL_PASSWORD=$PANEL_PASS" >> .env
+  fi
+
+  if [ ! -f "package.json" ]; then
+    echo -e "${RED}❌ Error: package.json is missing in $PWD.${NC}"
+    safe_exit 1
   fi
 
   echo -e "\n${CYAN}>> Installing lightweight backend runtime dependencies...${NC}"
@@ -274,7 +288,13 @@ do_fresh_install() {
     nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
   fi
 
-  ensure_valid_cwd "$PWD"
+  # Allow port in firewall (ufw & iptables) so panel is accessible from outside
+  if command -v ufw &>/dev/null; then
+    ufw allow ${PANEL_PORT}/tcp 2>/dev/null || true
+  fi
+  if command -v iptables &>/dev/null; then
+    iptables -I INPUT -p tcp --dport ${PANEL_PORT} -j ACCEPT 2>/dev/null || true
+  fi
 
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT} with working directory $PWD...${NC}"
   if ! pm2 ping &>/dev/null; then
@@ -352,6 +372,18 @@ do_update() {
     cp /tmp/.env.bak .env
   elif [ -f "../.env.bak" ]; then
     cp ../.env.bak .env
+  fi
+
+  # Ensure package.json exists before attempting npm operations
+  if [ ! -f "package.json" ]; then
+    echo -e "${YELLOW}⚠️ package.json is missing in $TARGET_DIR. Restoring repository files...${NC}"
+    curl -fsSL "https://codeload.github.com/meh732/Bot-sana/tar.gz/refs/heads/main" | tar -xz --strip-components=1 2>/dev/null || \
+    curl -fsSL "https://codeload.github.com/meh732/botsel/tar.gz/refs/heads/main" | tar -xz --strip-components=1 2>/dev/null || true
+  fi
+
+  if [ ! -f "package.json" ]; then
+    echo -e "${RED}❌ Error: package.json could not be found or restored in $TARGET_DIR.${NC}"
+    safe_exit 1
   fi
 
   # 4. Handle runtime dependencies safely (skip heavy frontend devDependencies since dist/ is pre-built)

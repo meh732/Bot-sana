@@ -131,6 +131,18 @@ if [ -f "/tmp/sanaei_env_backup.env" ]; then
     echo -e "${GREEN}✅ Configuration .env restored successfully.${NC}"
 fi
 
+# Ensure package.json exists in current directory, restore from GitHub if missing
+if [ ! -f "package.json" ]; then
+    echo -e "${YELLOW}⚠️ package.json is missing in $(pwd). Restoring repository files from GitHub...${NC}"
+    curl -fsSL "https://codeload.github.com/meh732/Bot-sana/tar.gz/refs/heads/main" | tar -xz --strip-components=1 2>/dev/null || \
+    curl -fsSL "https://codeload.github.com/meh732/botsel/tar.gz/refs/heads/main" | tar -xz --strip-components=1 2>/dev/null || true
+fi
+
+if [ ! -f "package.json" ]; then
+    echo -e "${RED}❌ Error: package.json could not be found or restored in $(pwd).${NC}"
+    safe_exit 1
+fi
+
 # 4. Install dependencies and verify pre-built assets
 echo -e "\n${YELLOW}🔹 4. Checking backend runtime dependencies & build assets...${NC}"
 
@@ -166,6 +178,9 @@ fi
 
 if [ -f "dist/index.html" ]; then
     echo -e "${GREEN}✅ Frontend distribution assets verified (dist/index.html ready).${NC}"
+else
+    echo -e "${YELLOW}>> Frontend distribution assets missing. Building with Vite...${NC}"
+    npx --yes vite build || true
 fi
 
 ensure_valid_cwd
@@ -196,14 +211,26 @@ if command -v pm2 &> /dev/null; then
             PORT_VAL="$ENV_PORT"
         fi
     fi
+
+    # Allow port in firewall (ufw & iptables) so panel is accessible from outside
+    if command -v ufw &>/dev/null; then
+        ufw allow ${PORT_VAL}/tcp 2>/dev/null || true
+    fi
+    if command -v iptables &>/dev/null; then
+        iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
+    fi
     
     echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
     PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
     pm2 save 2>/dev/null || true
+
+    sleep 2
+    echo -e "${GREEN}✅ Service 'sanaei-bot' status:${NC}"
+    pm2 status sanaei-bot
     
-    echo -e "${GREEN}✅ Service 'sanaei-bot' restarted under PM2.${NC}"
     echo -e "\n${CYAN}====================================================${NC}"
     echo -e "${GREEN}🎉 Update & Restart successfully completed!${NC}"
+    echo -e "🌐 Web Dashboard URL: ${CYAN}http://$(curl -s4 ifconfig.me || curl -s4 icanhazip.com || echo 'YOUR_SERVER_IP'):${PORT_VAL}${NC}"
     echo -e "${YELLOW}📋 Last 20 lines of service log:${NC}"
     echo -e "${CYAN}----------------------------------------------------${NC}"
     pm2 logs sanaei-bot --lines 20 --nostream 2>/dev/null || true
