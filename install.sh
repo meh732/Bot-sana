@@ -379,19 +379,9 @@ do_update() {
     safe_exit 1
   fi
 
-  # 4. Check for pre-built distribution bundle
-  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built standalone backend (dist/server.cjs) and frontend (dist/index.html) ready.${NC}"
-    echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
-  else
-    pkill -9 -f "npm install" 2>/dev/null || true
-    echo -e "\n${CYAN}>> Installing lightweight backend runtime packages...${NC}"
-    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
-    if [ ! -f "dist/server.cjs" ]; then
-      echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-      npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
-    fi
-  fi
+  # 4. Rebuild project to compile newly pulled frontend & backend changes
+  echo -e "\n${CYAN}>> Compiling latest updates (npm run build)...${NC}"
+  npm run build 2>/dev/null || (npx vite build && npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs)
 
   echo -e "\n${CYAN}>> Restarting bot service with PM2...${NC}"
   # Completely kill stale PM2 daemon and clear stale socket files

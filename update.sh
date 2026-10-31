@@ -143,21 +143,9 @@ if [ ! -f "package.json" ]; then
     safe_exit 1
 fi
 
-# 4. Check pre-built backend bundle & frontend assets
-echo -e "\n${YELLOW}🔹 4. Verifying pre-built application binaries...${NC}"
-
-if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}✅ Pre-built standalone application (dist/server.cjs) and frontend (dist/index.html) verified.${NC}"
-    echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
-else
-    # Fallback only if dist is missing
-    echo -e "${YELLOW}⚠️ Pre-built bundle not found. Falling back to build...${NC}"
-    pkill -9 -f "npm install" 2>/dev/null || true
-    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
-    if [ ! -f "dist/server.cjs" ]; then
-        npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
-    fi
-fi
+# 4. Rebuild project to compile newly pulled frontend & backend changes
+echo -e "\n${YELLOW}🔹 4. Compiling latest updates (npm run build)...${NC}"
+npm run build 2>/dev/null || (npx vite build && npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs)
 
 # 5. Restart application service cleanly
 echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
