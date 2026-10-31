@@ -65,8 +65,13 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   });
 
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<'store' | 'debt' | 'purchases' | 'ledger' | 'reports'>('store');
+  const [activeTab, setActiveTab] = useState<'store' | 'debt' | 'purchases' | 'ledger' | 'reports' | 'api'>('store');
   const [reportPeriod, setReportPeriod] = useState<'today' | 'monthly' | 'all'>('today');
+
+  // Live API Tester states
+  const [testingApi, setTestingApi] = useState(false);
+  const [apiTestResponse, setApiTestResponse] = useState<any>(null);
+  const [apiTestError, setApiTestError] = useState<string>('');
 
   // Custom Shamsi Date Search
   const [shamsiStart, setShamsiStart] = useState('');
@@ -688,12 +693,16 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
             )}
 
             <button
-              onClick={() => setShowApiModal(true)}
-              className="p-2.5 bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded-xl border border-violet-500/40 transition flex items-center gap-1.5 text-xs font-bold"
+              onClick={() => setActiveTab('api')}
+              className={`px-3 py-2 rounded-xl border transition flex items-center gap-1.5 text-xs font-bold shadow-sm ${
+                activeTab === 'api'
+                  ? 'bg-violet-600 text-white border-violet-400 shadow-violet-500/30'
+                  : 'bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 border-violet-500/40'
+              }`}
               title="وب‌سرویس API برای اتصال به ربات فروشگاهی دیگر"
             >
               <Server className="w-4 h-4 text-violet-400" />
-              <span className="hidden sm:inline">وب‌سرویس API</span>
+              <span>وب‌سرویس API</span>
             </button>
 
             <button
@@ -727,6 +736,18 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
           >
             <ShoppingBag className="w-4 h-4" />
             <span>🛒 خرید سرویس جدید</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('api')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              activeTab === 'api'
+                ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-md shadow-violet-500/30 ring-1 ring-violet-400/50'
+                : 'bg-violet-950/50 text-violet-200 border border-violet-500/50 hover:bg-violet-900/60 animate-pulse'
+            }`}
+          >
+            <Server className="w-4 h-4 text-violet-400" />
+            <span>🔌 اتصال به ربات تلگرام (وب‌سرویس API)</span>
           </button>
 
           <button
@@ -1769,6 +1790,326 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                     </div>
                   ))
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 6: DEDICATED RESELLER PROVIDER API VIEW */}
+        {activeTab === 'api' && (
+          <div className="space-y-6">
+            {/* Header Banner */}
+            <div className="bg-gradient-to-r from-violet-950/80 via-slate-900 to-slate-900 p-6 rounded-3xl border border-violet-500/30 shadow-xl space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-violet-600/20 text-violet-300 rounded-2xl border border-violet-500/30 shadow-inner">
+                    <Server className="w-7 h-7 text-violet-400" />
+                  </div>
+                  <div>
+                    <h2 className="font-extrabold text-slate-100 text-base sm:text-lg flex items-center gap-2">
+                      <span>وب‌سرویس ارائه‌دهنده (API) اتصال به ربات فروشگاهی</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">تایید شده و فعال</span>
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      اتصال مستقیم ربات تلگرام شما به این پنل جهت استعلام قیمت همکار و ساخت خودکار کانفیگ
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={async () => {
+                    setTestingApi(true);
+                    setApiTestError('');
+                    setApiTestResponse(null);
+                    try {
+                      const res = await fetch(`/api/v1/reseller/products?key=${sellerData?.apiKey || ''}`);
+                      const data = await res.json();
+                      setApiTestResponse(data);
+                    } catch (err: any) {
+                      setApiTestError(err.message || 'خطا در ارتباط با سرور');
+                    } finally {
+                      setTestingApi(false);
+                    }
+                  }}
+                  disabled={testingApi}
+                  className="px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold rounded-xl text-xs transition flex items-center gap-2 shadow-md shadow-emerald-500/20"
+                >
+                  <RefreshCw className={`w-4 h-4 ${testingApi ? 'animate-spin' : ''}`} />
+                  <span>تست زنده خروجی وب‌سرویس</span>
+                </button>
+              </div>
+
+              {/* Strict Requirement Notice for Shop Bots */}
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-200 text-xs leading-relaxed space-y-1">
+                <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                  <Sparkles className="w-4 h-4" />
+                  <span>سازگاری ۱۰۰٪ با ربات‌های ارائه‌دهنده تلگرام:</span>
+                </div>
+                <p className="text-[11px] text-amber-200/90">
+                  ⚠️ همان‌طور که در ربات شما ذکر شده: «سایت‌های ارائه‌دهندگان الزاماً باید خروجی محصولات را در یک درخواست با جزئیات (قیمت / توضیحات / نام محصول / نام دسته‌بندی) نمایش دهند تا مورد تایید قرار گیرند».
+                  وب‌سرویس زیر دقیقاً این استاندارد را رعایت کرده و قیمت‌های همکاری کسر شده از سقف اعتبار شما را تحویل می‌دهد.
+                </p>
+              </div>
+            </div>
+
+            {/* API Key Card */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <h3 className="font-bold text-slate-200 text-sm flex items-center gap-2">
+                    <Key className="w-4 h-4 text-amber-400" />
+                    <span>کلید اختصاصی وب‌سرویس شما (API Key)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">این کلید هویت همکاری شما را برای ربات احراز کرده و خریدها از بدهی شما کسر می‌شوند.</p>
+                </div>
+
+                <button
+                  disabled={regeneratingApiKey}
+                  onClick={async () => {
+                    if (!confirm('آیا از ساخت مجدد کلید API مطمئن هستید؟ در صورت تایید، کلید قبلی در ربات تلگرام غیرفعال خواهد شد و باید کلید جدید را در ربات ثبت کنید.')) return;
+                    setRegeneratingApiKey(true);
+                    try {
+                      const res = await fetch(`/api/seller-portal/regenerate-api-key/${chatId}`, { method: 'POST' });
+                      const data = await res.json();
+                      if (data.success && sellerData) {
+                        setSellerData({ ...sellerData, apiKey: data.apiKey, apiEnabled: data.apiEnabled });
+                        alert('✅ کلید جدید وب‌سرویس با موفقیت تولید شد.');
+                      }
+                    } finally {
+                      setRegeneratingApiKey(false);
+                    }
+                  }}
+                  className="text-xs px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-xl font-bold transition flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${regeneratingApiKey ? 'animate-spin' : ''}`} />
+                  <span>تولید کلید جدید</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-slate-950 border border-slate-800 text-emerald-400 p-3 rounded-2xl font-mono text-xs select-all text-left overflow-x-auto tracking-wide" dir="ltr">
+                  {sellerData?.apiKey || 'در حال بارگذاری کلید...'}
+                </code>
+                <button
+                  onClick={() => {
+                    if (sellerData?.apiKey) {
+                      navigator.clipboard.writeText(sellerData.apiKey);
+                      alert('✅ کلید API با موفقیت کپی شد.');
+                    }
+                  }}
+                  className="px-4 py-3 bg-violet-600 hover:bg-violet-500 text-white rounded-2xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-violet-600/30"
+                >
+                  <Copy className="w-4 h-4" />
+                  <span>کپی کلید</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Endpoints Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Endpoint 1: Products */}
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono text-[11px] font-bold">GET</span>
+                    <h4 className="font-bold text-slate-200 text-xs">۱. دریافت لیست کامل محصولات (برای ربات)</h4>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/v1/reseller/products?key=${sellerData?.apiKey || ''}`;
+                      navigator.clipboard.writeText(url);
+                      alert('✅ لینک وب‌سرویس محصولات کپی شد.');
+                    }}
+                    className="text-xs text-violet-400 hover:text-violet-300 font-bold flex items-center gap-1"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>کپی لینک</span>
+                  </button>
+                </div>
+
+                <code className="block bg-slate-950 border border-slate-800 p-3 rounded-2xl font-mono text-[11px] text-emerald-400 select-all text-left overflow-x-auto break-all" dir="ltr">
+                  {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/v1/reseller/products?key=${sellerData?.apiKey || ''}`}
+                </code>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  📌 <strong>توضیح:</strong> این همان لینکی است که باید در بخش «افزودن ارائه‌دهنده» در ربات تلگرام وارد کنید. شامل تمام محصولات با فیلدهای <span className="font-mono text-slate-200">name, category, price, description</span>.
+                </p>
+
+                <div className="pt-2 border-t border-slate-800/80">
+                  <span className="text-[10px] text-slate-500 block mb-1">فرمت جایگزین برای ربات‌هایی که مستقیماً آرایه [...] می‌خواهند:</span>
+                  <div className="flex items-center justify-between bg-slate-950 p-2 rounded-xl border border-slate-800/80">
+                    <code className="text-[10px] font-mono text-violet-300 select-all overflow-x-auto" dir="ltr">
+                      {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/v1/reseller/products-list?key=${sellerData?.apiKey || ''}`}
+                    </code>
+                    <button
+                      onClick={() => {
+                        const url = `${window.location.origin}/api/v1/reseller/products-list?key=${sellerData?.apiKey || ''}`;
+                        navigator.clipboard.writeText(url);
+                        alert('✅ لینک کپی شد.');
+                      }}
+                      className="text-[10px] text-slate-400 hover:text-slate-200 px-2 py-0.5 rounded bg-slate-800"
+                    >
+                      کپی
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Endpoint 2: Purchase */}
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-lg bg-blue-500/20 text-blue-400 font-mono text-[11px] font-bold">POST</span>
+                    <h4 className="font-bold text-slate-200 text-xs">۲. ثبت سفارش و تحویل آنی کانفیگ</h4>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/v1/reseller/purchase?key=${sellerData?.apiKey || ''}`;
+                      navigator.clipboard.writeText(url);
+                      alert('✅ لینک سفارش کپی شد.');
+                    }}
+                    className="text-xs text-violet-400 hover:text-violet-300 font-bold flex items-center gap-1"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>کپی لینک</span>
+                  </button>
+                </div>
+
+                <code className="block bg-slate-950 border border-slate-800 p-3 rounded-2xl font-mono text-[11px] text-emerald-400 select-all text-left overflow-x-auto break-all" dir="ltr">
+                  {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/v1/reseller/purchase?key=${sellerData?.apiKey || ''}`}
+                </code>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  📌 وقتی مشتری در ربات شما خرید می‌کند، ربات این متد را صدا زده، کانفیگ فوراً در پنل اصلی ساخته شده و لینک سابسکریپشن به همراه QR Code بازگردانده می‌شود.
+                </p>
+
+                <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-[10px] font-mono text-slate-300 overflow-x-auto" dir="ltr">
+                  <code>{`// نمونه پارامتر ارسالی (JSON Body):\n{\n  "productId": "شناسه_محصول",\n  "customName": "نام_مشتری"\n}`}</code>
+                </div>
+              </div>
+
+              {/* Endpoint 3: Balance & Debt */}
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono text-[11px] font-bold">GET</span>
+                    <h4 className="font-bold text-slate-200 text-xs">۳. استعلام بدهی، سقف اعتبار و موجودی همکار</h4>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/v1/reseller/balance?key=${sellerData?.apiKey || ''}`;
+                      navigator.clipboard.writeText(url);
+                      alert('✅ لینک استعلام کپی شد.');
+                    }}
+                    className="text-xs text-violet-400 hover:text-violet-300 font-bold flex items-center gap-1"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>کپی لینک</span>
+                  </button>
+                </div>
+
+                <code className="block bg-slate-950 border border-slate-800 p-3 rounded-2xl font-mono text-[11px] text-emerald-400 select-all text-left overflow-x-auto break-all" dir="ltr">
+                  {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/v1/reseller/balance?key=${sellerData?.apiKey || ''}`}
+                </code>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  ربات تلگرام می‌تواند میزان اعتبار باقی‌مانده و بدهی فعلی حساب شما را با این آدرس بررسی کند.
+                </p>
+              </div>
+
+              {/* Endpoint 4: Cancel / Delete Config */}
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-400 font-mono text-[11px] font-bold">POST</span>
+                    <h4 className="font-bold text-slate-200 text-xs">۴. لغو سرویس و عودت وجه به بدهی همکار</h4>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/v1/reseller/cancel?key=${sellerData?.apiKey || ''}`;
+                      navigator.clipboard.writeText(url);
+                      alert('✅ لینک لغو کپی شد.');
+                    }}
+                    className="text-xs text-violet-400 hover:text-violet-300 font-bold flex items-center gap-1"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>کپی لینک</span>
+                  </button>
+                </div>
+
+                <code className="block bg-slate-950 border border-slate-800 p-3 rounded-2xl font-mono text-[11px] text-emerald-400 select-all text-left overflow-x-auto break-all" dir="ltr">
+                  {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/v1/reseller/cancel?key=${sellerData?.apiKey || ''}`}
+                </code>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  در صورت لغو سرویس از سوی مشتری، کانفیگ از روی سرورهای VPN حذف شده و مبلغ خرید از بدهی شما کسر می‌شود.
+                </p>
+              </div>
+            </div>
+
+            {/* Live API Tester Result Box */}
+            {(apiTestResponse || apiTestError) && (
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-3 animate-fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-400" />
+                    <h4 className="font-bold text-slate-200 text-xs">نتیجه تست زنده پاسخ وب‌سرویس به ربات</h4>
+                  </div>
+                  {apiTestResponse && (
+                    <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
+                      HTTP 200 OK - {Array.isArray(apiTestResponse.products) ? `${apiTestResponse.products.length} محصول دریافت شد` : 'تایید شد'}
+                    </span>
+                  )}
+                </div>
+
+                {apiTestError ? (
+                  <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-300 text-xs font-mono">
+                    خطا در تست: {apiTestError}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <pre className="bg-slate-950 p-4 rounded-2xl border border-slate-800 font-mono text-[11px] text-emerald-300 overflow-x-auto max-h-72 select-all leading-relaxed" dir="ltr">
+                      {JSON.stringify(apiTestResponse, null, 2)}
+                    </pre>
+                    <p className="text-[11px] text-emerald-400 font-bold">
+                      ✅ این دقیقاً همان پاسخی است که ربات تلگرام شما پس از اتصال دریافت خواهد کرد و به عنوان ارائه‌دهنده تایید می‌شود.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Step-by-Step Guide for External Telegram Shop Bots */}
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl space-y-4">
+              <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+                <Info className="w-5 h-5 text-violet-400" />
+                <span>راهنمای گام‌به‌گام اتصال به ربات فروشگاهی تلگرام</span>
+              </h3>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                  <div className="w-6 h-6 rounded-full bg-violet-600/30 text-violet-400 font-bold flex items-center justify-center font-mono">۱</div>
+                  <h5 className="font-bold text-slate-200">بخش ارائه‌دهندگان در ربات</h5>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    در ربات تلگرام خود وارد پنل مدیریت شده و گزینه <b>«ارائه‌دهندگان»</b> را انتخاب کنید.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                  <div className="w-6 h-6 rounded-full bg-violet-600/30 text-violet-400 font-bold flex items-center justify-center font-mono">۲</div>
+                  <h5 className="font-bold text-slate-200">ثبت لینک و کلید API</h5>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    روی «افزودن ارائه‌دهنده» بزنید و لینک <b>«دریافت محصولات»</b> (بخش ۱ در بالا) را ارسال نمایید.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                  <div className="w-6 h-6 rounded-full bg-violet-600/30 text-violet-400 font-bold flex items-center justify-center font-mono">۳</div>
+                  <h5 className="font-bold text-slate-200">همگام‌سازی خودکار</h5>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    ربات فوراً محصولات را با قیمت‌های همکاری می‌خواند و فروش‌ها به صورت خودکار از سقف اعتبار شما کسر می‌شود.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
