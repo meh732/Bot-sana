@@ -62,8 +62,31 @@ ensure_swap_and_memory() {
     fi
 }
 
-# Ensure swap memory is active early
+# Refresh shell working directory inode so Node.js & PM2 never fail with uv_cwd ENOENT
+ensure_valid_cwd() {
+    local target_dir="${1:-}"
+    if ! pwd -P &>/dev/null || ! ls . &>/dev/null; then
+        cd /root 2>/dev/null || cd "$HOME" 2>/dev/null || cd /tmp
+        if [ -n "$target_dir" ] && [ -d "$target_dir" ]; then
+            cd "$target_dir" 2>/dev/null || true
+        elif [ -d "/root/sanaei-bot" ]; then
+            cd "/root/sanaei-bot" 2>/dev/null || true
+        elif [ -d "/root/Bot-sana" ]; then
+            cd "/root/Bot-sana" 2>/dev/null || true
+        fi
+    else
+        local phys_dir
+        phys_dir=$(pwd -P 2>/dev/null)
+        if [ -n "$phys_dir" ] && [ -d "$phys_dir" ]; then
+            cd /tmp 2>/dev/null && cd "$phys_dir" 2>/dev/null || cd "$phys_dir" 2>/dev/null || true
+        fi
+    fi
+    export PWD=$(pwd -P 2>/dev/null || pwd)
+}
+
+# Ensure swap memory and valid working directory early
 ensure_swap_and_memory
+ensure_valid_cwd
 
 # 1. Critical Database & Config Backup
 echo -e "\n${YELLOW}🔹 1. Protecting and backing up current database & configurations...${NC}"
@@ -84,7 +107,8 @@ echo -e "\n${YELLOW}🔹 2. Pulling latest code changes from repository...${NC}"
 git fetch --all
 git reset --hard origin/main || git reset --hard origin/master
 
-# Ensure swap memory remains active after git reset
+# Refresh cwd inode after git reset and ensure swap memory remains active
+ensure_valid_cwd
 ensure_swap_and_memory
 
 # 3. Restore Database & Configs immediately
@@ -110,26 +134,39 @@ fi
 # 4. Install dependencies and build project
 echo -e "\n${YELLOW}🔹 4. Checking dependencies & build assets...${NC}"
 
-if [ ! -d "node_modules" ]; then
-    echo -e "${CYAN}⏳ Installing packages (initial run)...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+if [ ! -d "node_modules" ] || [ ! -d "node_modules/@tailwindcss/vite" ] || [ ! -d "node_modules/esbuild" ] || [ ! -d "node_modules/express" ]; then
+    echo -e "${CYAN}⏳ Installing/updating packages...${NC}"
+    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --prefer-offline --no-audit --no-fund --legacy-peer-deps || \
+    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --no-audit --no-fund
 else
-    echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
+    echo -e "${GREEN}✅ Dependencies verified (node_modules complete, skipping heavy re-install).${NC}"
 fi
+
+ensure_valid_cwd
 
 # Ensure dist directory exists
 mkdir -p dist
 
 # Always compile latest server.ts into dist/server.cjs with high-speed esbuild (takes ~80ms, 0% RAM spike)
 echo -e "${CYAN}⚡ Compiling latest backend code into dist/server.cjs with esbuild...${NC}"
-npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+if [ -x "./node_modules/.bin/esbuild" ]; then
+    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+else
+    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+fi
 
 if [ ! -f "dist/index.html" ]; then
     echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npx vite build || true
+    if [ -x "./node_modules/.bin/vite" ]; then
+        nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
+    else
+        nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" npx vite build || true
+    fi
 else
     echo -e "${GREEN}✅ Frontend distribution assets verified (dist/index.html ready).${NC}"
 fi
+
+ensure_valid_cwd
 
 echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 
@@ -137,6 +174,12 @@ echo -e "${GREEN}✅ Application binary ready (dist/server.cjs).${NC}"
 echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
 
 if command -v pm2 &> /dev/null; then
+    # If PM2 daemon itself has a broken cwd (uv_cwd error), kill and respawn PM2 daemon cleanly
+    if ! pm2 ping &>/dev/null; then
+        echo -e "${YELLOW}ℹ️ Resetting stale PM2 daemon...${NC}"
+        pkill -9 -f "PM2" 2>/dev/null || true
+    fi
+
     # Restart or start fresh
     pm2 delete "sanaei-bot" 2>/dev/null || true
     pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
@@ -153,15 +196,15 @@ if command -v pm2 &> /dev/null; then
     fi
     
     echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
-    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --cwd "$PWD"
-    pm2 save
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
+    pm2 save 2>/dev/null || true
     
     echo -e "${GREEN}✅ Service 'sanaei-bot' restarted under PM2.${NC}"
     echo -e "\n${CYAN}====================================================${NC}"
     echo -e "${GREEN}🎉 Update & Restart successfully completed!${NC}"
     echo -e "${YELLOW}📋 Last 20 lines of service log:${NC}"
     echo -e "${CYAN}----------------------------------------------------${NC}"
-    pm2 logs sanaei-bot --lines 20 --nostream
+    pm2 logs sanaei-bot --lines 20 --nostream 2>/dev/null || true
     echo -e "${CYAN}====================================================${NC}"
 else
     echo -e "${YELLOW}⚠️ PM2 not found. Starting in background via nohup...${NC}"

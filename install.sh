@@ -102,9 +102,32 @@ ensure_swap_and_memory() {
     fi
 }
 
+# Refresh shell working directory inode so Node.js & PM2 never fail with uv_cwd ENOENT
+ensure_valid_cwd() {
+    local target_dir="${1:-}"
+    if ! pwd -P &>/dev/null || ! ls . &>/dev/null; then
+        cd /root 2>/dev/null || cd "$HOME" 2>/dev/null || cd /tmp
+        if [ -n "$target_dir" ] && [ -d "$target_dir" ]; then
+            cd "$target_dir" 2>/dev/null || true
+        elif [ -d "/root/sanaei-bot" ]; then
+            cd "/root/sanaei-bot" 2>/dev/null || true
+        elif [ -d "/root/Bot-sana" ]; then
+            cd "/root/Bot-sana" 2>/dev/null || true
+        fi
+    else
+        local phys_dir
+        phys_dir=$(pwd -P 2>/dev/null)
+        if [ -n "$phys_dir" ] && [ -d "$phys_dir" ]; then
+            cd /tmp 2>/dev/null && cd "$phys_dir" 2>/dev/null || cd "$phys_dir" 2>/dev/null || true
+        fi
+    fi
+    export PWD=$(pwd -P 2>/dev/null || pwd)
+}
+
 do_install_dependencies() {
   echo -e "\n${CYAN}>> Checking system dependencies (Node.js, Git, Build Tools)...${NC}"
   ensure_swap_and_memory
+  ensure_valid_cwd
   
   if ! command -v git &> /dev/null || ! command -v curl &> /dev/null; then
     echo -e "${YELLOW}>> Installing Git and Curl...${NC}"
@@ -123,7 +146,7 @@ do_install_dependencies() {
     echo -e "${YELLOW}>> Installing PM2 process manager globally...${NC}"
     NODE_OPTIONS="--max-old-space-size=256" npm install -g pm2
   else
-    echo -e "${GREEN}✅ PM2 is already installed ($(pm2 -v)).${NC}"
+    echo -e "${GREEN}✅ PM2 is already installed ($(pm2 -v 2>/dev/null || echo 'ready')).${NC}"
   fi
 }
 
@@ -132,17 +155,20 @@ do_uninstall() {
   
   # Navigate to home/root first so we don't hold lock on working dir
   cd /root 2>/dev/null || cd "$HOME" 2>/dev/null || cd /tmp
+  export PWD=$(pwd -P 2>/dev/null || pwd)
 
   if command -v pm2 &> /dev/null; then
-    pm2 stop "sanaei-bot" &> /dev/null
-    pm2 delete "sanaei-bot" &> /dev/null
-    pm2 save --force &> /dev/null
+    pm2 stop "sanaei-bot" &> /dev/null || true
+    pm2 delete "sanaei-bot" &> /dev/null || true
+    pm2 save --force &> /dev/null || true
+    pm2 kill &> /dev/null || true
   fi
 
-  # Kill any stray processes matching server.ts, server.cjs or tsx
-  pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null
-  pkill -9 -f "node.*server\.ts" 2>/dev/null
-  pkill -9 -f "tsx.*server\.ts" 2>/dev/null
+  # Kill any stray processes matching server.ts, server.cjs, tsx or stale PM2 daemon
+  pkill -9 -f "PM2" 2>/dev/null || true
+  pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
+  pkill -9 -f "node.*server\.ts" 2>/dev/null || true
+  pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
 
   # Kill any process on default ports or common ports
   for p in 3000 2020 8080; do
@@ -191,6 +217,7 @@ do_fresh_install() {
   do_install_dependencies
 
   cd /root 2>/dev/null || cd "$HOME" 2>/dev/null || cd /tmp
+  export PWD=$(pwd -P 2>/dev/null || pwd)
 
   echo -e "\n${CYAN}>> Cloning latest repository code from GitHub...${NC}"
   git clone "$GIT_URL" "$DIR_NAME"
@@ -207,6 +234,7 @@ do_fresh_install() {
   fi
 
   cd "$DIR_NAME" || safe_exit 1
+  ensure_valid_cwd "$PWD"
 
   echo "PORT=$PANEL_PORT" > .env
   echo "NODE_ENV=production" >> .env
@@ -216,27 +244,42 @@ do_fresh_install() {
   fi
 
   echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
-  nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm install --no-audit --no-fund
+  nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --prefer-offline --no-audit --no-fund --legacy-peer-deps || nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --no-audit --no-fund
+
+  ensure_valid_cwd "$PWD"
 
   # Ensure dist directory exists
   mkdir -p dist
 
   # Always compile latest server.ts into dist/server.cjs with high-speed esbuild (takes ~80ms, 0% RAM spike)
   echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-  npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  if [ -x "./node_modules/.bin/esbuild" ]; then
+    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  else
+    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  fi
 
   if [ ! -f "dist/index.html" ]; then
     echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npx vite build || true
+    if [ -x "./node_modules/.bin/vite" ]; then
+      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
+    else
+      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" npx vite build || true
+    fi
   else
     echo -e "${GREEN}✅ Pre-built frontend release verified from repository.${NC}"
   fi
 
+  ensure_valid_cwd "$PWD"
+
   echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT} with working directory $PWD...${NC}"
+  if ! pm2 ping &>/dev/null; then
+    pkill -9 -f "PM2" 2>/dev/null || true
+  fi
   pm2 delete "sanaei-bot" 2>/dev/null || true
-  PORT=$PANEL_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
-  pm2 save
-  pm2 startup
+  PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
+  pm2 save 2>/dev/null || true
+  pm2 startup 2>/dev/null || true
 
   SERVER_IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com || echo "YOUR_SERVER_IP")
 
@@ -251,14 +294,19 @@ do_fresh_install() {
 do_update() {
   echo -e "\n${CYAN}>> Starting update process...${NC}"
   ensure_swap_and_memory
+  ensure_valid_cwd
   
   TARGET_DIR=""
-  if [ -d "$DIR_NAME" ]; then
+  if [ -f "server.ts" ] && [ -f "package.json" ]; then
+    TARGET_DIR="$(pwd -P)"
+  elif [ -d "/root/$DIR_NAME" ]; then
+    TARGET_DIR="/root/$DIR_NAME"
+  elif [ -d "$DIR_NAME" ]; then
     TARGET_DIR="$DIR_NAME"
+  elif [ -d "/root/Bot-sana" ]; then
+    TARGET_DIR="/root/Bot-sana"
   elif [ -d "Bot-sana" ]; then
     TARGET_DIR="Bot-sana"
-  elif [ -f "server.ts" ] || [ -f "package.json" ]; then
-    TARGET_DIR="."
   fi
 
   if [ -z "$TARGET_DIR" ]; then
@@ -267,63 +315,81 @@ do_update() {
     return
   fi
 
-  if [ "$TARGET_DIR" != "." ]; then
-    cd "$TARGET_DIR" || safe_exit 1
-  fi
+  cd "$TARGET_DIR" || safe_exit 1
+  ensure_valid_cwd "$TARGET_DIR"
 
   # Secure backup of current database & env
   if [ -f "db.json" ]; then
     echo -e "${GREEN}📦 Backing up database (db.json)...${NC}"
-    cp db.json ../db.json.bak 2>/dev/null || cp db.json /tmp/db.json.bak
+    cp db.json /tmp/db.json.bak 2>/dev/null || cp db.json ../db.json.bak 2>/dev/null
   fi
   if [ -f ".env" ]; then
-    cp .env ../.env.bak 2>/dev/null || cp .env /tmp/.env.bak
+    cp .env /tmp/.env.bak 2>/dev/null || cp .env ../.env.bak 2>/dev/null
   fi
 
   echo -e "\n${CYAN}>> Pulling latest updates from Git...${NC}"
   git fetch --all 2>/dev/null || true
   git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || true
 
-  # Ensure swap memory is active
+  # Refresh cwd inode after git reset and ensure swap memory is active
+  ensure_valid_cwd "$TARGET_DIR"
   ensure_swap_and_memory
 
   # Restore state database safely
-  if [ -f "../db.json.bak" ]; then
-    mv ../db.json.bak db.json
+  if [ -f "/tmp/db.json.bak" ]; then
+    cp /tmp/db.json.bak db.json
     echo -e "${GREEN}✅ Database and user records restored successfully.${NC}"
-  elif [ -f "/tmp/db.json.bak" ]; then
-    mv /tmp/db.json.bak db.json
+  elif [ -f "../db.json.bak" ]; then
+    cp ../db.json.bak db.json
     echo -e "${GREEN}✅ Database and user records restored successfully.${NC}"
   fi
 
-  if [ -f "../.env.bak" ]; then
-    mv ../.env.bak .env
-  elif [ -f "/tmp/.env.bak" ]; then
-    mv /tmp/.env.bak .env
+  if [ -f "/tmp/.env.bak" ]; then
+    cp /tmp/.env.bak .env
+  elif [ -f "../.env.bak" ]; then
+    cp ../.env.bak .env
   fi
 
-  # 4. Handle dependencies safely
-  if [ ! -d "node_modules" ]; then
-    echo -e "\n${CYAN}>> Installing dependencies (initial run)...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+  # 4. Handle dependencies safely (verify critical build packages like @tailwindcss/vite & esbuild exist)
+  if [ ! -d "node_modules" ] || [ ! -d "node_modules/@tailwindcss/vite" ] || [ ! -d "node_modules/esbuild" ] || [ ! -d "node_modules/express" ]; then
+    echo -e "\n${CYAN}>> Installing/updating required packages...${NC}"
+    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --prefer-offline --no-audit --no-fund --legacy-peer-deps || \
+    nice -n 19 env NODE_ENV=development NODE_OPTIONS="--max-old-space-size=1024" npm install --include=dev --no-audit --no-fund
   else
-    echo -e "${GREEN}✅ Dependencies verified (node_modules present, skipping heavy re-install).${NC}"
+    echo -e "${GREEN}✅ Dependencies verified (node_modules complete, skipping heavy re-install).${NC}"
   fi
+
+  ensure_valid_cwd "$TARGET_DIR"
 
   # 5. Compile latest backend code with esbuild (takes ~80ms, 0% RAM spike)
   mkdir -p dist
   echo -e "\n${CYAN}>> Creating server bundle with lightweight esbuild...${NC}"
-  npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  if [ -x "./node_modules/.bin/esbuild" ]; then
+    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  else
+    npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+  fi
 
   if [ ! -f "dist/index.html" ]; then
     echo -e "${YELLOW}⚠️ dist/index.html missing. Building frontend assets with Vite...${NC}"
-    nice -n 19 env NODE_OPTIONS="--max-old-space-size=512" npx vite build || true
+    if [ -x "./node_modules/.bin/vite" ]; then
+      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" ./node_modules/.bin/vite build || true
+    else
+      nice -n 19 env NODE_OPTIONS="--max-old-space-size=768" npx vite build || true
+    fi
   else
     echo -e "${GREEN}✅ Pre-built frontend release verified from repository.${NC}"
   fi
 
+  ensure_valid_cwd "$TARGET_DIR"
+
   echo -e "\n${CYAN}>> Restarting bot service with PM2...${NC}"
   if command -v pm2 &> /dev/null; then
+    # If PM2 daemon itself has a broken cwd (uv_cwd error), kill and respawn PM2 daemon cleanly
+    if ! pm2 ping &>/dev/null; then
+      echo -e "${YELLOW}ℹ️ Resetting stale PM2 daemon...${NC}"
+      pkill -9 -f "PM2" 2>/dev/null || true
+    fi
     pm2 delete "sanaei-bot" 2>/dev/null || true
     pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
     pkill -9 -f "node.*server\.ts" 2>/dev/null || true
@@ -338,8 +404,8 @@ do_update() {
     fi
 
     echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"
-    PORT=$PORT_VAL NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
-    pm2 save
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || pm2 start npm --name "sanaei-bot" --cwd "$PWD" -- run start
+    pm2 save 2>/dev/null || true
   else
     pkill -9 -f "dist/server.cjs" 2>/dev/null || true
     nohup npm start > bot_output.log 2>&1 &

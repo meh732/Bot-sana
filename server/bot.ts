@@ -1,5 +1,5 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { db, PanelType, recordUserTransaction } from './db.js';
+import { db, PanelType, recordUserTransaction, ensureSellerApiKey, generateSellerApiKey } from './db.js';
 import { xui } from './xui.js';
 import { rebecca } from './rebecca.js';
 import { mrocean } from './mrocean.js';
@@ -221,7 +221,7 @@ export function settleSinglePaygPurchase(user: any, purchaseId: string, customBa
   return { success: true, settledGb, message: `مصرف تا حجم ${settledGb} گیگابایت تسویه شد و از این حجم به بعد محاسبه خواهد شد.` };
 }
 
-export async function executeSellerPortalPurchase(sellerChatId: number, productId: string, customName?: string) {
+export async function executeSellerPortalPurchase(sellerChatId: number, productId: string, customName?: string, source: 'portal' | 'api' = 'portal') {
   const user = db.getUser(sellerChatId);
   if (!user || !user.isSeller) {
     throw new Error('حساب کاربری همکار معتبر نیست.');
@@ -299,11 +299,13 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
   user.purchases = user.purchases || [];
   user.purchases.push(newPurchase);
 
+  const sourceLabel = source === 'api' ? 'وب‌سرویس API ربات همکار' : 'پورتال بی‌نام';
+
   recordUserTransaction(user, {
     type: 'purchase',
     amount: isPAYG ? 0 : finalPrice,
     direction: 'debit',
-    description: isPAYG ? `سرویس مصرف آزاد PAYG (${newPurchase.name}) - پورتال بی‌نام` : `خرید ${newPurchase.name} (${volGb} GB / ${durDays} روز) - پورتال بی‌نام`,
+    description: isPAYG ? `سرویس مصرف آزاد PAYG (${newPurchase.name}) - ${sourceLabel}` : `خرید ${newPurchase.name} (${volGb} GB / ${durDays} روز) - ${sourceLabel}`,
     configName: newPurchase.name,
     volumeGb: volGb,
     balanceAfter: user.balance,
@@ -314,7 +316,8 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
   db.saveUser(user);
 
   if (bot) {
-    const notifyMsg = `🛍 <b>سفارش جدید از پورتال اختصاصی بی‌نام همکار</b>\n\n` +
+    const titleLabel = source === 'api' ? '🔌 <b>سفارش جدید از طریق وب‌سرویس API (ربات متصل همکار)</b>' : '🛍 <b>سفارش جدید از پورتال اختصاصی بی‌نام همکار</b>';
+    const notifyMsg = `${titleLabel}\n\n` +
       `📦 <b>پکیج:</b> ${newPurchase.name}\n` +
       `👤 <b>عنوان کانفیگ:</b> <code>${escapeHtml(customName || clientEmail)}</code>\n` +
       `💰 <b>مبلغ ثبت‌شده در بدهی:</b> ${finalPrice.toLocaleString()} تومان\n` +
@@ -333,8 +336,9 @@ export async function executeSellerCustomVolumePurchase(params: {
   customName?: string;
   panelType?: PanelType;
   categoryId?: string;
+  source?: 'portal' | 'api' | 'bot';
 }) {
-  const { sellerChatId, volumeGb, durationDays, customName, panelType, categoryId } = params;
+  const { sellerChatId, volumeGb, durationDays, customName, panelType, categoryId, source } = params;
   const user = db.getUser(sellerChatId);
   if (!user || !user.isSeller) {
     throw new Error('حساب کاربری همکار معتبر نیست.');
@@ -430,7 +434,7 @@ export async function executeSellerCustomVolumePurchase(params: {
     type: 'purchase',
     amount: finalPrice,
     direction: 'debit',
-    description: `سفارش حجم دلخواه ${vol} GB (${dur} روز) با نرخ ${finalRatePerGb.toLocaleString()} ت/گیگ`,
+    description: `سفارش حجم دلخواه ${vol} GB (${dur} روز) با نرخ ${finalRatePerGb.toLocaleString()} ت/گیگ${source === 'api' ? ' - وب‌سرویس API' : ''}`,
     configName: newPurchase.name,
     volumeGb: vol,
     balanceAfter: user.balance,
@@ -441,7 +445,10 @@ export async function executeSellerCustomVolumePurchase(params: {
   db.saveUser(user);
 
   if (bot) {
-    const notifyMsg = `⚡ <b>سفارش حجم دلخواه همکار ثبت شد</b>\n\n` +
+    const headerMsg = source === 'api' 
+      ? `🔌 <b>سفارش حجم دلخواه از طریق وب‌سرویس API (ربات متصل همکار)</b>`
+      : `⚡ <b>سفارش حجم دلخواه همکار ثبت شد</b>`;
+    const notifyMsg = `${headerMsg}\n\n` +
       `📦 <b>سرویس:</b> ${newPurchase.name}\n` +
       `📊 <b>حجم:</b> ${vol} گیگابایت (${dur} روز)\n` +
       `🏷 <b>نرخ هر گیگ:</b> ${finalRatePerGb.toLocaleString()} تومان\n` +
@@ -1423,10 +1430,10 @@ function getSellerReplyKeyboard(): any {
     keyboard: [
       [{ text: '🛒 خرید سرویس همکار', style: 'success' }, { text: '⚡ سفارش با حجم دلخواه', style: 'success' }],
       [{ text: '📉 وضعیت بدهی و اعتبار همکار', style: 'primary' }, { text: '💳 پرداخت بدهی (مبلغ دلخواه)', style: 'success' }],
-      [{ text: '🌐 پورتال بی‌نام (فروش حضوری)', style: 'primary' }, { text: '📋 لیست فروش‌های من', style: 'primary' }],
-      [{ text: '📅 فروش امروز با جزئیات', style: 'primary' }, { text: '🗓 گزارش فروش ماهانه', style: 'primary' }],
-      [{ text: '🧾 صورتحساب حسابداری', style: 'primary' }, { text: '📊 گزارش دقیق عملکرد', style: 'primary' }],
-      [{ text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
+      [{ text: '🌐 پورتال بی‌نام (فروش حضوری)', style: 'primary' }, { text: '🔌 وب‌سرویس API (اتصال ربات)', style: 'primary' }],
+      [{ text: '📋 لیست فروش‌های من', style: 'primary' }, { text: '📅 فروش امروز با جزئیات', style: 'primary' }],
+      [{ text: '🗓 گزارش فروش ماهانه', style: 'primary' }, { text: '🧾 صورتحساب حسابداری', style: 'primary' }],
+      [{ text: '📊 گزارش دقیق عملکرد', style: 'primary' }, { text: '🔙 بازگشت به منوی اصلی', style: 'danger' }]
     ],
     resize_keyboard: true
   };
@@ -3440,6 +3447,47 @@ export async function initBot() {
           inline_keyboard: [
             [{ text: '🌐 ورود مستقیم به پورتال وب بی‌نام', url: portalUrl }],
             [{ text: userObj.hidePricesInBot ? '👁‍🗨 نمایش قیمت‌ها در ربات' : '🙈 حالت فروش حضوری در ربات (مخفی‌سازی قیمت‌ها)', callback_data: 'toggle_hide_prices_bot' }]
+          ]
+        }
+      });
+      return;
+    }
+
+    // Check for reseller API key & webhook bridge request
+    const isSellerApiRequest = [
+      'وب‌سرویس api', 'وب سرویس api', 'دریافت api', 'اتصال ربات', '🔌 وب‌سرویس API (اتصال ربات)'
+    ].includes(cleanText) || text.trim() === '🔌 وب‌سرویس API (اتصال ربات)';
+
+    if (isSellerApiRequest) {
+      userSession.delete(chatId);
+      const userObj = db.getUser(chatId);
+      if (!userObj || !userObj.isSeller) {
+        bot!.sendMessage(chatId, '❌ شما به عنوان همکار فروشنده ثبت نشده‌اید.');
+        return;
+      }
+
+      const apiKey = ensureSellerApiKey(userObj, true);
+      const baseUrl = getSystemPortalUrl().replace(/\/seller$/, '');
+
+      const apiMsg = `🔌 <b>وب‌سرویس اختصاصی API همکار (اتصال ربات فروش به این ربات)</b>:\n\n` +
+        `شما می‌توانید ربات تلگرام یا سایت فروشگاهی خود را از طریق وب‌سرویس زیر به این سیستم متصل کنید. با هر خرید از طریق این API، کانفیگ بلافاصله صادر شده و مبلغ آن (با کسر تخفیف همکاری شما) به <b>حساب بدهی شما</b> منظور می‌گردد:\n\n` +
+        `🔑 <b>کلید اختصاصی API شما (API Key):</b>\n<code>${escapeHtml(apiKey)}</code>\n\n` +
+        `🌐 <b>آدرس پایه وب‌سرویس (Base URL):</b>\n<code>${escapeHtml(baseUrl)}/api/v1/reseller</code>\n\n` +
+        `📌 <b>متدهای وب‌سرویس (JSON):</b>\n` +
+        `1️⃣ <b>استعلام اعتبار و بدهی همکار:</b>\n<code>GET ${escapeHtml(baseUrl)}/api/v1/reseller/me</code>\n` +
+        `2️⃣ <b>دریافت لیست پکیج‌ها و تعرفه‌ها:</b>\n<code>GET ${escapeHtml(baseUrl)}/api/v1/reseller/products</code>\n` +
+        `3️⃣ <b>ثبت خرید پکیج یا حجم دلخواه (بدهکار شدن همکار):</b>\n<code>POST ${escapeHtml(baseUrl)}/api/v1/reseller/purchase</code>\n` +
+        `▫️ نمونه Body برای پکیج: <code>{"productId": "ID", "customName": "ali"}</code>\n` +
+        `▫️ نمونه Body برای حجم دلخواه: <code>{"volumeGb": 20, "durationDays": 30, "customName": "ali"}</code>\n` +
+        `4️⃣ <b>تمدید سرویس:</b>\n<code>POST ${escapeHtml(baseUrl)}/api/v1/reseller/renew</code>\n` +
+        `5️⃣ <b>توقف و ابطال سرویس (زیر ۱ گیگ رایگان):</b>\n<code>POST ${escapeHtml(baseUrl)}/api/v1/reseller/cancel</code>\n\n` +
+        `💡 <i>در تمامی درخواست‌ها هدر <code>x-api-key: ${escapeHtml(apiKey)}</code> را ارسال نمایید. همچنین مستندات کامل در پورتال وب شما قابل مشاهده است.</i>`;
+
+      bot!.sendMessage(chatId, apiMsg, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 تغییر و صدور مجدد کلید API', callback_data: 'regenerate_seller_api_key' }]
           ]
         }
       });
@@ -6374,6 +6422,18 @@ export async function initBot() {
         const statusStr = userObj.hidePricesInBot ? '🙈 فعال (قیمت‌ها در ربات مخفی شدند)' : '👁‍🗨 غیرفعال (قیمت‌ها نمایش داده می‌شوند)';
         answerQuery({ text: `وضعیت تغییر کرد: ${statusStr}`, show_alert: true });
         bot!.sendMessage(chatId, `✨ <b>حالت فروش حضوری در ربات:</b> ${statusStr}\n\nاکنون هنگام زدن دکمه خرید سرویس همکار، قیمت‌های خرید و درصد تخفیفات از منوی لیست پکیج‌های ربات حذف شده‌اند.`);
+      }
+      return;
+    }
+
+    if (data === 'regenerate_seller_api_key') {
+      const userObj = db.getUser(chatId);
+      if (userObj && userObj.isSeller) {
+        userObj.apiKey = generateSellerApiKey(chatId);
+        userObj.apiEnabled = true;
+        db.saveUser(userObj);
+        answerQuery({ text: '✅ کلید API جدید با موفقیت صادر شد.', show_alert: true });
+        bot!.sendMessage(chatId, `🔑 <b>کلید اختصاصی API شما تغییر یافت:</b>\n\n<code>${escapeHtml(userObj.apiKey)}</code>\n\n⚠️ <i>توجه: کلید قبلی غیرفعال شد. لطفاً کلید جدید را در ربات یا سیستم متصل خود جایگزین نمایید.</i>`, { parse_mode: 'HTML' });
       }
       return;
     }

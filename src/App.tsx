@@ -3864,6 +3864,43 @@ function SellersView() {
   const [discountModalUser, setDiscountModalUser] = useState<any>(null);
   const [editingDiscounts, setEditingDiscounts] = useState<any[]>([]);
   const [servicesModalUser, setServicesModalUser] = useState<any>(null);
+  const [apiModalUser, setApiModalUser] = useState<any>(null);
+
+  const handleRegenerateSellerApiKey = async (chatId: number) => {
+    if (!confirm('آیا از ساخت مجدد کلید وب‌سرویس (API Key) این همکار مطمئن هستید؟ کلید قبلی در ربات متصل‌شده غیرفعال خواهد شد.')) return;
+    try {
+      const res = await fetch(`/api/users/${chatId}/regenerate-api-key`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        if (data.users) setUsers(data.users);
+        if (data.user) setApiModalUser(data.user);
+        alert('✅ کلید جدید وب‌سرویس (API Key) همکار با موفقیت تولید شد.');
+      } else {
+        alert('خطا: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    }
+  };
+
+  const handleToggleSellerApiAccess = async (chatId: number, currentEnabled: boolean) => {
+    try {
+      const res = await fetch(`/api/users/${chatId}/toggle-api-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiEnabled: !currentEnabled })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.users) setUsers(data.users);
+        if (data.user) setApiModalUser(data.user);
+      } else {
+        alert('خطا: ' + (data.message || 'نامشخص'));
+      }
+    } catch (e: any) {
+      alert('خطای شبکه: ' + e.message);
+    }
+  };
 
   const handleSettlePaygPurchase = async (chatId: number, purchaseId: string) => {
     if (!confirm('آیا مطمئن هستید که می‌خواهید حجم دوره جاری این سرویس مصرف آزاد (PAYG) را تسویه کنید؟\nحجم مصرفی فعلی به عنوان مبنای جدید در نظر گرفته می‌شود و محاسبه بدهی از این به بعد اعمال خواهد شد.')) return;
@@ -4243,6 +4280,153 @@ function SellersView() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6" dir="rtl">
+      {/* Reseller External Provider API Modal */}
+      {apiModalUser && (
+        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                  <span>🔌 وب‌سرویس ارائه‌دهنده همکار (اتصال ربات به ربات)</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  همکار: <strong>{apiModalUser.username ? `@${apiModalUser.username}` : apiModalUser.chatId}</strong> | هر خرید از طریق این API مستقیماً به بدهی این همکار اضافه می‌شود.
+                </p>
+              </div>
+              <button onClick={() => setApiModalUser(null)} className="text-slate-500 hover:text-slate-800">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3.5 text-xs text-emerald-900 leading-relaxed">
+              ✅ <strong>تایید شده برای ربات‌های فروشگاهی تلگرام (بخش ارائه‌دهندگان):</strong> خروجی این وب‌سرویس تمامی محصولات فعال را <strong>در یک درخواست واحد</strong> به همراه جزئیات کامل (<strong>قیمت با احتساب تخفیف همکار</strong>، <strong>توضیحات</strong>، <strong>نام محصول</strong> و <strong>نام دسته‌بندی</strong>) برمی‌گرداند.
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-xs font-bold text-slate-700">🔑 کلید اختصاصی وب‌سرویس (API Key):</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleToggleSellerApiAccess(apiModalUser.chatId, apiModalUser.apiEnabled !== false)}
+                    className={`px-2.5 py-1 rounded text-xs font-semibold border transition ${
+                      apiModalUser.apiEnabled !== false
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                        : 'bg-red-100 text-red-800 border-red-300'
+                    }`}
+                  >
+                    {apiModalUser.apiEnabled !== false ? '🟢 وضعیت وب‌سرویس: فعال' : '🔴 وضعیت وب‌سرویس: غیرفعال'}
+                  </button>
+                  <button
+                    onClick={() => handleRegenerateSellerApiKey(apiModalUser.chatId)}
+                    className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded text-xs font-semibold border border-amber-300 transition"
+                  >
+                    🔄 تولید کلید جدید
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-slate-900 text-emerald-400 p-2.5 rounded-lg font-mono text-xs select-all text-left" dir="ltr">
+                  {apiModalUser.apiKey || 'در حال تولید...'}
+                </code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(apiModalUser.apiKey || '');
+                    alert('کلید API کپی شد!');
+                  }}
+                  className="px-3 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition"
+                >
+                  کپی کلید
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5">
+                <div className="font-bold text-slate-800 flex items-center justify-between">
+                  <span>۱. لینک ثبت در بخش «ارائه‌دهندگان» ربات مقصد (دریافت یکجای محصولات با جزئیات کامل):</span>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/v1/reseller/products?key=${apiModalUser.apiKey}`;
+                      navigator.clipboard.writeText(url);
+                      alert('لینک محصولات کپی شد!');
+                    }}
+                    className="text-indigo-600 hover:text-indigo-800 font-bold"
+                  >
+                    📋 کپی لینک
+                  </button>
+                </div>
+                <code className="block bg-white border border-slate-200 p-2 rounded font-mono text-[11px] text-slate-800 select-all text-left overflow-x-auto" dir="ltr">
+                  {`${window.location.origin}/api/v1/reseller/products?key=${apiModalUser.apiKey}`}
+                </code>
+                <div className="text-[11px] text-slate-500">
+                  💡 اگر ربات مقصد خروجی آرایه مستقیم <code>[...]</code> می‌خواهد از این لینک استفاده کنید:{' '}
+                  <code className="font-mono text-indigo-700 select-all" dir="ltr">
+                    {`${window.location.origin}/api/v1/reseller/products-list?key=${apiModalUser.apiKey}`}
+                  </code>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5">
+                <div className="font-bold text-slate-800 flex items-center justify-between">
+                  <span>۲. لینک خرید کانفیگ و ثبت خودکار در بدهی این همکار (POST / GET):</span>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/v1/reseller/purchase?key=${apiModalUser.apiKey}`;
+                      navigator.clipboard.writeText(url);
+                      alert('لینک خرید کپی شد!');
+                    }}
+                    className="text-indigo-600 hover:text-indigo-800 font-bold"
+                  >
+                    📋 کپی لینک خرید
+                  </button>
+                </div>
+                <code className="block bg-white border border-slate-200 p-2 rounded font-mono text-[11px] text-slate-800 select-all text-left overflow-x-auto" dir="ltr">
+                  {`${window.location.origin}/api/v1/reseller/purchase?key=${apiModalUser.apiKey}`}
+                </code>
+                <pre className="bg-slate-900 text-slate-200 p-2.5 rounded font-mono text-[11px] text-left overflow-x-auto" dir="ltr">
+{`// نمونه بدنه JSON برای خرید بسته آماده:
+{
+  "productId": "شناسه_محصول",
+  "customName": "نام_مشتری_اختیاری"
+}
+
+// یا نمونه بدنه JSON برای خرید حجم دلخواه:
+{
+  "volumeGb": 30,
+  "durationDays": 30,
+  "customName": "نام_مشتری_اختیاری"
+}`}
+                </pre>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5">
+                <div className="font-bold text-slate-800">۳. سایر آدرس‌های کاربردی وب‌سرویس:</div>
+                <div className="space-y-1 font-mono text-[11px] text-left" dir="ltr">
+                  <div className="bg-white border p-1.5 rounded">
+                    <span className="text-emerald-700 font-bold">GET Balance/Credit: </span>
+                    <span className="select-all">{`${window.location.origin}/api/v1/reseller/balance?key=${apiModalUser.apiKey}`}</span>
+                  </div>
+                  <div className="bg-white border p-1.5 rounded">
+                    <span className="text-rose-700 font-bold">POST Cancel/Stop Config: </span>
+                    <span className="select-all">{`${window.location.origin}/api/v1/reseller/cancel?key=${apiModalUser.apiKey}`}</span>
+                    <span className="text-slate-500"> (Body: {`{"purchaseId": "..."}`})</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t">
+              <button
+                onClick={() => setApiModalUser(null)}
+                className="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-700"
+              >
+                بستن
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Discount Modal */}
       {discountModalUser && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-50">
@@ -4731,6 +4915,13 @@ function SellersView() {
                       title="تنظیم و ویرایش نام کاربری و کلمه عبور پورتال وب بی‌نام همکار"
                     >
                       🔑 تنظیم یوزر/رمز پورتال
+                    </button>
+                    <button
+                      onClick={() => setApiModalUser(u)}
+                      className="px-2.5 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-md font-medium text-xs transition shadow-xs flex items-center gap-1"
+                      title="دریافت کلید وب‌سرویس (API Key) و لینک اتصال به ربات فروشگاهی دیگر"
+                    >
+                      🔌 وب‌سرویس API
                     </button>
                     <button
                       onClick={() => paySellerDebtCustomAmount(u.chatId, u.debt || 0)}

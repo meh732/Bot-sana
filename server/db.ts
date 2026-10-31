@@ -175,6 +175,8 @@ export interface User {
   totalSales?: number;
   totalPayments?: number;
   customVolumePricePerGb?: number;
+  apiKey?: string;
+  apiEnabled?: boolean;
   purchases?: Purchase[];
   transactions?: UserTransaction[];
 }
@@ -662,4 +664,27 @@ export function recordUserTransaction(
   return newTx;
 }
 
+export function generateSellerApiKey(chatId: number): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let rand = '';
+  for (let i = 0; i < 24; i++) {
+    rand += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `sk_seller_${chatId}_${rand}`;
+}
+
+export function ensureSellerApiKey(user: User, saveIfChanged = true): string {
+  if (!user.apiKey) {
+    user.apiKey = generateSellerApiKey(user.chatId);
+    if (user.apiEnabled === undefined) {
+      user.apiEnabled = true;
+    }
+    if (saveIfChanged) {
+      db.saveUser(user);
+    }
+  }
+  return user.apiKey;
+}
+
 export const db = new Database();
+

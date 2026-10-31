@@ -6,7 +6,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import { createServer as createViteServer } from "vite";
-import { db, recordUserTransaction } from "./server/db.js";
+import { db, recordUserTransaction, ensureSellerApiKey, generateSellerApiKey } from "./server/db.js";
 import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, cancelSellerPurchase, getPurchaseLiveUsedBytes } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
 import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions } from "./server/pdfGenerator.js";
@@ -48,8 +48,8 @@ async function startServer() {
   // Optional Basic Auth for Admin routes (excluding seller-portal)
   if (process.env.PANEL_USERNAME && process.env.PANEL_PASSWORD) {
     app.use('/api', (req, res, next) => {
-      // Exclude seller portal endpoints from admin basic auth
-      if (req.path.startsWith('/seller-portal')) {
+      // Exclude seller portal and external reseller/provider API endpoints from admin basic auth
+      if (req.path.startsWith('/seller-portal') || req.path.startsWith('/v1/reseller') || req.path.startsWith('/provider')) {
         return next();
       }
       const b64auth = (req.headers.authorization || '').split(' ')[1] || '';
@@ -75,6 +75,16 @@ async function startServer() {
 
   api.get("/state", (req, res) => {
     const state = db.getState();
+    let sellerKeyUpdated = false;
+    (state.users || []).forEach(u => {
+      if (u.isSeller && !u.apiKey) {
+        ensureSellerApiKey(u, false);
+        sellerKeyUpdated = true;
+      }
+    });
+    if (sellerKeyUpdated) {
+      db.updateState({ users: state.users });
+    }
     // Hide passwords in UI
     const safeState = {
       ...state,
@@ -874,11 +884,13 @@ async function startServer() {
       if (user.totalSales === undefined) user.totalSales = 0;
       if (!user.portalUsername) user.portalUsername = user.username || `seller_${user.chatId}`;
       if (!user.portalPassword) user.portalPassword = Math.floor(100000 + Math.random() * 900000).toString();
+      ensureSellerApiKey(user, false);
     } else {
       // Clear portal credentials when reseller access is revoked
       user.portalUsername = undefined;
       user.portalPassword = undefined;
       user.customDisplayPrices = undefined;
+      user.apiEnabled = false;
     }
     db.saveUser(user);
     res.json({ success: true, user, users: db.getState().users });
@@ -979,11 +991,34 @@ async function startServer() {
       user.debtLimit = finalLimit;
       user.isUnlimitedLimit = unlim;
     }
+    ensureSellerApiKey(user, false);
     db.saveUser(user);
     await syncAllUsersAndSellersFinancials();
     const updated = db.getUser(numChatId) || user;
     await checkPaygReactivation(updated).catch(console.error);
     res.json({ success: true, user: updated, users: db.getState().users });
+  });
+
+  api.post("/users/:chatId/regenerate-api-key", (req, res) => {
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user || !user.isSeller) {
+      return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+    }
+    user.apiKey = generateSellerApiKey(user.chatId);
+    user.apiEnabled = true;
+    db.saveUser(user);
+    res.json({ success: true, apiKey: user.apiKey, apiEnabled: user.apiEnabled, user, users: db.getState().users });
+  });
+
+  api.post("/users/:chatId/toggle-api-access", (req, res) => {
+    const user = db.getUser(parseInt(req.params.chatId));
+    if (!user || !user.isSeller) {
+      return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+    }
+    ensureSellerApiKey(user, false);
+    user.apiEnabled = req.body.apiEnabled !== undefined ? Boolean(req.body.apiEnabled) : !(user.apiEnabled !== false);
+    db.saveUser(user);
+    res.json({ success: true, apiKey: user.apiKey, apiEnabled: user.apiEnabled, user, users: db.getState().users });
   });
 
   api.post("/users/:chatId/portal-credentials", (req, res) => {
@@ -1245,6 +1280,8 @@ async function startServer() {
       const reportMonthly = getUserAccountingReport(user, 'monthly');
       const reportAll = getUserAccountingReport(user, 'all');
 
+      const sellerApiKey = ensureSellerApiKey(user, true);
+
       res.json({
         success: true,
         seller: {
@@ -1252,6 +1289,8 @@ async function startServer() {
           username: user.username,
           portalUsername: user.portalUsername || user.username || `seller_${user.chatId}`,
           name: user.name || user.username || `همکار ${user.chatId}`,
+          apiKey: sellerApiKey,
+          apiEnabled: user.apiEnabled !== false,
           debt: user.debt || 0,
           debtLimit: user.debtLimit || 0,
           isUnlimitedLimit: isSellerUnlimitedLimit(user),
@@ -1838,6 +1877,536 @@ async function startServer() {
       res.status(500).json({ success: false, message: e.message || 'خطا در ایجاد اکانت تست' });
     }
   });
+
+  api.post("/seller-portal/regenerate-api-key/:chatId", (req, res) => {
+    const chatId = parseInt(req.params.chatId);
+    const user = db.getUser(chatId);
+    if (!user || !user.isSeller) {
+      return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+    }
+    user.apiKey = generateSellerApiKey(user.chatId);
+    user.apiEnabled = true;
+    db.saveUser(user);
+    res.json({ success: true, apiKey: user.apiKey, apiEnabled: user.apiEnabled });
+  });
+
+  // ============================================================================
+  // EXTERNAL RESELLER / PROVIDER BOT API (وب‌سرویس ارائه‌دهنده همکار برای اتصال ربات فروشگاهی)
+  // Supports:
+  //   - /api/v1/reseller/*  and  /api/provider/*
+  //   - /api/v1/reseller/key/:apiKey/*  and  /api/provider/key/:apiKey/*
+  //   - Single-endpoint action queries (?action=products, ?action=buy, ?action=balance, etc.)
+  //   - Returns ALL products in a SINGLE request with full details:
+  //     price (قیمت), description (توضیحات), name (نام محصول), category / category_name (نام دسته‌بندی)
+  // ============================================================================
+
+  const extractResellerApiKey = (req: express.Request): string => {
+    const paramKey = (req.params as any)?.apiKey;
+    if (paramKey) return String(paramKey).trim();
+
+    const headerKey = req.headers['x-api-key'] || req.headers['apikey'] || req.headers['api-key'];
+    if (headerKey) return String(headerKey).trim();
+
+    const authHeader = req.headers['authorization'];
+    if (authHeader && typeof authHeader === 'string') {
+      if (authHeader.toLowerCase().startsWith('bearer ')) {
+        return authHeader.slice(7).trim();
+      }
+      if (authHeader.toLowerCase().startsWith('apikey ')) {
+        return authHeader.slice(7).trim();
+      }
+      if (!authHeader.toLowerCase().startsWith('basic ')) {
+        return authHeader.trim();
+      }
+    }
+
+    const q = req.query as any;
+    const b = (req.body || {}) as any;
+    const candidate =
+      q?.apiKey || q?.api_key || q?.key || q?.token ||
+      b?.apiKey || b?.api_key || b?.key || b?.token;
+    return candidate ? String(candidate).trim() : '';
+  };
+
+  const authenticateSellerApi = (req: express.Request, res: express.Response) => {
+    const apiKey = extractResellerApiKey(req);
+    if (!apiKey) {
+      res.status(401).json({
+        success: false,
+        status: false,
+        error: 'MISSING_API_KEY',
+        message: 'کلید وب‌سرویس (API Key) ارسال نشده است. آن را در هدر x-api-key یا پارامتر ?key=YOUR_KEY ارسال نمایید.'
+      });
+      return null;
+    }
+
+    const state = db.getState();
+    // Ensure all sellers have an apiKey initialized before lookup
+    for (const u of state.users || []) {
+      if (u.isSeller && !u.apiKey) {
+        ensureSellerApiKey(u, true);
+      }
+    }
+
+    const seller = (state.users || []).find(
+      (u) => u.isSeller && u.apiKey && u.apiKey.trim() === apiKey
+    );
+
+    if (!seller) {
+      res.status(401).json({
+        success: false,
+        status: false,
+        error: 'INVALID_API_KEY',
+        message: 'کلید وب‌سرویس (API Key) نامعتبر است یا حساب همکار یافت نشد.'
+      });
+      return null;
+    }
+
+    if (seller.apiEnabled === false) {
+      res.status(403).json({
+        success: false,
+        status: false,
+        error: 'API_DISABLED',
+        message: 'دسترسی وب‌سرویس (API) برای این حساب همکار توسط مدیریت غیرفعال شده است.'
+      });
+      return null;
+    }
+
+    return seller;
+  };
+
+  const buildProviderProductsPayload = (seller: any) => {
+    const state = db.getState();
+    const categories = (state.categories || []).filter((c: any) => !c.disabled && c.enabled !== false);
+    const categoryMap = new Map<string, string>();
+    categories.forEach((c: any) => {
+      categoryMap.set(String(c.id), c.name || 'عمومی');
+    });
+    const activeCategoryIds = new Set(categories.map((c: any) => String(c.id)));
+
+    const products = (state.products || [])
+      .filter((p: any) => {
+        if (!p || p.disabled === true || p.enabled === false) return false;
+        if (p.categoryId && !activeCategoryIds.has(String(p.categoryId))) return false;
+        const isReady = !!p.isPayAsYouGo || (Number(p.volumeGb || 0) > 0 && Number(p.durationDays || 0) > 0) || Number(p.price || 0) > 0;
+        return isReady;
+      })
+      .map((p: any) => {
+        const isPAYG = !!p.isPayAsYouGo;
+        const sellerDiscount = getSellerDiscountForProduct(seller, p);
+        let wholesalePrice = isPAYG ? 0 : Number(p.price || 0);
+        if (sellerDiscount > 0 && !isPAYG) {
+          wholesalePrice = Math.max(0, Math.round(wholesalePrice * (1 - sellerDiscount / 100)));
+        }
+
+        const categoryName = p.categoryId ? (categoryMap.get(String(p.categoryId)) || 'سرویس اختصاصی') : 'سرویس اختصاصی';
+        const volumeGb = Number(p.volumeGb || 0);
+        const durationDays = Number(p.durationDays || 0);
+        const panelLabel =
+          p.panelType === 'mrocean' ? 'سرور مستر اوشن (Mr Ocean)' :
+          p.panelType === 'rebecca' ? 'سرور ربکا (Rebecca)' :
+          p.panelType === 'panel4' ? 'سرور پنل ۴' :
+          p.panelType === 'multi' ? 'مولتی سرور (ترکیبی)' :
+          'سرور اختصاصی سنایی (X-UI)';
+
+        const autoDescription = isPAYG
+          ? `اشتراک پس‌پرداخت (PAYG) | دسته: ${categoryName} | محاسبه مصرفی | ${panelLabel}`
+          : `حجم: ${volumeGb} گیگابایت | مدت اعتبار: ${durationDays} روز | دسته‌بندی: ${categoryName} | قیمت همکار: ${wholesalePrice.toLocaleString()} تومان | ${panelLabel}`;
+        const finalDescription = p.description ? String(p.description) : autoDescription;
+
+        return {
+          // Standard & Multi-Bot Provider aliases so any Telegram shop bot recognizes all 4 mandatory fields:
+          // 1. Product ID
+          id: p.id,
+          product_id: p.id,
+          service: p.id,
+          code: p.id,
+          // 2. Product Name (نام محصول)
+          name: p.name,
+          title: p.name,
+          product_name: p.name,
+          // 3. Category Name (نام دسته‌بندی)
+          category: categoryName,
+          category_name: categoryName,
+          categoryName: categoryName,
+          category_title: categoryName,
+          categoryId: p.categoryId || 'default',
+          category_id: p.categoryId || 'default',
+          // 4. Price (قیمت)
+          price: wholesalePrice,
+          rate: wholesalePrice,
+          amount: wholesalePrice,
+          cost: wholesalePrice,
+          wholesale_price: wholesalePrice,
+          original_price: Number(p.price || 0),
+          discount_percent: sellerDiscount,
+          // 5. Description (توضیحات)
+          description: finalDescription,
+          desc: finalDescription,
+          details: finalDescription,
+          info: finalDescription,
+          // 6. Technical Specs
+          volume: volumeGb,
+          volume_gb: volumeGb,
+          volumeGb: volumeGb,
+          traffic: volumeGb,
+          duration: durationDays,
+          duration_days: durationDays,
+          durationDays: durationDays,
+          days: durationDays,
+          isPayAsYouGo: isPAYG,
+          panelType: p.panelType || 'sanaei',
+          panel_type: p.panelType || 'sanaei',
+          status: 'active',
+          available: true
+        };
+      });
+
+    const isUnlimited = isSellerUnlimitedLimit(seller);
+    const currentDebt = seller.debt || 0;
+    const debtLimit = seller.debtLimit || 0;
+    const remainingCredit = isUnlimited ? 999999999 : Math.max(0, debtLimit - currentDebt);
+
+    const customVolBasePrice = seller.customVolumePricePerGb || state.customVolumePricePerGb || 3000;
+    const customVolDiscount = seller.sellerDiscount || 0;
+    const customVolFinalPrice = Math.max(0, Math.round(customVolBasePrice * (1 - customVolDiscount / 100)));
+
+    return {
+      seller: {
+        chatId: seller.chatId,
+        name: seller.name || seller.username || `همکار ${seller.chatId}`,
+        username: seller.username || '',
+        debt: currentDebt,
+        debtLimit: debtLimit,
+        isUnlimitedLimit: isUnlimited,
+        remainingCredit: remainingCredit,
+        balance: remainingCredit, // Alias for bots that check provider "balance"
+        currency: 'IRT'
+      },
+      categories: categories.map((c: any) => ({
+        id: c.id,
+        category_id: c.id,
+        name: c.name,
+        category_name: c.name,
+        title: c.name
+      })),
+      products,
+      customVolume: {
+        enabled: state.customVolumeEnabled !== false,
+        pricePerGb: customVolFinalPrice,
+        basePricePerGb: customVolBasePrice,
+        discountPercent: customVolDiscount,
+        minGb: state.customVolumeMinGb || 1,
+        defaultDays: state.customVolumeDefaultDays || 30,
+        defaultPanel: state.customVolumePanelType || 'mrocean'
+      }
+    };
+  };
+
+  const handleProviderProductsRequest = (req: express.Request, res: express.Response) => {
+    const seller = authenticateSellerApi(req, res);
+    if (!seller) return;
+
+    const payload = buildProviderProductsPayload(seller);
+    const format = String(req.query.format || '').toLowerCase();
+    if (format === 'array' || format === 'list' || req.path.endsWith('/products-list')) {
+      return res.json(payload.products);
+    }
+
+    return res.json({
+      success: true,
+      status: true,
+      ok: true,
+      message: 'لیست کامل محصولات با جزئیات (قیمت، توضیحات، نام محصول، نام دسته‌بندی)',
+      count: payload.products.length,
+      seller: payload.seller,
+      categories: payload.categories,
+      products: payload.products,
+      data: payload.products,
+      result: payload.products,
+      services: payload.products,
+      customVolume: payload.customVolume
+    });
+  };
+
+  const handleProviderMeRequest = (req: express.Request, res: express.Response) => {
+    const seller = authenticateSellerApi(req, res);
+    if (!seller) return;
+
+    const payload = buildProviderProductsPayload(seller);
+    return res.json({
+      success: true,
+      status: true,
+      ok: true,
+      seller: payload.seller,
+      balance: payload.seller.remainingCredit,
+      debt: payload.seller.debt,
+      debtLimit: payload.seller.debtLimit,
+      remainingCredit: payload.seller.remainingCredit,
+      isUnlimitedLimit: payload.seller.isUnlimitedLimit,
+      currency: 'IRT'
+    });
+  };
+
+  const handleProviderPurchaseRequest = async (req: express.Request, res: express.Response) => {
+    try {
+      const seller = authenticateSellerApi(req, res);
+      if (!seller) return;
+
+      const params = { ...(req.query || {}), ...(req.body || {}) } as any;
+      const productId = params.productId || params.product_id || params.service || params.id || params.code;
+      const volumeGb = params.volumeGb || params.volume_gb || params.volume || params.traffic;
+      const durationDays = params.durationDays || params.duration_days || params.duration || params.days || 30;
+      const panelType = params.panelType || params.panel_type || params.panel;
+      const customName = params.customName || params.custom_name || params.name || params.username || params.remark || params.client_name;
+
+      let purchase: any;
+      if (productId) {
+        purchase = await executeSellerPortalPurchase(
+          seller.chatId,
+          String(productId),
+          customName ? String(customName) : undefined,
+          'api'
+        );
+      } else if (volumeGb !== undefined && Number(volumeGb) > 0) {
+        purchase = await executeSellerCustomVolumePurchase(
+          seller.chatId,
+          Number(volumeGb),
+          Number(durationDays) || 30,
+          panelType ? String(panelType) : undefined,
+          customName ? String(customName) : undefined,
+          'api'
+        );
+      } else {
+        return res.status(400).json({
+          success: false,
+          status: false,
+          error: 'MISSING_PRODUCT_OR_VOLUME',
+          message: 'ارسال شناسه محصول (productId / service / product_id) یا حجم دلخواه (volumeGb) الزامی است.'
+        });
+      }
+
+      const updatedSeller = db.getUser(seller.chatId) || seller;
+      const isUnlimited = isSellerUnlimitedLimit(updatedSeller);
+      const currentDebt = updatedSeller.debt || 0;
+      const debtLimit = updatedSeller.debtLimit || 0;
+      const remainingCredit = isUnlimited ? 999999999 : Math.max(0, debtLimit - currentDebt);
+      const configLink = purchase.subUrl || '';
+
+      return res.json({
+        success: true,
+        status: true,
+        ok: true,
+        message: 'سرویس با موفقیت صادر شد و هزینه آن به حساب بدهی همکار منظور گردید.',
+        // Top-level aliases for maximum compatibility with external Telegram shop bots
+        order_id: purchase.id,
+        orderId: purchase.id,
+        id: purchase.id,
+        client_name: purchase.email,
+        username: purchase.email,
+        config: configLink,
+        link: configLink,
+        sub_url: configLink,
+        subUrl: configLink,
+        subscription_url: configLink,
+        vless_link: purchase.vlessLink || configLink,
+        price: purchase.price || 0,
+        volume_gb: purchase.volumeGb || 0,
+        duration_days: purchase.durationDays || 0,
+        expires_at: purchase.expiresAt || null,
+        purchase: {
+          id: purchase.id,
+          productId: purchase.productId,
+          productName: purchase.productName,
+          clientName: purchase.email,
+          uuid: purchase.uuid,
+          subUrl: configLink,
+          vlessLink: purchase.vlessLink || configLink,
+          links: purchase.links || (configLink ? [configLink] : []),
+          volumeGb: purchase.volumeGb,
+          durationDays: purchase.durationDays,
+          priceChargedToSeller: purchase.price || 0,
+          purchasedAt: purchase.purchasedAt,
+          expiresAt: purchase.expiresAt,
+          panelType: purchase.panelType
+        },
+        sellerFinancials: {
+          chatId: updatedSeller.chatId,
+          chargedAmount: purchase.price || 0,
+          newDebt: currentDebt,
+          debtLimit: debtLimit,
+          isUnlimitedLimit: isUnlimited,
+          remainingCredit: remainingCredit,
+          totalSales: updatedSeller.totalSales || 0
+        },
+        data: {
+          id: purchase.id,
+          username: purchase.email,
+          config: configLink,
+          link: configLink,
+          subUrl: configLink,
+          price: purchase.price || 0,
+          volumeGb: purchase.volumeGb,
+          durationDays: purchase.durationDays,
+          expiresAt: purchase.expiresAt
+        }
+      });
+    } catch (e: any) {
+      return res.status(400).json({
+        success: false,
+        status: false,
+        error: 'PURCHASE_FAILED',
+        message: e.message || 'خطا در صدور سرویس از طریق وب‌سرویس همکار'
+      });
+    }
+  };
+
+  const handleProviderCancelRequest = async (req: express.Request, res: express.Response) => {
+    try {
+      const seller = authenticateSellerApi(req, res);
+      if (!seller) return;
+
+      const params = { ...(req.query || {}), ...(req.body || {}) } as any;
+      const purchaseId = params.purchaseId || params.purchase_id || params.orderId || params.order_id || params.id || params.email || params.username;
+      if (!purchaseId) {
+        return res.status(400).json({
+          success: false,
+          status: false,
+          message: 'ارسال شناسه خرید (purchaseId / order_id) یا نام کاربری کانفیگ (username) الزامی است.'
+        });
+      }
+
+      // Support finding by either purchase.id or purchase.email (client username)
+      let targetPurchaseId = String(purchaseId).trim();
+      const matched = (seller.purchases || []).find(
+        (p: any) => !p.isDeleted && (p.id === targetPurchaseId || p.email === targetPurchaseId)
+      );
+      if (matched) {
+        targetPurchaseId = matched.id;
+      }
+
+      const result = await cancelSellerPurchase(seller.chatId, targetPurchaseId);
+      const updatedSeller = db.getUser(seller.chatId) || seller;
+
+      return res.json({
+        success: true,
+        status: true,
+        ok: true,
+        ...result,
+        sellerFinancials: {
+          chatId: updatedSeller.chatId,
+          newDebt: updatedSeller.debt || 0,
+          debtLimit: updatedSeller.debtLimit || 0,
+          totalSales: updatedSeller.totalSales || 0
+        }
+      });
+    } catch (e: any) {
+      return res.status(400).json({
+        success: false,
+        status: false,
+        message: e.message || 'خطا در ابطال و توقف کانفیگ'
+      });
+    }
+  };
+
+  const handleProviderStatusRequest = async (req: express.Request, res: express.Response) => {
+    try {
+      const seller = authenticateSellerApi(req, res);
+      if (!seller) return;
+
+      const params = { ...(req.query || {}), ...(req.body || {}), ...(req.params || {}) } as any;
+      const targetId = params.purchaseId || params.purchase_id || params.orderId || params.order_id || params.id || params.username || params.email;
+      if (!targetId) {
+        return res.status(400).json({
+          success: false,
+          status: false,
+          message: 'ارسال شناسه سفارش (purchaseId) یا نام کانفیگ (username) الزامی است.'
+        });
+      }
+
+      const purchase = (seller.purchases || []).find(
+        (p: any) => !p.isDeleted && (p.id === String(targetId).trim() || p.email === String(targetId).trim())
+      );
+
+      if (!purchase) {
+        return res.status(404).json({
+          success: false,
+          status: false,
+          message: 'کانفیگ مورد نظر در لیست خریدهای این همکار یافت نشد.'
+        });
+      }
+
+      const liveBytes = await getPurchaseLiveUsedBytes(purchase);
+      const usedBytes = liveBytes !== null ? liveBytes : Number(purchase.lastUsedBytes || 0);
+      const usedGb = Number((usedBytes / (1024 * 1024 * 1024)).toFixed(3));
+
+      return res.json({
+        success: true,
+        status: true,
+        ok: true,
+        config: {
+          id: purchase.id,
+          username: purchase.email,
+          productName: purchase.productName,
+          volumeGb: purchase.volumeGb,
+          usedGb,
+          usedBytes,
+          remainingGb: Math.max(0, Number(((purchase.volumeGb || 0) - usedGb).toFixed(3))),
+          durationDays: purchase.durationDays,
+          purchasedAt: purchase.purchasedAt,
+          expiresAt: purchase.expiresAt,
+          isCanceledBySeller: !!purchase.isCanceledBySeller,
+          disabled: !!purchase.disabled,
+          subUrl: purchase.subUrl || '',
+          price: purchase.price || 0
+        }
+      });
+    } catch (e: any) {
+      return res.status(500).json({
+        success: false,
+        status: false,
+        message: e.message || 'خطا در استعلام وضعیت کانفیگ'
+      });
+    }
+  };
+
+  // Dispatcher for root /api/v1/reseller or /api/provider when a bot calls with ?action=... or defaults to products list
+  const handleProviderRootDispatch = async (req: express.Request, res: express.Response) => {
+    const params = { ...(req.query || {}), ...(req.body || {}) } as any;
+    const action = String(params.action || params.method || params.type || '').toLowerCase().trim();
+
+    if (action === 'buy' || action === 'purchase' || action === 'order' || action === 'create' || (req.method === 'POST' && (params.productId || params.product_id || params.service || params.volumeGb))) {
+      return handleProviderPurchaseRequest(req, res);
+    }
+    if (action === 'me' || action === 'balance' || action === 'profile' || action === 'credit' || action === 'info') {
+      return handleProviderMeRequest(req, res);
+    }
+    if (action === 'cancel' || action === 'stop' || action === 'revoke' || action === 'delete') {
+      return handleProviderCancelRequest(req, res);
+    }
+    if (action === 'status' || action === 'check' || action === 'config') {
+      return handleProviderStatusRequest(req, res);
+    }
+    // Default behavior (especially for provider validation in Telegram shop bots): return all products with full details in one request!
+    return handleProviderProductsRequest(req, res);
+  };
+
+  // Register routes under both /v1/reseller and /provider (and with /key/:apiKey path prefix)
+  const providerPrefixes = ['/v1/reseller', '/provider', '/v1/reseller/key/:apiKey', '/provider/key/:apiKey'];
+  for (const prefix of providerPrefixes) {
+    api.all(`${prefix}`, handleProviderRootDispatch);
+    api.all(`${prefix}/products`, handleProviderProductsRequest);
+    api.all(`${prefix}/products-list`, handleProviderProductsRequest);
+    api.all(`${prefix}/services`, handleProviderProductsRequest);
+    api.all(`${prefix}/me`, handleProviderMeRequest);
+    api.all(`${prefix}/balance`, handleProviderMeRequest);
+    api.all(`${prefix}/purchase`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/buy`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/order`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/cancel`, handleProviderCancelRequest);
+    api.all(`${prefix}/status`, handleProviderStatusRequest);
+    api.all(`${prefix}/config/:purchaseId`, handleProviderStatusRequest);
+  }
 
   app.use("/api", api);
 
