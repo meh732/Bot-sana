@@ -151,11 +151,11 @@ pkill -9 -f "npm install" 2>/dev/null || true
 
 if [ ! -d "node_modules/express" ] || [ ! -d "node_modules/node-telegram-bot-api" ] || [ ! -d "node_modules/pdfkit" ] || [ ! -d "node_modules/qrcode" ]; then
     echo -e "${CYAN}⏳ Installing lightweight backend runtime packages...${NC}"
-    if ! nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps; then
+    if ! nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund; then
         echo -e "${YELLOW}>> Cleaning corrupted node_modules & npm cache and retrying...${NC}"
-        rm -rf node_modules 2>/dev/null || true
+        rm -rf node_modules package-lock.json /root/.npm ~/.npm 2>/dev/null || true
         npm cache clean --force 2>/dev/null || true
-        nice -n 19 env NODE_ENV=production NODE_OPTIONS="--max-old-space-size=512" npm install --omit=dev --no-audit --no-fund --legacy-peer-deps
+        nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund
     fi
 else
     echo -e "${GREEN}✅ Backend runtime dependencies verified (skipping heavy re-install).${NC}"
