@@ -168,10 +168,10 @@ mkdir -p dist
 
 if [ -x "./node_modules/.bin/esbuild" ]; then
     echo -e "${CYAN}⚡ Updating dist/server.cjs with local esbuild...${NC}"
-    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
+    ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
 elif [ ! -f "dist/server.cjs" ]; then
     echo -e "${CYAN}⚡ Compiling dist/server.cjs with esbuild...${NC}"
-    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
 else
     echo -e "${GREEN}✅ Latest pre-built backend bundle (dist/server.cjs) loaded from repository.${NC}"
 fi
@@ -221,7 +221,7 @@ if command -v pm2 &> /dev/null; then
     # Ensure dist/server.cjs exists
     if [ ! -f "$PWD/dist/server.cjs" ]; then
         echo -e "${YELLOW}>> Recompiling dist/server.cjs with esbuild...${NC}"
-        npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+        npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
     fi
     
     echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $PWD...${NC}"

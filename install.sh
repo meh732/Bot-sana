@@ -271,13 +271,13 @@ do_fresh_install() {
   # Ensure dist directory exists
   mkdir -p dist
 
-  # If esbuild binary is locally installed, re-bundle server.ts; otherwise use the pre-built dist/server.cjs from repository
+  # If esbuild binary is locally installed, re-bundle ./server.ts; otherwise use the pre-built dist/server.cjs from repository
   if [ -x "./node_modules/.bin/esbuild" ]; then
     echo -e "\n${CYAN}>> Updating backend bundle with local esbuild...${NC}"
-    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
+    ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
   elif [ ! -f "dist/server.cjs" ]; then
     echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
   else
     echo -e "${GREEN}✅ Pre-built backend bundle (dist/server.cjs) verified from repository.${NC}"
   fi
@@ -305,7 +305,7 @@ do_fresh_install() {
   # Ensure dist/server.cjs exists before PM2 start
   if [ ! -f "$PWD/dist/server.cjs" ]; then
     echo -e "${YELLOW}>> Recompiling dist/server.cjs with esbuild...${NC}"
-    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
   fi
 
   PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD"
@@ -418,10 +418,10 @@ do_update() {
   mkdir -p dist
   if [ -x "./node_modules/.bin/esbuild" ]; then
     echo -e "\n${CYAN}>> Updating server bundle with local esbuild...${NC}"
-    ./node_modules/.bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
+    ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs || true
   elif [ ! -f "dist/server.cjs" ]; then
     echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-    npx --yes esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+    npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
   else
     echo -e "${GREEN}✅ Latest pre-built server bundle (dist/server.cjs) loaded from repository.${NC}"
   fi
