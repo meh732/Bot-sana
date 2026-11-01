@@ -1236,28 +1236,38 @@ async function startServer() {
     }
   });
 
+  function resolveSeller(param: any): any {
+    if (!param) return null;
+    const str = String(param).trim().replace(/^@/, '');
+    const state = db.getState();
+    const allUsers = state.users || [];
+
+    if (/^\d+$/.test(str)) {
+      const u = db.getUser(parseInt(str, 10));
+      if (u && u.isSeller) return u;
+    }
+
+    const lower = str.toLowerCase();
+    const found = allUsers.find((u: any) => 
+      u.isSeller && (
+        (u.portalUsername && String(u.portalUsername).toLowerCase() === lower) ||
+        (u.username && String(u.username).toLowerCase() === lower) ||
+        (String(u.chatId) === lower) ||
+        (u.name && String(u.name).toLowerCase() === lower)
+      )
+    );
+    return found || null;
+  }
+
   api.get("/seller-portal/info/:identifier", (req, res) => {
     try {
       const identifier = req.params.identifier;
-      const state = db.getState();
-      const allUsers = state.users || [];
+      const user = resolveSeller(identifier);
 
-      let user: any = null;
-      if (/^\d+$/.test(identifier)) {
-        user = db.getUser(parseInt(identifier));
-      }
       if (!user) {
-        const uLower = String(identifier).trim().toLowerCase();
-        user = allUsers.find((u: any) => 
-          (u.portalUsername && String(u.portalUsername).toLowerCase() === uLower) ||
-          (u.username && String(u.username).toLowerCase() === uLower) ||
-          (String(u.chatId) === uLower)
-        );
-      }
-
-      if (!user || !user.isSeller) {
         return res.status(404).json({ success: false, message: 'پنل همکار یافت نشد یا دسترسی غیرمجاز است.' });
       }
+      const state = db.getState();
 
       const categories = (state.categories || []).filter((c: any) => !c.disabled);
       const activeCategoryIds = new Set(categories.map((c: any) => String(c.id)));
@@ -1402,11 +1412,11 @@ async function startServer() {
 
   api.post("/seller-portal/submit-debt-payment/:chatId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) {
         return res.status(404).json({ success: false, message: 'همکار یافت نشد' });
       }
+      const chatId = user.chatId;
 
       const { amount, receiptBase64 } = req.body;
       const parsedAmount = parseInt(amount);
@@ -1460,8 +1470,7 @@ async function startServer() {
   });
 
   api.post("/seller-portal/save-prices/:chatId", (req, res) => {
-    const chatId = parseInt(req.params.chatId);
-    const user = db.getUser(chatId);
+    const user = resolveSeller(req.params.chatId);
     if (!user || !user.isSeller) {
       return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
     }
@@ -1479,7 +1488,9 @@ async function startServer() {
 
   api.post("/seller-portal/buy/:chatId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+      const chatId = user.chatId;
       const { productId, customName } = req.body;
       if (!productId) {
         return res.status(400).json({ success: false, message: 'انتخاب محصول الزامی است.' });
@@ -1531,7 +1542,9 @@ async function startServer() {
 
   api.post("/seller-portal/buy-custom-volume/:chatId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
+      const chatId = user.chatId;
       const { volumeGb, durationDays, customName, panelType, categoryId } = req.body;
       const volNum = Number(volumeGb);
       if (isNaN(volNum) || volNum <= 0) {
@@ -1591,11 +1604,11 @@ async function startServer() {
 
   api.post("/seller-portal/purchases/:chatId/:purchaseId/renew", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) {
         return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
       }
+      const chatId = user.chatId;
 
       const purchaseId = req.params.purchaseId;
       const purchases = user.purchases || [];
@@ -1666,9 +1679,9 @@ async function startServer() {
 
   api.post("/seller-portal/purchases/:chatId/:purchaseId/toggle-enable", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
 
       const purchaseId = req.params.purchaseId;
       const purchases = user.purchases || [];
@@ -1700,9 +1713,9 @@ async function startServer() {
 
   api.post("/seller-portal/purchases/:chatId/:purchaseId/rename", (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
 
       const purchaseId = req.params.purchaseId;
       const purchases = user.purchases || [];
@@ -1734,9 +1747,9 @@ async function startServer() {
 
   api.get("/seller-portal/purchases/:chatId/:purchaseId/cancel-preview", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
 
       const purchaseId = req.params.purchaseId;
       const purchases = user.purchases || [];
@@ -1789,7 +1802,9 @@ async function startServer() {
 
   api.delete("/seller-portal/purchases/:chatId/:purchaseId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
       const purchaseId = req.params.purchaseId;
       const result = await cancelSellerPurchase(chatId, purchaseId);
       res.json(result);
@@ -1800,7 +1815,9 @@ async function startServer() {
 
   api.post("/seller-portal/purchases/:chatId/:purchaseId/cancel", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
       const purchaseId = req.params.purchaseId;
       const result = await cancelSellerPurchase(chatId, purchaseId);
       res.json(result);
@@ -1811,9 +1828,9 @@ async function startServer() {
 
   api.post("/seller-portal/free-test/:chatId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
 
       const state = db.getState();
       if (state.freeTestEnabled === false) {
@@ -1900,8 +1917,7 @@ async function startServer() {
   });
 
   api.post("/seller-portal/regenerate-api-key/:chatId", (req, res) => {
-    const chatId = parseInt(req.params.chatId);
-    const user = db.getUser(chatId);
+    const user = resolveSeller(req.params.chatId);
     if (!user || !user.isSeller) {
       return res.status(404).json({ success: false, message: 'همکار پیدا نشد.' });
     }
@@ -1917,11 +1933,11 @@ async function startServer() {
 
   api.get("/seller-portal/bot-config/:chatId", (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) {
         return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
       }
+      const chatId = user.chatId;
 
       const status = resellerBotManager.getBotStatus(chatId);
       const state = db.getState();
@@ -1975,11 +1991,11 @@ async function startServer() {
 
   api.post("/seller-portal/bot-config/:chatId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
-      const user = db.getUser(chatId);
+      const user = resolveSeller(req.params.chatId);
       if (!user || !user.isSeller) {
         return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
       }
+      const chatId = user.chatId;
 
       const {
         enabled,
@@ -2066,7 +2082,9 @@ async function startServer() {
 
   api.post("/seller-portal/bot-order-action/:chatId", async (req, res) => {
     try {
-      const chatId = parseInt(req.params.chatId);
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'همکار معتبر نیست.' });
+      const chatId = user.chatId;
       const { orderId, action, reason } = req.body;
       if (!orderId || !action) {
         return res.status(400).json({ success: false, message: 'شناسه سفارش و نوع عملیات الزامی است.' });

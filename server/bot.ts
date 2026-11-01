@@ -1553,6 +1553,10 @@ export async function initBot() {
         isPolling = false;
         return;
       }
+      if (errMsg.includes('409') || errMsg.includes('Conflict')) {
+        console.warn('[Bot Warning] Telegram 409 Conflict: Another bot process is running with this token. Please ensure only 1 instance runs.');
+        return;
+      }
       console.error('[Bot Error] Polling error:', errMsg);
     });
 
@@ -3253,24 +3257,36 @@ export async function initBot() {
     }
     const isAdmin = isUserAdmin(chatId, db.getState());
 
-    // Filter for force join
+    // Filter for force join with memory caching to keep bot blazing fast
     if (!isAdmin && state.forceJoinEnabled && state.forceJoinChannels && state.forceJoinChannels.length > 0) {
-       let unjoinedChannels: any[] = [];
-       for (const channel of state.forceJoinChannels) {
-           if (!channel.id) continue;
-           const chId = sanitizeChannelId(channel.id);
-           if (!chId) continue;
-           try {
-              const member = await bot!.getChatMember(chId, chatId);
-              if (member.status === 'left' || member.status === 'kicked') {
-                 unjoinedChannels.push(channel);
-              }
-           } catch (e) {
-              console.error(`[ForceJoin Check Ignored] ${chId}:`, (e as any)?.message);
-           }
+       const cached = forceJoinCache.get(chatId);
+       const now = Date.now();
+       const isCacheValid = cached && (now - cached.timestamp < 120000) && cached.isJoined;
+
+       if (text === '✅ عضو شدم') {
+         forceJoinCache.delete(chatId);
        }
 
-       if (unjoinedChannels.length > 0) {
+       if (!isCacheValid || text === '✅ عضو شدم') {
+         let unjoinedChannels: any[] = [];
+         for (const channel of state.forceJoinChannels) {
+             if (!channel.id) continue;
+             const chId = sanitizeChannelId(channel.id);
+             if (!chId) continue;
+             try {
+                const member = await bot!.getChatMember(chId, chatId);
+                if (member.status === 'left' || member.status === 'kicked') {
+                   unjoinedChannels.push(channel);
+                }
+             } catch (e) {
+                console.error(`[ForceJoin Check Ignored] ${chId}:`, (e as any)?.message);
+             }
+         }
+
+         if (unjoinedChannels.length === 0) {
+           forceJoinCache.set(chatId, { isJoined: true, timestamp: now });
+         } else {
+           forceJoinCache.delete(chatId);
            if (text === '✅ عضو شدم') {
                bot!.sendMessage(chatId, '❌ شما هنوز عضو کانال‌های زیر نشده‌اید. لطفاً ابتدا عضو شوید:', {
                    reply_markup: {
@@ -3304,6 +3320,7 @@ export async function initBot() {
               });
               return;
            }
+         }
        } else if (text === '✅ عضو شدم') {
            const userObj = db.getUser(chatId);
            bot!.sendMessage(chatId, '✅ از عضویت شما سپاسگزاریم.\nاکنون می‌توانید از امکانات ربات استفاده کنید.', {

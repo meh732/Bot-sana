@@ -79,7 +79,7 @@ if command -v pm2 &> /dev/null
 then
     echo -e "${YELLOW}ℹ️ PM2 detected. Restarting service with PM2...${NC}"
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$TARGET_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --node-args="--max-old-space-size=450" --max-restarts 10 --restart-delay 2000
+    PORT=$TARGET_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" -f --node-args="--max-old-space-size=450" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
     sleep 3
     pm2 status sanaei-bot 2>/dev/null || true

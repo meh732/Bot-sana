@@ -309,7 +309,7 @@ do_fresh_install() {
 
   if command -v pm2 &> /dev/null; then
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
+    PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" -f --cwd "$PWD" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
     pm2 startup 2>/dev/null || true
   else
@@ -456,7 +456,7 @@ do_update() {
 
   if command -v pm2 &> /dev/null; then
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" -f --cwd "$TARGET_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
     sleep 3
     pm2 status sanaei-bot 2>/dev/null || true
@@ -506,7 +506,7 @@ do_restart() {
 
   if command -v pm2 &> /dev/null; then
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450" --max-restarts 10 --restart-delay 2000
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" -f --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
     sleep 3
     pm2 status sanaei-bot 2>/dev/null || true

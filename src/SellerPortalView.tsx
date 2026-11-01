@@ -243,6 +243,10 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       const data = await res.json();
       if (data.success) {
         setSellerData(data.seller);
+        const actualChatId = data.seller?.chatId ? String(data.seller.chatId) : idToUse;
+        if (actualChatId && actualChatId !== chatId) {
+          setChatId(actualChatId);
+        }
         setAccountingData(data.accounting);
         setCategories(data.categories || []);
         setProducts(data.products || []);
@@ -260,8 +264,8 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         setShowCustomPricesOnly(data.seller.showCustomPricesOnly ?? true);
         if (data.bankInfo) setBankInfo(data.bankInfo);
         setIsLoggedIn(true);
-        localStorage.setItem('seller_portal_chatid', idToUse);
-        fetchBotConfig(idToUse);
+        localStorage.setItem('seller_portal_chatid', actualChatId);
+        fetchBotConfig(actualChatId);
       } else {
         setIsLoggedIn(false);
         setError(data.message || 'اعتبارسنجی ناموفق بود.');
@@ -275,18 +279,18 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   };
 
   const fetchBotConfig = async (idToUse?: string) => {
-    const targetId = idToUse || chatId;
+    const targetId = idToUse || (sellerData?.chatId ? String(sellerData.chatId) : chatId);
     if (!targetId) return;
     setLoadingBotConfig(true);
     try {
       const res = await fetch(`/api/seller-portal/bot-config/${targetId}`);
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+      if (data && data.success) {
         if (data.sellerBot) {
           setBotConfig({
             ...data.sellerBot,
             customRetailPrices: data.sellerBot.customRetailPrices || {},
-            adminChatId: data.sellerBot.adminChatId || ''
+            adminChatId: data.sellerBot.adminChatId || (sellerData?.chatId ? String(sellerData.chatId) : targetId)
           });
         }
         if (data.status) {
@@ -313,7 +317,11 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const handleSaveBotConfig = async (e?: React.FormEvent, overrideConfig?: any) => {
     if (e) e.preventDefault();
     const baseConfig = overrideConfig || botConfig;
-    if (!chatId || !baseConfig) return;
+    const targetChatId = (sellerData?.chatId ? String(sellerData.chatId) : chatId).trim();
+    if (!targetChatId || !baseConfig) {
+      setBotSaveErrorMsg('شناسه همکار معتبر نیست. لطفاً صفحه را مجدداً بارگذاری کنید.');
+      return;
+    }
 
     const cleanToken = String(baseConfig.botToken || '').trim();
     // If clicked via the form submit button ("ذخیره تنظیمات و آنلاین‌سازی ربات") and a token is provided, automatically enable the bot
@@ -331,28 +339,32 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
     setBotSaveSuccessMsg('');
     setBotSaveErrorMsg('');
     try {
-      const res = await fetch(`/api/seller-portal/bot-config/${chatId}`, {
+      const res = await fetch(`/api/seller-portal/bot-config/${targetChatId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payloadConfig)
       });
-      const data = await res.json();
-      if (data.status) setBotStatus(data.status);
-      if (data.sellerBot) {
-        setBotConfig({
-          ...data.sellerBot,
-          customRetailPrices: data.sellerBot.customRetailPrices || {},
-          adminChatId: data.sellerBot.adminChatId || ''
-        });
-      }
-      if (data.success) {
-        setBotSaveSuccessMsg(data.message || 'تنظیمات ربات اختصاصی با موفقیت ذخیره و اعمال شد.');
-        fetchBotConfig(chatId);
+      const data = await res.json().catch(() => null);
+      if (data) {
+        if (data.status) setBotStatus(data.status);
+        if (data.sellerBot) {
+          setBotConfig({
+            ...data.sellerBot,
+            customRetailPrices: data.sellerBot.customRetailPrices || {},
+            adminChatId: data.sellerBot.adminChatId || ''
+          });
+        }
+        if (data.success) {
+          setBotSaveSuccessMsg(data.message || 'تنظیمات ربات اختصاصی با موفقیت ذخیره و اعمال شد.');
+          fetchBotConfig(targetChatId);
+        } else {
+          setBotSaveErrorMsg(data.message || 'خطا در راه‌اندازی یا ذخیره تنظیمات ربات.');
+        }
       } else {
-        setBotSaveErrorMsg(data.message || 'خطا در راه‌اندازی یا ذخیره تنظیمات ربات.');
+        setBotSaveErrorMsg(`خطا در پاسخ سرور (کد ${res.status}). لطفاً چند لحظه بعد تلاش کنید.`);
       }
     } catch (err: any) {
-      setBotSaveErrorMsg('خطا در برقراری ارتباط با سرور. لطفاً چند ثانیه صبر کرده و مجدداً تلاش کنید.');
+      setBotSaveErrorMsg(err?.message || 'خطا در برقراری ارتباط با سرور. لطفاً چند ثانیه صبر کرده و مجدداً تلاش کنید.');
     } finally {
       setSavingBotConfig(false);
     }
@@ -2444,17 +2456,17 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                       </label>
                       <button
                         type="button"
-                        onClick={() => setBotConfig({ ...botConfig, adminChatId: chatId })}
+                        onClick={() => setBotConfig({ ...botConfig, adminChatId: String(sellerData?.chatId || chatId) })}
                         className="text-[11px] text-amber-300 hover:text-amber-200 transition flex items-center gap-1 bg-amber-500/20 hover:bg-amber-500/30 px-3 py-1 rounded-xl border border-amber-500/40 font-semibold"
                       >
-                        <span>تنظیم خودکار شناسه من ({chatId})</span>
+                        <span>تنظیم خودکار شناسه من ({sellerData?.chatId || chatId})</span>
                       </button>
                     </div>
                     <input
                       type="text"
                       value={botConfig.adminChatId || ''}
                       onChange={(e) => setBotConfig({ ...botConfig, adminChatId: e.target.value.trim() })}
-                      placeholder={chatId || "مثال: 7314628134"}
+                      placeholder={String(sellerData?.chatId || chatId || "مثال: 7314628134")}
                       dir="ltr"
                       className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl p-3 text-xs text-amber-300 font-mono outline-none transition"
                     />

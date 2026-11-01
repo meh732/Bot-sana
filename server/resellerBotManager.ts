@@ -76,7 +76,7 @@ class ResellerBotManager {
       // Configure polling options in constructor with autoStart: false so error listeners are attached first
       bot = new TelegramBot(token, {
         polling: {
-          interval: 400,
+          interval: 500,
           autoStart: false,
           params: {
             timeout: 10,
@@ -87,21 +87,10 @@ class ResellerBotManager {
 
       this.attachBotHandlers(bot, sellerChatId);
 
-      // Verify token with Telegram using a 7-second timeout so slow networks never hang the HTTP response
-      const me = await Promise.race([
-        bot.getMe(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('مهلت اتصال به تلگرام به پایان رسید (Timeout). لطفاً اتصال سرور به تلگرام یا صحت توکن را بررسی نمایید.')), 7000)
-        )
-      ]);
-      const botUsername = me?.username || '';
-
-      user.sellerBot.botUsername = botUsername;
-      db.saveUser(user);
-      db.saveImmediate();
-
-      // Delete any stale webhook in background and start polling without blocking HTTP response
+      // Delete any stale webhook in background without blocking
       (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
+
+      // Start polling
       bot.startPolling().catch((pollErr: any) => {
         console.warn(`[ResellerBot @${sellerChatId}] Initial startPolling warning:`, pollErr?.message || pollErr);
       });
@@ -111,6 +100,44 @@ class ResellerBotManager {
         { command: '/admin', description: 'پنل مدیریت ربات (ویژه ادمین)' }
       ]).catch(() => {});
 
+      let botUsername = (user.sellerBot?.botUsername || '').trim();
+
+      // Quick 3-second check for getMe. If fast, get username immediately.
+      // If network takes longer, it updates in background so the UI save button never times out!
+      try {
+        const me = await Promise.race([
+          bot.getMe(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
+        ]);
+        if (me && me.username) {
+          botUsername = me.username;
+          user.sellerBot.botUsername = botUsername;
+          db.saveUser(user);
+          db.saveImmediate();
+        }
+      } catch (quickErr: any) {
+        console.warn(`[ResellerBot @${sellerChatId}] Quick getMe warning:`, quickErr?.message || quickErr);
+      }
+
+      // Background verify if not yet obtained
+      if (!botUsername) {
+        bot.getMe().then(me => {
+          if (me && me.username) {
+            const u = db.getUser(sellerChatId);
+            if (u && u.sellerBot) {
+              u.sellerBot.botUsername = me.username;
+              db.saveUser(u);
+              db.saveImmediate();
+              const rec = this.activeBots.get(sellerChatId);
+              if (rec) rec.username = me.username;
+              console.log(`[ResellerBot @${sellerChatId}] Verified in background as @${me.username}`);
+            }
+          }
+        }).catch(err => {
+          console.warn(`[ResellerBot @${sellerChatId}] Background getMe check:`, err?.message || err);
+        });
+      }
+
       this.activeBots.set(sellerChatId, {
         bot,
         username: botUsername,
@@ -118,11 +145,13 @@ class ResellerBotManager {
         startedAt: Date.now()
       });
 
-      console.log(`[ResellerBotManager] Reseller bot @${botUsername} started successfully for seller ${sellerChatId}`);
+      console.log(`[ResellerBotManager] Reseller bot started successfully for seller ${sellerChatId}`);
       return {
         success: true,
         username: botUsername,
-        message: `ربات اختصاصی شما (@${botUsername}) با موفقیت روشن شد و هم‌اکنون آنلاین است.`
+        message: botUsername 
+          ? `ربات اختصاصی شما (@${botUsername}) با موفقیت روشن شد و هم‌اکنون آنلاین است.`
+          : 'تنظیمات ربات اختصاصی شما با موفقیت ذخیره شد و ربات در وضعیت آنلاین قرار گرفت.'
       };
     } catch (err: any) {
       if (bot) {
@@ -222,6 +251,10 @@ class ResellerBotManager {
       if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
         console.error(`[ResellerBot @${sellerChatId}] Invalid or revoked token. Stopping child bot polling.`);
         this.stopResellerBot(sellerChatId).catch(() => {});
+        return;
+      }
+      if (errMsg.includes('409') || errMsg.includes('Conflict')) {
+        console.warn(`[ResellerBot @${sellerChatId}] 409 Conflict: Another instance is polling with this token.`);
         return;
       }
       console.warn(`[ResellerBot @${sellerChatId}] Polling warning:`, errMsg);

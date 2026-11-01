@@ -200,7 +200,7 @@ fi
 echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $CURR_DIR...${NC}"
 if command -v pm2 &> /dev/null; then
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" -f --cwd "$CURR_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
 
     sleep 3
