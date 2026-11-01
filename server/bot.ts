@@ -6345,6 +6345,36 @@ export async function initBot() {
       return;
     }
 
+    if (data && data.startsWith('reseller_approve_')) {
+      const orderId = data.replace('reseller_approve_', '');
+      answerQuery({ text: 'در حال تایید و صدور کانفیگ برای مشتری...' });
+      const { resellerBotManager } = await import('./resellerBotManager.js');
+      const res = await resellerBotManager.fulfillResellerOrder(chatId, orderId);
+      if (res.success) {
+        bot!.editMessageText(`✅ <b>سفارش مشتری با موفقیت تایید و کانفیگ در ربات اختصاصی شما به ایشان تحویل داده شد!</b>\n\n🔗 لینک تحویلی:\n<code>${res.subUrl || ''}</code>`, {
+          chat_id: chatId,
+          message_id: query.message!.message_id,
+          parse_mode: 'HTML'
+        }).catch(() => {});
+      } else {
+        bot!.sendMessage(chatId, `❌ خطا در صدور سفارش: ${res.message}`).catch(() => {});
+      }
+      return;
+    }
+
+    if (data && data.startsWith('reseller_reject_')) {
+      const orderId = data.replace('reseller_reject_', '');
+      answerQuery({ text: 'سفارش لغو شد.' });
+      const { resellerBotManager } = await import('./resellerBotManager.js');
+      await resellerBotManager.rejectResellerOrder(chatId, orderId);
+      bot!.editMessageText(`❌ <b>سفارش مشتری رد شد و به ایشان اطلاع داده شد.</b>`, {
+        chat_id: chatId,
+        message_id: query.message!.message_id,
+        parse_mode: 'HTML'
+      }).catch(() => {});
+      return;
+    }
+
     if (data && data.startsWith('seller_cvol_')) {
       const userObj = db.getUser(chatId);
       if (!userObj || !userObj.isSeller) {

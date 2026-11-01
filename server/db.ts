@@ -150,6 +150,54 @@ export interface UserTransaction {
   createdAt: string;
 }
 
+export interface SellerBotOrder {
+  id: string;
+  buyerChatId: number;
+  buyerUsername?: string;
+  buyerName?: string;
+  type: 'product' | 'custom_volume' | 'free_test';
+  productId?: string;
+  productName?: string;
+  volumeGb?: number;
+  durationDays?: number;
+  retailPrice: number;
+  wholesalePrice: number;
+  profit: number;
+  customName?: string;
+  receiptBase64?: string;
+  receiptFileId?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  approvedAt?: string;
+  deliveredPurchaseId?: string;
+  deliveredSubUrl?: string;
+  rejectReason?: string;
+}
+
+export interface SellerBotConfig {
+  enabled: boolean;
+  botToken: string;
+  botUsername?: string;
+  botName: string;
+  logoUrl?: string;
+  welcomeMessage?: string;
+  supportUsername?: string;
+  channelUsername?: string;
+  cardNumber?: string;
+  cardHolder?: string;
+  autoDeliverAfterPayment?: boolean;
+  customRetailPrices?: Record<string, number>;
+  customVolumeRetailPricePerGb?: number;
+  freeTestEnabled?: boolean;
+  freeTestVolumeGb?: number;
+  freeTestDurationDays?: number;
+  orders?: SellerBotOrder[];
+  buyers?: { chatId: number; username?: string; name?: string; joinedAt: string; testUsed?: boolean }[];
+  totalRevenueToman?: number;
+  totalWholesaleCostToman?: number;
+  totalProfitToman?: number;
+}
+
 export interface User {
   chatId: number;
   username?: string;
@@ -177,6 +225,7 @@ export interface User {
   customVolumePricePerGb?: number;
   apiKey?: string;
   apiEnabled?: boolean;
+  sellerBot?: SellerBotConfig;
   purchases?: Purchase[];
   transactions?: UserTransaction[];
 }

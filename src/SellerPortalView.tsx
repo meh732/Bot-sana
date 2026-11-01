@@ -34,7 +34,9 @@ import {
   Download,
   Ban,
   Key,
-  Info
+  Info,
+  Bot,
+  Power
 } from 'lucide-react';
 
 interface SellerPortalProps {
@@ -67,8 +69,45 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   });
 
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<'store' | 'debt' | 'purchases' | 'ledger' | 'reports' | 'api'>('store');
+  const [activeTab, setActiveTab] = useState<'store' | 'debt' | 'purchases' | 'ledger' | 'reports' | 'api' | 'bot'>('store');
   const [reportPeriod, setReportPeriod] = useState<'today' | 'monthly' | 'all'>('today');
+
+  // White-label Reseller Telegram Bot state
+  const [botConfig, setBotConfig] = useState<any>({
+    enabled: false,
+    botToken: '',
+    botName: '',
+    logoUrl: '',
+    welcomeMessage: '',
+    supportUsername: '',
+    channelUsername: '',
+    cardNumber: '',
+    cardHolder: '',
+    autoDeliverAfterPayment: false,
+    freeTestEnabled: true,
+    customRetailPrices: {},
+    customVolumeRetailPricePerGb: 3500
+  });
+  const [botStatus, setBotStatus] = useState<any>({
+    isOnline: false,
+    botUsername: '',
+    buyersCount: 0,
+    ordersCount: 0,
+    pendingOrdersCount: 0,
+    totalRevenue: 0,
+    totalProfit: 0
+  });
+  const [botProducts, setBotProducts] = useState<any[]>([]);
+  const [botCustomVolume, setBotCustomVolume] = useState<any>({
+    wholesalePricePerGb: 3000,
+    retailPricePerGb: 3500,
+    profitPerGb: 500
+  });
+  const [loadingBotConfig, setLoadingBotConfig] = useState(false);
+  const [savingBotConfig, setSavingBotConfig] = useState(false);
+  const [botSaveSuccessMsg, setBotSaveSuccessMsg] = useState('');
+  const [botSaveErrorMsg, setBotSaveErrorMsg] = useState('');
+  const [orderActionLoading, setOrderActionLoading] = useState<string | null>(null);
 
   // Live API Tester states
   const [testingApi, setTestingApi] = useState(false);
@@ -220,6 +259,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
         if (data.bankInfo) setBankInfo(data.bankInfo);
         setIsLoggedIn(true);
         localStorage.setItem('seller_portal_chatid', idToUse);
+        fetchBotConfig(idToUse);
       } else {
         setIsLoggedIn(false);
         setError(data.message || 'اعتبارسنجی ناموفق بود.');
@@ -229,6 +269,78 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       setIsLoggedIn(false);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchBotConfig = async (idToUse?: string) => {
+    const targetId = idToUse || chatId;
+    if (!targetId) return;
+    setLoadingBotConfig(true);
+    try {
+      const res = await fetch(`/api/seller-portal/bot-config/${targetId}`);
+      const data = await res.json();
+      if (data.success) {
+        if (data.sellerBot) setBotConfig(data.sellerBot);
+        if (data.status) setBotStatus(data.status);
+        if (data.products) setBotProducts(data.products);
+        if (data.customVolume) setBotCustomVolume(data.customVolume);
+      }
+    } catch (e) {
+      console.error('Error fetching reseller bot config', e);
+    } finally {
+      setLoadingBotConfig(false);
+    }
+  };
+
+  const handleSaveBotConfig = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!chatId || !botConfig) return;
+    setSavingBotConfig(true);
+    setBotSaveSuccessMsg('');
+    setBotSaveErrorMsg('');
+    try {
+      const res = await fetch(`/api/seller-portal/bot-config/${chatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(botConfig)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBotSaveSuccessMsg(data.message || 'تنظیمات ربات اختصاصی با موفقیت ذخیره و اعمال شد.');
+        if (data.status) setBotStatus(data.status);
+        if (data.sellerBot) setBotConfig(data.sellerBot);
+        fetchBotConfig(chatId);
+      } else {
+        setBotSaveErrorMsg(data.message || 'خطا در ذخیره تنظیمات ربات.');
+      }
+    } catch (err: any) {
+      setBotSaveErrorMsg('خطا در برقراری ارتباط با سرور.');
+    } finally {
+      setSavingBotConfig(false);
+    }
+  };
+
+  const handleBotOrderAction = async (orderId: string, action: 'approve' | 'reject') => {
+    if (!chatId) return;
+    setOrderActionLoading(orderId);
+    try {
+      const res = await fetch(`/api/seller-portal/bot-order-action/${chatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId, action })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || 'عملیات با موفقیت انجام شد.');
+        fetchBotConfig(chatId);
+        fetchPortalInfo(chatId);
+      } else {
+        alert(data.message || 'خطا در انجام عملیات.');
+      }
+    } catch (e: any) {
+      alert('خطا در ارتباط با سرور.');
+    } finally {
+      setOrderActionLoading(null);
     }
   };
 
@@ -741,15 +853,30 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
           </button>
 
           <button
+            onClick={() => { setActiveTab('bot'); fetchBotConfig(); }}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              activeTab === 'bot'
+                ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-blue-500/30 ring-1 ring-blue-400'
+                : 'bg-blue-950/40 text-blue-200 border border-blue-500/40 hover:bg-blue-900/50'
+            }`}
+          >
+            <Bot className="w-4 h-4 text-cyan-400" />
+            <span>🤖 ربات تلگرام اختصاصی من (برند و آرم شما)</span>
+            {botStatus.isOnline && (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab('api')}
             className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
               activeTab === 'api'
                 ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-md shadow-violet-500/30 ring-1 ring-violet-400/50'
-                : 'bg-violet-950/50 text-violet-200 border border-violet-500/50 hover:bg-violet-900/60 animate-pulse'
+                : 'bg-violet-950/50 text-violet-200 border border-violet-500/50 hover:bg-violet-900/60'
             }`}
           >
             <Server className="w-4 h-4 text-violet-400" />
-            <span>🔌 اتصال به ربات تلگرام (وب‌سرویس API)</span>
+            <span>🔌 اتصال به وب‌سرویس API</span>
           </button>
 
           <button
@@ -2136,6 +2263,472 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   </p>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: WHITE-LABEL RESELLER TELEGRAM BOT (ربات تلگرام اختصاصی همکار) */}
+        {activeTab === 'bot' && (
+          <div className="space-y-6">
+            {/* Top Status & Overview Card */}
+            <div className="bg-gradient-to-br from-slate-900 via-blue-950/20 to-slate-900 border border-blue-500/30 p-6 rounded-3xl shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/30 flex-shrink-0">
+                    <Bot className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-bold text-slate-100">
+                        {botConfig.botName ? `ربات تلگرام: ${botConfig.botName}` : 'ربات تلگرام اختصاصی شما (White-Label)'}
+                      </h2>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1 ${
+                        botStatus.isOnline
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                          : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${botStatus.isOnline ? 'bg-emerald-400 animate-ping' : 'bg-rose-400'}`}></span>
+                        <span>{botStatus.isOnline ? 'روشن و آنلاین' : 'خاموش / متوقف'}</span>
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      با نام تجاری، آرم اختصاصی، شماره کارت بانکی خودتان و قیمت‌های دلخواه به مشتریانتان VPN بفروشید.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-stretch sm:self-auto justify-end">
+                  {botStatus.botUsername && (
+                    <a
+                      href={`https://t.me/${botStatus.botUsername}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-blue-500/20"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>ورود به ربات (@{botStatus.botUsername})</span>
+                    </a>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      const nextEnabled = !botConfig.enabled;
+                      setBotConfig((prev: any) => ({ ...prev, enabled: nextEnabled }));
+                      setTimeout(() => handleSaveBotConfig(), 50);
+                    }}
+                    disabled={savingBotConfig}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                      botConfig.enabled
+                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30'
+                        : 'bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold shadow-lg shadow-emerald-500/20'
+                    }`}
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    <span>{botConfig.enabled ? 'خاموش کردن ربات' : 'روشن کردن ربات'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Real-time Bot Stats */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-slate-800/80">
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800/80">
+                  <span className="text-[11px] text-slate-400 block mb-0.5">👥 خریداران در ربات</span>
+                  <span className="text-sm font-bold text-slate-100 font-mono">{botStatus.buyersCount || 0} نفر</span>
+                </div>
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800/80">
+                  <span className="text-[11px] text-slate-400 block mb-0.5">📦 کل سفارشات</span>
+                  <span className="text-sm font-bold text-blue-400 font-mono">{botStatus.ordersCount || 0} سفارش</span>
+                </div>
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800/80">
+                  <span className="text-[11px] text-slate-400 block mb-0.5">💵 کل فروش ناخالص</span>
+                  <span className="text-sm font-bold text-slate-100 font-mono">{(botStatus.totalRevenue || 0).toLocaleString()} تومان</span>
+                </div>
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/5">
+                  <span className="text-[11px] text-emerald-400 block mb-0.5">💎 سود خالص شما</span>
+                  <span className="text-sm font-bold text-emerald-400 font-mono">+{(botStatus.totalProfit || 0).toLocaleString()} تومان</span>
+                </div>
+              </div>
+
+              {botSaveSuccessMsg && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 p-3 rounded-2xl text-xs text-emerald-300 flex items-center gap-2">
+                  <Check className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                  <span>{botSaveSuccessMsg}</span>
+                </div>
+              )}
+              {botSaveErrorMsg && (
+                <div className="bg-rose-500/10 border border-rose-500/30 p-3 rounded-2xl text-xs text-rose-300 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                  <span>{botSaveErrorMsg}</span>
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={handleSaveBotConfig} className="space-y-6">
+              {/* Section 1: Telegram Bot Credentials & Brand */}
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-lg space-y-4">
+                <div className="flex items-center gap-2 pb-3 border-b border-slate-800">
+                  <Sparkles className="w-5 h-5 text-cyan-400" />
+                  <h3 className="font-bold text-slate-100 text-sm">۱. هویت و مشخصات ربات تلگرام اختصاصی شما</h3>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
+                      <span>توکن ربات تلگرام (Bot Token دریافتی از @BotFather):</span>
+                      <span className="text-[11px] text-cyan-400 font-normal">دریافت شده از ربات رسمی BotFather@ در تلگرام</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={botConfig.botToken || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, botToken: e.target.value.trim() })}
+                      placeholder="123456789:ABCdefGhIJKlmNoPQRstuvWXyz..."
+                      dir="ltr"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-cyan-300 font-mono outline-none transition"
+                    />
+                    <p className="text-[11px] text-slate-400">
+                      💡 <b>آموزش سریع:</b> در تلگرام به <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-cyan-400 underline">BotFather@</a> پیام دهید، دستور <code>/newbot</code> را بفرستید، نام و آیدی ربات دلخواهتان را مشخص کنید، و توکنی که می‌دهد را اینجا کپی کنید.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-200">نام تجاری / فروشگاه شما (عنوان بالای ربات):</label>
+                    <input
+                      type="text"
+                      value={botConfig.botName || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, botName: e.target.value })}
+                      placeholder="مثال: کانفیگ شاپ حیدر / وی‌پی‌ان پارس"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-200">آیدی پشتیبانی تلگرام شما:</label>
+                    <input
+                      type="text"
+                      value={botConfig.supportUsername || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, supportUsername: e.target.value })}
+                      placeholder="مثال: Support_Admin@"
+                      dir="ltr"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-200">کانال اطلاع‌رسانی یا آموزش تلگرام (اختیاری):</label>
+                    <input
+                      type="text"
+                      value={botConfig.channelUsername || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, channelUsername: e.target.value })}
+                      placeholder="مثال: MyVpnChannel@"
+                      dir="ltr"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-200">لینک بنر / عکس خوش‌آمدگویی (اختیاری):</label>
+                    <input
+                      type="text"
+                      value={botConfig.logoUrl || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, logoUrl: e.target.value.trim() })}
+                      placeholder="https://example.com/logo.jpg"
+                      dir="ltr"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-xs font-bold text-slate-200">متن خوش‌آمدگویی استارت ربات (Welcome Message):</label>
+                    <textarea
+                      rows={3}
+                      value={botConfig.welcomeMessage || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, welcomeMessage: e.target.value })}
+                      placeholder="سلام! به ربات رسمی فروش کانفیگ‌های اختصاصی و پرسرعت خوش آمدید..."
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Bank Account & Payment Reception */}
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-lg space-y-4">
+                <div className="flex items-center gap-2 pb-3 border-b border-slate-800">
+                  <CreditCard className="w-5 h-5 text-emerald-400" />
+                  <h3 className="font-bold text-slate-100 text-sm">۲. شماره کارت و نحوه دریافت پول از مشتریان شما</h3>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-200">شماره کارت بانکی شما (جهت واریز مشتریان):</label>
+                    <input
+                      type="text"
+                      value={botConfig.cardNumber || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, cardNumber: e.target.value.trim() })}
+                      placeholder="۶۰۳۷-۹۹۷۹-xxxx-xxxx"
+                      dir="ltr"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-2xl p-3 text-xs text-emerald-400 font-mono font-bold outline-none transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-200">نام و نام خانوادگی صاحب کارت:</label>
+                    <input
+                      type="text"
+                      value={botConfig.cardHolder || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, cardHolder: e.target.value })}
+                      placeholder="مثال: حیدر رضایی"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex items-center justify-between bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                  <div>
+                    <h5 className="text-xs font-bold text-slate-200">تحویل آنی خودکار بلافاصله پس از آپلود فیش توسط مشتری</h5>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      در صورت فعال‌بودن، کانفیگ فوراً بدون نیاز به تایید دستی برای خریدار صادر می‌شود (توصیه: در صورت تمایل به چک‌کردن فیش‌ها، این گزینه را غیرفعال بگذارید).
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={!!botConfig.autoDeliverAfterPayment}
+                    onChange={(e) => setBotConfig({ ...botConfig, autoDeliverAfterPayment: e.target.checked })}
+                    className="w-5 h-5 accent-emerald-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              {/* Section 3: Custom Retail Pricing Table */}
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-lg space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Sliders className="w-5 h-5 text-amber-400" />
+                    <div>
+                      <h3 className="font-bold text-slate-100 text-sm">۳. تعیین قیمت فروش اختصاصی شما برای هر پلن (سود دلخواه)</h3>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        قیمت عمده خرید شما ثابت است؛ قیمت فروش به مشتری را تعیین کنید تا سود خالص شما از هر خرید به صورت زنده محاسبه شود.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                        <th className="py-2.5 px-3">نام پلن</th>
+                        <th className="py-2.5 px-3">مشخصات</th>
+                        <th className="py-2.5 px-3">قیمت عمده خرید شما</th>
+                        <th className="py-2.5 px-3">قیمت فروش شما به مشتری (تومان)</th>
+                        <th className="py-2.5 px-3 text-left">سود خالص شما</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-vazir">
+                      {botProducts.map((p) => {
+                        const retailVal = botConfig.customRetailPrices?.[p.id] !== undefined
+                          ? botConfig.customRetailPrices[p.id]
+                          : p.retailPrice;
+                        const profitVal = Math.max(0, retailVal - p.wholesalePrice);
+
+                        return (
+                          <tr key={p.id} className="hover:bg-slate-800/40 transition">
+                            <td className="py-3 px-3 font-bold text-slate-200">{p.name}</td>
+                            <td className="py-3 px-3 text-slate-400 font-mono text-[11px]">
+                              {p.volumeGb} GB / {p.durationDays ? `${p.durationDays} روز` : 'نامحدود'}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-300">
+                              {p.wholesalePrice.toLocaleString()} ت
+                            </td>
+                            <td className="py-3 px-3">
+                              <input
+                                type="number"
+                                value={retailVal || ''}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value) || 0;
+                                  setBotConfig((prev: any) => ({
+                                    ...prev,
+                                    customRetailPrices: {
+                                      ...(prev.customRetailPrices || {}),
+                                      [p.id]: val
+                                    }
+                                  }));
+                                }}
+                                className="w-36 bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-xl px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold outline-none"
+                              />
+                            </td>
+                            <td className="py-3 px-3 text-left font-mono font-bold text-emerald-400">
+                              +{profitVal.toLocaleString()} تومان
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Custom Volume Pricing per GB */}
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mt-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div>
+                    <h5 className="text-xs font-bold text-slate-200">⚡ نرخ فروش هر گیگابایت در سفارش حجم دلخواه:</h5>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      قیمت عمده خرید هر گیگابایت شما: <b>{botCustomVolume.wholesalePricePerGb?.toLocaleString()} تومان</b>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="text-xs text-slate-400">نرخ فروش شما به مشتری:</label>
+                    <input
+                      type="number"
+                      value={botConfig.customVolumeRetailPricePerGb || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, customVolumeRetailPricePerGb: parseInt(e.target.value) || 0 })}
+                      className="w-32 bg-slate-900 border border-slate-700 focus:border-emerald-400 rounded-xl px-3 py-1.5 text-xs text-emerald-400 font-mono font-bold outline-none"
+                    />
+                    <span className="text-xs text-emerald-400 font-mono font-bold">
+                      سود: +{Math.max(0, (botConfig.customVolumeRetailPricePerGb || 0) - (botCustomVolume.wholesalePricePerGb || 0)).toLocaleString()} ت/گیگ
+                    </span>
+                  </div>
+                </div>
+
+                {/* Free test toggle for reseller bot */}
+                <div className="pt-2 flex items-center justify-between bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                  <div>
+                    <h5 className="text-xs font-bold text-slate-200">🎁 فعال بودن اکانت تست رایگان برای مشتریان در ربات شما</h5>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      مشتریان جدید ربات شما می‌توانند یک‌بار اکانت تست رایگان ۱ گیگابایتی دریافت کنند.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={botConfig.freeTestEnabled !== false}
+                    onChange={(e) => setBotConfig({ ...botConfig, freeTestEnabled: e.target.checked })}
+                    className="w-5 h-5 accent-cyan-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              {/* Submit / Save Button */}
+              <div className="sticky bottom-4 z-10 bg-slate-950/90 backdrop-blur-md p-4 rounded-2xl border border-slate-800 flex items-center justify-between shadow-2xl">
+                <div className="text-xs text-slate-400 hidden sm:block">
+                  پس از ذخیره، ربات به صورت خودکار روشن یا بازراه‌اندازی می‌شود.
+                </div>
+                <button
+                  type="submit"
+                  disabled={savingBotConfig}
+                  className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-blue-500/20 transition flex items-center justify-center gap-2"
+                >
+                  {savingBotConfig ? <RefreshCw className="w-4 h-4 animate-spin text-slate-950" /> : <Save className="w-4 h-4 text-slate-950" />}
+                  <span>{savingBotConfig ? 'در حال راه‌اندازی و اتصال...' : 'ذخیره تنظیمات و آنلاین‌سازی ربات'}</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Section 4: Live Orders & Receipts from Reseller Bot Customers */}
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-lg space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <Receipt className="w-5 h-5 text-indigo-400" />
+                  <h3 className="font-bold text-slate-100 text-sm">
+                    ۴. سفارشات و فیش‌های دریافتی از مشتریان ربات شما ({botConfig.orders?.length || 0})
+                  </h3>
+                </div>
+                <button
+                  onClick={() => fetchBotConfig()}
+                  className="p-1.5 bg-slate-800 text-slate-300 rounded-lg hover:text-white transition flex items-center gap-1 text-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>بروزرسانی لیست</span>
+                </button>
+              </div>
+
+              {(!botConfig.orders || botConfig.orders.length === 0) ? (
+                <div className="text-center py-10 bg-slate-950/60 rounded-2xl border border-slate-800/60 text-slate-500 text-xs">
+                  هنوز سفارشی از سوی مشتریان در ربات اختصاصی شما ثبت نشده است. به محض ارسال اولین سفارش یا فیش، در این جدول ظاهر خواهد شد.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                        <th className="py-2.5 px-3">شناسه / تاریخ</th>
+                        <th className="py-2.5 px-3">مشتری</th>
+                        <th className="py-2.5 px-3">محصول / حجم</th>
+                        <th className="py-2.5 px-3">واریزی مشتری</th>
+                        <th className="py-2.5 px-3">هزینه عمده شما</th>
+                        <th className="py-2.5 px-3">سود شما</th>
+                        <th className="py-2.5 px-3">وضعیت</th>
+                        <th className="py-2.5 px-3 text-left">عملیات</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-vazir">
+                      {botConfig.orders.map((ord: any) => (
+                        <tr key={ord.id} className="hover:bg-slate-800/40 transition">
+                          <td className="py-3 px-3">
+                            <span className="font-mono text-[10px] text-slate-400 block">{ord.id}</span>
+                            <span className="text-[10px] text-slate-500">{new Date(ord.createdAt).toLocaleDateString('fa-IR')}</span>
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className="font-bold text-slate-200 block">{ord.buyerName || 'مشتری'}</span>
+                            <span className="font-mono text-[10px] text-slate-400" dir="ltr">
+                              {ord.buyerUsername ? `@${ord.buyerUsername}` : ord.buyerChatId}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 font-bold text-cyan-400">{ord.productName || 'وی‌پی‌ان اختصاصی'}</td>
+                          <td className="py-3 px-3 font-mono font-bold text-slate-100">{ord.retailPrice?.toLocaleString()} تومان</td>
+                          <td className="py-3 px-3 font-mono text-slate-400">{ord.wholesalePrice?.toLocaleString()} تومان</td>
+                          <td className="py-3 px-3 font-mono font-bold text-emerald-400">+{ord.profit?.toLocaleString()} تومان</td>
+                          <td className="py-3 px-3">
+                            {ord.status === 'approved' && (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px]">
+                                تحویل داده شد ✅
+                              </span>
+                            )}
+                            {ord.status === 'pending' && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] animate-pulse">
+                                در انتظار تایید فیش ⏳
+                              </span>
+                            )}
+                            {ord.status === 'rejected' && (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/30 text-[10px]">
+                                رد شده ❌
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-left">
+                            {ord.status === 'pending' ? (
+                              <div className="flex items-center gap-1.5 justify-end">
+                                <button
+                                  onClick={() => handleBotOrderAction(ord.id, 'approve')}
+                                  disabled={orderActionLoading === ord.id}
+                                  className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-[11px] transition shadow"
+                                >
+                                  {orderActionLoading === ord.id ? 'در حال صدور...' : 'تایید و صدور آنی'}
+                                </button>
+                                <button
+                                  onClick={() => handleBotOrderAction(ord.id, 'reject')}
+                                  disabled={orderActionLoading === ord.id}
+                                  className="px-2 py-1 bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 rounded-lg text-[11px] transition"
+                                >
+                                  رد
+                                </button>
+                              </div>
+                            ) : ord.deliveredSubUrl ? (
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(ord.deliveredSubUrl);
+                                  alert('✅ لینک سابسکریپشن تحویل داده شده کپی شد:\n' + ord.deliveredSubUrl);
+                                }}
+                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] transition flex items-center gap-1"
+                              >
+                                <Copy className="w-3 h-3" />
+                                <span>کپی لینک تحویلی</span>
+                              </button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

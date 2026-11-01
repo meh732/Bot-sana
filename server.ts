@@ -15,6 +15,7 @@ import { mrocean } from "./server/mrocean.js";
 import { panel4 } from "./server/panel4.js";
 import { multiPanel } from "./server/multiPanel.js";
 import { encryptData, decryptData } from "./server/crypto.js";
+import { resellerBotManager } from "./server/resellerBotManager.js";
 
 const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
 
@@ -1905,6 +1906,163 @@ async function startServer() {
   });
 
   // ============================================================================
+  // WHITE-LABEL RESELLER TELEGRAM BOT ENDPOINTS (مدیریت ربات اختصاصی همکار)
+  // ============================================================================
+
+  api.get("/seller-portal/bot-config/:chatId", (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
+      }
+
+      const status = resellerBotManager.getBotStatus(chatId);
+      const state = db.getState();
+      const products = (state.products || []).filter(p => !p.disabled).map(p => {
+        const wholesalePrice = Math.max(0, Math.round(p.price * (1 - getSellerDiscountForProduct(user, p) / 100)));
+        const retailPrice = user.sellerBot?.customRetailPrices?.[p.id] !== undefined
+          ? user.sellerBot.customRetailPrices[p.id]
+          : (user.customDisplayPrices?.[p.id] !== undefined ? user.customDisplayPrices[p.id] : p.price);
+        return {
+          id: p.id,
+          name: p.name,
+          volumeGb: p.volumeGb,
+          durationDays: p.durationDays,
+          wholesalePrice,
+          retailPrice,
+          profit: Math.max(0, retailPrice - wholesalePrice)
+        };
+      });
+
+      const wholesaleVolGbPrice = Math.max(0, Math.round((user.customVolumePricePerGb || state.customVolumePricePerGb || 3000) * (1 - (user.sellerDiscount || 0) / 100)));
+      const retailVolGbPrice = user.sellerBot?.customVolumeRetailPricePerGb !== undefined
+        ? user.sellerBot.customVolumeRetailPricePerGb
+        : Math.round(wholesaleVolGbPrice * 1.3);
+
+      res.json({
+        success: true,
+        sellerBot: user.sellerBot || {
+          enabled: false,
+          botToken: '',
+          botName: user.name || user.username || `فروشگاه ${chatId}`,
+          welcomeMessage: '',
+          supportUsername: user.username || '',
+          cardNumber: '',
+          cardHolder: '',
+          autoDeliverAfterPayment: false,
+          freeTestEnabled: true
+        },
+        status,
+        products,
+        customVolume: {
+          wholesalePricePerGb: wholesaleVolGbPrice,
+          retailPricePerGb: retailVolGbPrice,
+          profitPerGb: Math.max(0, retailVolGbPrice - wholesaleVolGbPrice)
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  api.post("/seller-portal/bot-config/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const user = db.getUser(chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
+      }
+
+      const {
+        enabled,
+        botToken,
+        botName,
+        logoUrl,
+        welcomeMessage,
+        supportUsername,
+        channelUsername,
+        cardNumber,
+        cardHolder,
+        autoDeliverAfterPayment,
+        customRetailPrices,
+        customVolumeRetailPricePerGb,
+        freeTestEnabled,
+        freeTestVolumeGb,
+        freeTestDurationDays
+      } = req.body;
+
+      const currentBot = user.sellerBot || ({} as any);
+
+      user.sellerBot = {
+        ...currentBot,
+        enabled: enabled !== undefined ? !!enabled : !!currentBot.enabled,
+        botToken: botToken !== undefined ? String(botToken).trim() : (currentBot.botToken || ''),
+        botName: botName !== undefined ? String(botName).trim() : (currentBot.botName || 'فروشگاه اختصاصی'),
+        logoUrl: logoUrl !== undefined ? String(logoUrl).trim() : currentBot.logoUrl,
+        welcomeMessage: welcomeMessage !== undefined ? String(welcomeMessage) : currentBot.welcomeMessage,
+        supportUsername: supportUsername !== undefined ? String(supportUsername).trim() : currentBot.supportUsername,
+        channelUsername: channelUsername !== undefined ? String(channelUsername).trim() : currentBot.channelUsername,
+        cardNumber: cardNumber !== undefined ? String(cardNumber).trim() : currentBot.cardNumber,
+        cardHolder: cardHolder !== undefined ? String(cardHolder).trim() : currentBot.cardHolder,
+        autoDeliverAfterPayment: autoDeliverAfterPayment !== undefined ? !!autoDeliverAfterPayment : !!currentBot.autoDeliverAfterPayment,
+        customRetailPrices: customRetailPrices || currentBot.customRetailPrices || {},
+        customVolumeRetailPricePerGb: customVolumeRetailPricePerGb !== undefined ? Number(customVolumeRetailPricePerGb) : currentBot.customVolumeRetailPricePerGb,
+        freeTestEnabled: freeTestEnabled !== undefined ? !!freeTestEnabled : currentBot.freeTestEnabled !== false,
+        freeTestVolumeGb: freeTestVolumeGb ? Number(freeTestVolumeGb) : currentBot.freeTestVolumeGb,
+        freeTestDurationDays: freeTestDurationDays ? Number(freeTestDurationDays) : currentBot.freeTestDurationDays,
+        orders: currentBot.orders || [],
+        buyers: currentBot.buyers || [],
+        totalRevenueToman: currentBot.totalRevenueToman || 0,
+        totalWholesaleCostToman: currentBot.totalWholesaleCostToman || 0,
+        totalProfitToman: currentBot.totalProfitToman || 0
+      };
+
+      db.saveUser(user);
+
+      let botStartResult: any = { success: true, message: 'تنظیمات ذخیره شد.' };
+      if (user.sellerBot.enabled && user.sellerBot.botToken) {
+        botStartResult = await resellerBotManager.startResellerBot(chatId);
+      } else {
+        await resellerBotManager.stopResellerBot(chatId);
+      }
+
+      const status = resellerBotManager.getBotStatus(chatId);
+      res.json({
+        success: true,
+        message: botStartResult.message || 'تنظیمات ربات اختصاصی با موفقیت ذخیره شد.',
+        botUsername: user.sellerBot.botUsername,
+        status,
+        sellerBot: user.sellerBot
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'خطا در ذخیره تنظیمات ربات' });
+    }
+  });
+
+  api.post("/seller-portal/bot-order-action/:chatId", async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.chatId);
+      const { orderId, action, reason } = req.body;
+      if (!orderId || !action) {
+        return res.status(400).json({ success: false, message: 'شناسه سفارش و نوع عملیات الزامی است.' });
+      }
+
+      if (action === 'approve') {
+        const result = await resellerBotManager.fulfillResellerOrder(chatId, orderId);
+        return res.json(result);
+      } else if (action === 'reject') {
+        const result = await resellerBotManager.rejectResellerOrder(chatId, orderId, reason);
+        return res.json(result);
+      } else {
+        return res.status(400).json({ success: false, message: 'عملیات نامعتبر است.' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // ============================================================================
   // EXTERNAL RESELLER / PROVIDER BOT API (وب‌سرویس ارائه‌دهنده همکار برای اتصال ربات فروشگاهی)
   // Supports:
   //   - /api/v1/reseller/*  and  /api/provider/*
@@ -2857,6 +3015,7 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    resellerBotManager.initAllResellerBots().catch(console.error);
   });
 }
 
