@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "npm run build:all",
-    "build:server": "esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs",
-    "build:all": "NODE_OPTIONS='--max-old-space-size=400' vite build && npm run build:server && mkdir -p assets/prebuilt && cp -rf dist/* assets/prebuilt/ && rm -rf assets/prebuilt/assets/aistudio",
+    "build": "bash build-fast.sh",
+    "build:server": "GOMAXPROCS=1 GOGC=30 ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs",
+    "build:all": "bash build-fast.sh",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",

@@ -257,22 +257,24 @@ do_fresh_install() {
     safe_exit 1
   fi
 
-  # Check for pre-built distribution bundle (in assets/prebuilt or dist)
-  if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
-    mkdir -p dist
-    cp -rf assets/prebuilt/* dist/
-  fi
-
-  if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
+  # Compile or verify bundle using ultra-fast native esbuild (< 2 seconds, < 45MB RAM)
+  if [ -f "build-fast.sh" ]; then
+    echo -e "\n${CYAN}>> Building frontend & backend with ultra-fast native compiler...${NC}"
+    if [ ! -f "./node_modules/.bin/esbuild" ] && ! command -v esbuild &>/dev/null; then
+      echo -e "${CYAN}>> Installing lightweight dependencies...${NC}"
+      pkill -9 -f "npm install" 2>/dev/null || true
+      nice -n 19 env NODE_ENV=production npm install --no-package-lock --no-audit --no-fund || true
+    fi
+    bash build-fast.sh
+  elif [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
     echo -e "${GREEN}✅ Pre-built standalone backend (dist/server.cjs) and frontend (dist/index.html) verified.${NC}"
-    echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
   else
     echo -e "\n${CYAN}>> Installing lightweight backend runtime dependencies...${NC}"
     pkill -9 -f "npm install" 2>/dev/null || true
     nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
     if [ ! -f "dist/server.cjs" ]; then
       echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
-      npx --yes esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
+      GOMAXPROCS=1 GOGC=30 ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
     fi
   fi
 
@@ -299,16 +301,20 @@ do_fresh_install() {
   fi
 
   if command -v pm2 &> /dev/null; then
-    if ! PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" --node-args="--max-old-space-size=450"; then
-      PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=450 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
+    if ! PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" --node-args="--max-old-space-size=400"; then
+      PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
     fi
     pm2 save 2>/dev/null || true
     pm2 startup 2>/dev/null || true
   else
-    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=450 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
+    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
   fi
 
   sleep 2
+  if ! ss -tln 2>/dev/null | grep -q ":${PANEL_PORT} "; then
+    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
+    sleep 1
+  fi
   echo -e "${GREEN}✅ PM2 Process Status:${NC}"
   pm2 status sanaei-bot 2>/dev/null || true
   pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
@@ -406,18 +412,12 @@ do_update() {
     safe_exit 1
   fi
 
-  # 4. Apply pre-built bundle (Zero-RAM instant update) or compile if needed
-  echo -e "\n${CYAN}>> Preparing latest build...${NC}"
-  if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
-    echo -e "${GREEN}⚡ Pre-built frontend & backend bundle found in repository. Copying to dist/ (Zero RAM)...${NC}"
-    mkdir -p dist
-    cp -rf assets/prebuilt/* dist/
-  elif [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}⚡ Pre-built frontend bundle verified. Compiling backend with esbuild (Fast & Low RAM)...${NC}"
-    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || NODE_OPTIONS="--max-old-space-size=400" npm run build
+  # 4. Compile using ultra-fast native esbuild (< 2 seconds, < 45MB RAM)
+  echo -e "\n${CYAN}>> Compiling latest updates (Fast Low-RAM Mode)...${NC}"
+  if [ -f "build-fast.sh" ]; then
+    bash build-fast.sh
   else
-    echo -e "${YELLOW}ℹ️ Compiling full frontend and backend...${NC}"
-    NODE_OPTIONS="--max-old-space-size=400" npm run build
+    GOMAXPROCS=1 GOGC=30 ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs
   fi
 
   # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
@@ -446,16 +446,20 @@ do_update() {
 
   echo -e "\n${CYAN}>> Starting bot service on port ${PORT_VAL} with working directory $TARGET_DIR...${NC}"
   if command -v pm2 &> /dev/null; then
-    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450"; then
+    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=400"; then
       echo -e "${YELLOW}⚠️ PM2 failed to start, launching via direct node daemon...${NC}"
-      PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+      PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
     fi
     pm2 save 2>/dev/null || true
     sleep 2
+    if ! ss -tln 2>/dev/null | grep -q ":${PORT_VAL} "; then
+      PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+      sleep 1
+    fi
     pm2 status sanaei-bot 2>/dev/null || true
     pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
   else
-    PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
   fi
 
   echo -e "\n${GREEN}=============================================${NC}"
@@ -474,9 +478,8 @@ do_restart() {
   fi
   cd "$TARGET_DIR" 2>/dev/null || true
 
-  if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
-    mkdir -p dist
-    cp -rf assets/prebuilt/* dist/
+  if [ -f "build-fast.sh" ] && ( [ ! -f "dist/server.cjs" ] || [ ! -f "dist/index.html" ] ); then
+    bash build-fast.sh
   fi
 
   PORT_VAL=2020

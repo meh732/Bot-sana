@@ -154,16 +154,12 @@ if [ ! -f "package.json" ]; then
     safe_exit 1
 fi
 
-# 5. Apply pre-built bundle (Zero-RAM instant update) or compile if needed
-echo -e "\n${YELLOW}🔹 5. Preparing latest frontend & backend build...${NC}"
-if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
-    echo -e "${GREEN}⚡ Pre-built production bundle found in repository. Copying to dist/ (Zero RAM)...${NC}"
-    mkdir -p dist
-    cp -rf assets/prebuilt/* dist/
-elif [ -f "dist/index.html" ]; then
-    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || NODE_OPTIONS="--max-old-space-size=400" npm run build
+# 5. Compile using ultra-fast native esbuild (< 2 seconds, < 45MB RAM)
+echo -e "\n${YELLOW}🔹 5. Compiling latest frontend & backend build (Fast Low-RAM Mode)...${NC}"
+if [ -f "build-fast.sh" ]; then
+    bash build-fast.sh
 else
-    NODE_OPTIONS="--max-old-space-size=400" npm run build
+    GOMAXPROCS=1 GOGC=30 ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs
 fi
 
 # 6. Restart application service cleanly
@@ -196,12 +192,16 @@ fi
 
 echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $CURR_DIR...${NC}"
 if command -v pm2 &> /dev/null; then
-    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" --node-args="--max-old-space-size=450"; then
-        PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" --node-args="--max-old-space-size=400"; then
+        PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
     fi
     pm2 save 2>/dev/null || true
 
     sleep 2
+    if ! ss -tln 2>/dev/null | grep -q ":${PORT_VAL} "; then
+        PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+        sleep 1
+    fi
     echo -e "${GREEN}✅ Service 'sanaei-bot' status:${NC}"
     pm2 status sanaei-bot
     

@@ -51,14 +51,12 @@ pkill -9 -f "dist/server.cjs" 2>/dev/null
 pkill -9 -f "tsx" 2>/dev/null
 echo -e "${GREEN}✅ Stale processes stopped.${NC}"
 
-# 3. Ensure latest prebuilt bundle is in dist/
+# 3. Ensure latest bundle is in dist/
 echo -e "${YELLOW}🔹 3. Checking and preparing application build...${NC}"
-if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
-    mkdir -p dist
-    cp -rf assets/prebuilt/* dist/
-    echo -e "${GREEN}✅ Pre-built bundle synced to dist/ (Zero RAM).${NC}"
+if [ -f "build-fast.sh" ] && ( [ ! -f "dist/server.cjs" ] || [ ! -f "dist/index.html" ] ); then
+    bash build-fast.sh
 elif [ ! -f "dist/server.cjs" ]; then
-    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || NODE_OPTIONS="--max-old-space-size=400" npm run build
+    GOMAXPROCS=1 GOGC=30 ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs
 fi
 
 # Reset oom_score_adj to 0 before spawning service
