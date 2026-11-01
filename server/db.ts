@@ -179,6 +179,7 @@ export interface SellerBotConfig {
   botToken: string;
   botUsername?: string;
   botName: string;
+  adminChatId?: number | string;
   logoUrl?: string;
   welcomeMessage?: string;
   supportUsername?: string;

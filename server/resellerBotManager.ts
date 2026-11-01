@@ -133,7 +133,7 @@ class ResellerBotManager {
   private attachBotHandlers(bot: TelegramBot, sellerChatId: number) {
     const getSessionKey = (buyerChatId: number) => `${sellerChatId}_${buyerChatId}`;
 
-    const getMainKeyboard = (seller: User) => {
+    const getMainKeyboard = (seller: User, isUserAdmin: boolean = false) => {
       const cfg = seller.sellerBot || ({} as SellerBotConfig);
       const rows: string[][] = [
         ['🛍 خرید اشتراک وی‌پی‌ان', '⚡ خرید حجم دلخواه'],
@@ -144,6 +144,9 @@ class ResellerBotManager {
         rows.push(['👤 سرویس‌های من']);
       }
       rows.push(['💳 راهنمای پرداخت', '📞 پشتیبانی و راهنما']);
+      if (isUserAdmin) {
+        rows.push(['👑 پنل مدیریت ربات']);
+      }
 
       return {
         keyboard: rows.map(r => r.map(text => ({ text }))),
@@ -168,6 +171,8 @@ class ResellerBotManager {
         return;
       }
       const botCfg = seller.sellerBot;
+      const targetAdminChatId = botCfg.adminChatId ? Number(botCfg.adminChatId) : sellerChatId;
+      const isUserAdmin = (buyerChatId === targetAdminChatId || buyerChatId === sellerChatId);
 
       // Track buyer in reseller's buyers list
       if (!botCfg.buyers) botCfg.buyers = [];
@@ -183,18 +188,48 @@ class ResellerBotManager {
         db.saveUser(seller);
       }
 
+      // Handle Admin Panel command
+      if ((text === '👑 پنل مدیریت ربات' || text === '/admin' || text === '/panel' || text === 'مدیریت') && isUserAdmin) {
+        this.userSessionStates.delete(sessionKey);
+        const pendingOrders = (botCfg.orders || []).filter(o => o.status === 'pending');
+        const adminMsg = `👑 <b>پنل مدیریت ربات اختصاصی (${botCfg.botName || 'فروشگاه'})</b>\n\n` +
+          `👤 <b>مدیر ربات:</b> <code>${buyerChatId}</code>\n` +
+          `👥 <b>کل خریداران:</b> <b>${(botCfg.buyers || []).length} نفر</b>\n` +
+          `📦 <b>کل سفارشات:</b> <b>${(botCfg.orders || []).length} سفارش</b>\n` +
+          `⏳ <b>سفارشات معلق فیش:</b> <b>${pendingOrders.length} مورد</b>\n` +
+          `💵 <b>فروش ناخالص:</b> <b>${(botCfg.totalRevenueToman || 0).toLocaleString()} تومان</b>\n` +
+          `💎 <b>سود خالص شما:</b> <b>${(botCfg.totalProfitToman || 0).toLocaleString()} تومان</b>\n\n` +
+          `💡 <i>جهت اعمال تغییرات در قیمت‌ها، اطلاعات کارت و متون، می‌توانید از پورتال وب نیز استفاده فرمایید.</i>`;
+
+        const inlineButtons: any[][] = [];
+        if (pendingOrders.length > 0) {
+          inlineButtons.push([{ text: `📋 بررسی ${pendingOrders.length} سفارش در انتظار`, callback_data: 'admin_view_pending' }]);
+        }
+        inlineButtons.push([{ text: '🔄 به‌روزرسانی اطلاعات', callback_data: 'admin_refresh_stats' }]);
+
+        await bot.sendMessage(buyerChatId, adminMsg, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineButtons }
+        });
+        return;
+      }
+
       // Handle /start or بازگشت به منوی اصلی
       if (text.startsWith('/start') || text === 'بازگشت به منوی اصلی' || text === 'منوی اصلی' || text === '/menu') {
         this.userSessionStates.delete(sessionKey);
-        const welcome = botCfg.welcomeMessage ||
+        let welcome = botCfg.welcomeMessage ||
           `سلام ${msg.from.first_name || 'کاربر گرامی'} عزیز،\nبه ربات رسمی فروش سرویس‌های پرسرعت و ضد فیلتر <b>${botCfg.botName || 'اختصاصی'}</b> خوش آمدید! 🚀\n\nجهت خرید یا مدیریت سرویس‌های خود از منوی زیر استفاده نمایید:`;
+
+        if (isUserAdmin) {
+          welcome += `\n\n👑 <i>(شما به عنوان مدیر این ربات شناسایی شدید. گزینه «👑 پنل مدیریت ربات» برای شما فعال است.)</i>`;
+        }
 
         if (botCfg.logoUrl && /^https?:\/\//i.test(botCfg.logoUrl)) {
           try {
             await bot.sendPhoto(buyerChatId, botCfg.logoUrl, {
               caption: welcome,
               parse_mode: 'HTML',
-              reply_markup: getMainKeyboard(seller)
+              reply_markup: getMainKeyboard(seller, isUserAdmin)
             });
             return;
           } catch (e) {}
@@ -202,7 +237,7 @@ class ResellerBotManager {
 
         await bot.sendMessage(buyerChatId, welcome, {
           parse_mode: 'HTML',
-          reply_markup: getMainKeyboard(seller)
+          reply_markup: getMainKeyboard(seller, isUserAdmin)
         });
         return;
       }
@@ -499,7 +534,43 @@ class ResellerBotManager {
             }
           );
 
-          // Notify the Reseller in their Master Bot chat!
+          // 1. Notify the Partner Admin directly inside the Child Bot!
+          try {
+            const childAdminMsg = `🔔 <b>سفارش و رسید پرداخت جدید در ربات اختصاصی شما!</b>\n\n` +
+              `👤 مشتری: <b>${newOrder.buyerName}</b> (@${newOrder.buyerUsername || 'بدون آیدی'})\n` +
+              `🆔 شناسه مشتری: <code>${newOrder.buyerChatId}</code>\n` +
+              `📦 پکیج انتخابی: <b>${newOrder.productName}</b>\n` +
+              `💵 واریزی مشتری به کارت شما: <b>${newOrder.retailPrice.toLocaleString()} تومان</b>\n` +
+              `📉 هزینه عمده (کسر از بدهی): <b>${newOrder.wholesalePrice.toLocaleString()} تومان</b>\n` +
+              `💎 <b>سود خالص شما: ${newOrder.profit.toLocaleString()} تومان</b>\n\n` +
+              `جهت تایید و تحویل آنی کانفیگ به خریدار، روی دکمه زیر کلیک نمایید:`;
+
+            const adminInlineKeyboard = {
+              inline_keyboard: [
+                [
+                  { text: '✅ تایید و صدور آنی کانفیگ', callback_data: `child_approve_${orderId}` },
+                  { text: '❌ رد فیش', callback_data: `child_reject_${orderId}` }
+                ]
+              ]
+            };
+
+            if (largestPhoto && largestPhoto.file_id) {
+              await bot.sendPhoto(targetAdminChatId, largestPhoto.file_id, {
+                caption: childAdminMsg,
+                parse_mode: 'HTML',
+                reply_markup: adminInlineKeyboard
+              });
+            } else {
+              await bot.sendMessage(targetAdminChatId, childAdminMsg, {
+                parse_mode: 'HTML',
+                reply_markup: adminInlineKeyboard
+              });
+            }
+          } catch (childAdminErr) {
+            console.warn('[Reseller Bot Direct Admin Notify Error]', childAdminErr);
+          }
+
+          // 2. Also notify in Master Bot as additional safety
           try {
             const masterBotToken = db.getState().botToken;
             if (masterBotToken) {
@@ -542,6 +613,99 @@ class ResellerBotManager {
       const seller = db.getUser(sellerChatId);
       if (!seller || !seller.sellerBot) return;
       const botCfg = seller.sellerBot;
+      const targetAdminChatId = botCfg.adminChatId ? Number(botCfg.adminChatId) : sellerChatId;
+      const isFromAdmin = (buyerChatId === targetAdminChatId || buyerChatId === sellerChatId || Number(query.from.id) === targetAdminChatId || Number(query.from.id) === sellerChatId);
+
+      if (data.startsWith('child_approve_')) {
+        if (!isFromAdmin) {
+          await bot.answerCallbackQuery(query.id, { text: '⛔ شما دسترسی مدیریت این ربات را ندارید.' });
+          return;
+        }
+        const orderId = data.replace('child_approve_', '');
+        await bot.answerCallbackQuery(query.id, { text: 'در حال ساخت کانفیگ و تحویل به مشتری...' });
+        const fulfillRes = await this.fulfillResellerOrder(sellerChatId, orderId);
+        if (fulfillRes.success) {
+          await bot.sendMessage(
+            buyerChatId,
+            `✅ <b>سفارش ${orderId} با موفقیت تایید شد!</b>\n\nکانفیگ، لینک سابسکریپشن و QR Code بلافاصله در همین ربات برای مشتری ارسال گردید. 🎉`,
+            { parse_mode: 'HTML' }
+          );
+        } else {
+          await bot.sendMessage(
+            buyerChatId,
+            `⚠️ <b>خطا در تایید سفارش:</b> ${fulfillRes.message}`,
+            { parse_mode: 'HTML' }
+          );
+        }
+        return;
+      }
+
+      if (data.startsWith('child_reject_')) {
+        if (!isFromAdmin) {
+          await bot.answerCallbackQuery(query.id, { text: '⛔ شما دسترسی مدیریت این ربات را ندارید.' });
+          return;
+        }
+        const orderId = data.replace('child_reject_', '');
+        await bot.answerCallbackQuery(query.id, { text: 'سفارش رد شد.' });
+        await this.rejectResellerOrder(sellerChatId, orderId, 'فیش واریزی توسط مدیریت فروشگاه تایید نشد.');
+        await bot.sendMessage(
+          buyerChatId,
+          `❌ سفارش ${orderId} رد شد و به مشتری اطلاع‌رسانی گردید.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      if (data === 'admin_view_pending') {
+        if (!isFromAdmin) {
+          await bot.answerCallbackQuery(query.id, { text: '⛔ عدم دسترسی.' });
+          return;
+        }
+        const pendings = (botCfg.orders || []).filter(o => o.status === 'pending');
+        if (pendings.length === 0) {
+          await bot.answerCallbackQuery(query.id, { text: 'هیچ سفارش معلقی وجود ندارد.' });
+          return;
+        }
+        await bot.answerCallbackQuery(query.id);
+        for (const p of pendings.slice(0, 5)) {
+          const pMsg = `⏳ <b>سفارش معلق:</b>\n` +
+            `🆔 شناسه: <code>${p.id}</code>\n` +
+            `👤 مشتری: ${p.buyerName} (@${p.buyerUsername || 'بدون آیدی'})\n` +
+            `📦 پکیج: <b>${p.productName}</b>\n` +
+            `💵 مبلغ: <b>${p.retailPrice.toLocaleString()} تومان</b>\n` +
+            `💎 سود شما: <b>${p.profit.toLocaleString()} تومان</b>`;
+          const kbd = {
+            inline_keyboard: [[
+              { text: '✅ تایید و صدور آنی', callback_data: `child_approve_${p.id}` },
+              { text: '❌ رد سفارش', callback_data: `child_reject_${p.id}` }
+            ]]
+          };
+          if (p.receiptFileId) {
+            await bot.sendPhoto(buyerChatId, p.receiptFileId, { caption: pMsg, parse_mode: 'HTML', reply_markup: kbd }).catch(() => {});
+          } else {
+            await bot.sendMessage(buyerChatId, pMsg, { parse_mode: 'HTML', reply_markup: kbd }).catch(() => {});
+          }
+        }
+        return;
+      }
+
+      if (data === 'admin_refresh_stats') {
+        if (!isFromAdmin) {
+          await bot.answerCallbackQuery(query.id, { text: '⛔ عدم دسترسی.' });
+          return;
+        }
+        await bot.answerCallbackQuery(query.id, { text: 'آمار به‌روزرسانی شد.' });
+        const pendingOrders = (botCfg.orders || []).filter(o => o.status === 'pending');
+        const adminMsg = `👑 <b>پنل مدیریت ربات اختصاصی (${botCfg.botName || 'فروشگاه'})</b>\n\n` +
+          `👤 <b>مدیر ربات:</b> <code>${buyerChatId}</code>\n` +
+          `👥 <b>کل خریداران:</b> <b>${(botCfg.buyers || []).length} نفر</b>\n` +
+          `📦 <b>کل سفارشات:</b> <b>${(botCfg.orders || []).length} سفارش</b>\n` +
+          `⏳ <b>سفارشات معلق فیش:</b> <b>${pendingOrders.length} مورد</b>\n` +
+          `💵 <b>فروش ناخالص:</b> <b>${(botCfg.totalRevenueToman || 0).toLocaleString()} تومان</b>\n` +
+          `💎 <b>سود خالص شما:</b> <b>${(botCfg.totalProfitToman || 0).toLocaleString()} تومان</b>`;
+        await bot.sendMessage(buyerChatId, adminMsg, { parse_mode: 'HTML' });
+        return;
+      }
 
       if (data === 'back_main') {
         this.userSessionStates.delete(sessionKey);
@@ -549,7 +713,7 @@ class ResellerBotManager {
         await bot.sendMessage(
           buyerChatId,
           `به منوی اصلی ${botCfg.botName || ''} بازگشتید. لطفاً گزینه مورد نظر را انتخاب نمایید:`,
-          { reply_markup: getMainKeyboard(seller) }
+          { reply_markup: getMainKeyboard(seller, isFromAdmin) }
         );
         return;
       }

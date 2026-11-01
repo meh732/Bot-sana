@@ -77,6 +77,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
     enabled: false,
     botToken: '',
     botName: '',
+    adminChatId: '',
     logoUrl: '',
     welcomeMessage: '',
     supportUsername: '',
@@ -2388,6 +2389,38 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                     <p className="text-[11px] text-slate-400">
                       💡 <b>آموزش سریع:</b> در تلگرام به <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-cyan-400 underline">BotFather@</a> پیام دهید، دستور <code>/newbot</code> را بفرستید، نام و آیدی ربات دلخواهتان را مشخص کنید، و توکنی که می‌دهد را اینجا کپی کنید.
                     </p>
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2 bg-gradient-to-r from-amber-500/10 via-slate-950 to-slate-950 p-4 rounded-2xl border border-amber-500/30">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
+                        <Key className="w-4 h-4 text-amber-400" />
+                        <span>شناسه عددی تلگرام مدیر ربات (Chat ID ادمین همکار):</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setBotConfig({ ...botConfig, adminChatId: chatId })}
+                        className="text-[11px] text-amber-300 hover:text-amber-200 transition flex items-center gap-1 bg-amber-500/20 hover:bg-amber-500/30 px-3 py-1 rounded-xl border border-amber-500/40 font-semibold"
+                      >
+                        <span>تنظیم خودکار شناسه من ({chatId})</span>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={botConfig.adminChatId || ''}
+                      onChange={(e) => setBotConfig({ ...botConfig, adminChatId: e.target.value.trim() })}
+                      placeholder={chatId || "مثال: 7314628134"}
+                      dir="ltr"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl p-3 text-xs text-amber-300 font-mono outline-none transition"
+                    />
+                    <div className="text-[11px] text-slate-300 leading-relaxed space-y-1">
+                      <p>
+                        ⚡ <b>کاربرد این شناسه:</b> تمام اعلان‌های سفارش مشتریان، عکس فیش‌های واریزی و دکمه‌های تایید/رد آنی فیش مستقیماً به این حساب تلگرام ارسال می‌شود. همچنین در ربات به منوی مدیریت و دستور <code>/admin</code> دسترسی انحصاری خواهد داشت.
+                      </p>
+                      <p className="text-slate-400">
+                        💡 اگر خالی بگذارید، به طور پیش‌فرض از شناسه اکانت همکار شما (<code>{chatId}</code>) استفاده می‌شود. برای دریافت شناسه عددی هر اکانت دیگر، در تلگرام به <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" className="text-cyan-400 underline">userinfobot@</a> پیام دهید.
+                      </p>
+                    </div>
                   </div>
 
                   <div className="space-y-1.5">
