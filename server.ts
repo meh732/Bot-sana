@@ -87,11 +87,8 @@ async function startServer() {
     });
   }
 
-  // Init Telegram Bot & Synchronize Seller Financials
-  initBot();
-  syncAllUsersAndSellersFinancials().catch(err => {
-    console.error('[Startup Financials Sync Error]', err.message);
-  });
+  // Note: Telegram Bot & Reseller Bots are initialized inside app.listen() after port binding succeeds
+  // to prevent duplicate instances from hijacking Telegram polling if port is already bound.
 
   // ----- Admin API ----- //
   const api = express.Router();
@@ -2030,17 +2027,32 @@ async function startServer() {
       };
 
       db.saveUser(user);
+      db.saveImmediate();
 
-      let botStartResult: any = { success: true, message: 'تنظیمات ذخیره شد.' };
+      let botStartResult: any = { success: true, message: 'تنظیمات ربات اختصاصی با موفقیت ذخیره شد.' };
       if (user.sellerBot.enabled && user.sellerBot.botToken) {
         botStartResult = await resellerBotManager.startResellerBot(chatId);
+        if (!botStartResult.success) {
+          user.sellerBot.enabled = false;
+          db.saveUser(user);
+          db.saveImmediate();
+        }
       } else {
         await resellerBotManager.stopResellerBot(chatId);
+        if (user.sellerBot.enabled && !user.sellerBot.botToken) {
+          user.sellerBot.enabled = false;
+          db.saveUser(user);
+          db.saveImmediate();
+          botStartResult = {
+            success: false,
+            message: 'لطفاً ابتدا توکن ربات تلگرام (Bot Token دریافتی از @BotFather) را در کادر مربوطه وارد نمایید.'
+          };
+        }
       }
 
       const status = resellerBotManager.getBotStatus(chatId);
       res.json({
-        success: true,
+        success: botStartResult.success !== false,
         message: botStartResult.message || 'تنظیمات ربات اختصاصی با موفقیت ذخیره شد.',
         botUsername: user.sellerBot.botUsername,
         status,
@@ -3027,9 +3039,20 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    initBot();
+    syncAllUsersAndSellersFinancials().catch(err => {
+      console.error('[Startup Financials Sync Error]', err.message);
+    });
     resellerBotManager.initAllResellerBots().catch(console.error);
+  });
+
+  httpServer.on('error', (err: any) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`[Server] Port ${PORT} is already in use by another instance. Exiting duplicate process cleanly.`);
+      process.exit(1);
+    }
   });
 }
 

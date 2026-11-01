@@ -10,7 +10,8 @@ fi
 
 # Free cached memory if running as root on VPS
 if [ "$EUID" -eq 0 ] && [ -f "/proc/sys/vm/drop_caches" ]; then
-  # Stop old bot process first during build so memory is 100% available
+  # Stop PM2 and old bot process first during build so PM2 doesn't respawn it mid-build
+  pm2 stop all 2>/dev/null || true
   pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
   sync 2>/dev/null || true
   echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
@@ -69,8 +70,7 @@ GOMAXPROCS=1 GOGC=30 $ESBUILD_BIN ./server.ts \
 
 echo "✅ Ultra-fast build completed in < 2 seconds!"
 
-# 5. If running on Linux VPS (/root/sanaei-bot or /root/Bot-sana), spawn a self-healing background watchdog
-# so even if an old install.sh menu kills pm2 start, the server is guaranteed to come online on its port!
+# 5. If running on Linux VPS, ensure at least one server.cjs process is running after 12s
 if [ "$EUID" -eq 0 ] && { [ -d "/root/sanaei-bot" ] || [ -d "/root/Bot-sana" ]; }; then
   WORK_DIR="$(pwd -P 2>/dev/null || pwd)"
   PORT_VAL=2121
@@ -80,34 +80,10 @@ if [ "$EUID" -eq 0 ] && { [ -d "/root/sanaei-bot" ] || [ -d "/root/Bot-sana" ]; 
       PORT_VAL="$ENV_PORT"
     fi
   fi
-
-  # Create/update systemd service as an immortal zero-RAM supervisor backup
   NODE_BIN=$(command -v node || echo "/usr/bin/node")
-  cat > /etc/systemd/system/sanaei-bot-fallback.service << EOF
-[Unit]
-Description=Sanaei Bot & Panel Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${WORK_DIR}
-Environment=PORT=${PORT_VAL}
-Environment=NODE_ENV=production
-Environment=NODE_OPTIONS=--max-old-space-size=400
-ExecStart=${NODE_BIN} ${WORK_DIR}/dist/server.cjs
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload 2>/dev/null || true
-
-  # Self-healing watchdog: check after 6s if port is listening; if PM2 failed/was killed, start fallback service
   (
-    sleep 6
-    if ! lsof -i:${PORT_VAL} >/dev/null 2>&1 && ! ss -tlnp 2>/dev/null | grep -q ":${PORT_VAL} "; then
+    sleep 12
+    if ! pgrep -f "dist/server\.cjs" >/dev/null 2>&1; then
       PORT=${PORT_VAL} NODE_ENV=production nohup ${NODE_BIN} --max-old-space-size=400 "${WORK_DIR}/dist/server.cjs" > "${WORK_DIR}/bot_output.log" 2>&1 &
     fi
   ) >/dev/null 2>&1 &

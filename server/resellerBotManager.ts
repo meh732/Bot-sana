@@ -73,27 +73,43 @@ class ResellerBotManager {
 
     let bot: TelegramBot | null = null;
     try {
-      // Create bot with polling disabled first so we can verify token and attach error listeners safely
-      bot = new TelegramBot(token, { polling: false });
+      // Configure polling options in constructor with autoStart: false so error listeners are attached first
+      bot = new TelegramBot(token, {
+        polling: {
+          interval: 400,
+          autoStart: false,
+          params: {
+            timeout: 10,
+            allowed_updates: ['message', 'callback_query']
+          }
+        }
+      });
 
       this.attachBotHandlers(bot, sellerChatId);
 
-      await (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
-
-      // Verify token with Telegram before starting polling
-      const me = await bot.getMe();
-      const botUsername = me.username || '';
+      // Verify token with Telegram using a 7-second timeout so slow networks never hang the HTTP response
+      const me = await Promise.race([
+        bot.getMe(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('مهلت اتصال به تلگرام به پایان رسید (Timeout). لطفاً اتصال سرور به تلگرام یا صحت توکن را بررسی نمایید.')), 7000)
+        )
+      ]);
+      const botUsername = me?.username || '';
 
       user.sellerBot.botUsername = botUsername;
       db.saveUser(user);
+      db.saveImmediate();
 
-      await bot.startPolling({
-        polling: {
-          interval: 400,
-          autoStart: true,
-          params: { timeout: 10 }
-        }
-      } as any);
+      // Delete any stale webhook in background and start polling without blocking HTTP response
+      (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
+      bot.startPolling().catch((pollErr: any) => {
+        console.warn(`[ResellerBot @${sellerChatId}] Initial startPolling warning:`, pollErr?.message || pollErr);
+      });
+
+      bot.setMyCommands([
+        { command: '/start', description: 'منوی اصلی فروشگاه' },
+        { command: '/admin', description: 'پنل مدیریت ربات (ویژه ادمین)' }
+      ]).catch(() => {});
 
       this.activeBots.set(sellerChatId, {
         bot,
@@ -106,13 +122,16 @@ class ResellerBotManager {
       return {
         success: true,
         username: botUsername,
-        message: `ربات اختصاصی شما (@${botUsername}) با موفقیت روشن شد و آنلاین است.`
+        message: `ربات اختصاصی شما (@${botUsername}) با موفقیت روشن شد و هم‌اکنون آنلاین است.`
       };
     } catch (err: any) {
       if (bot) {
         try {
-          await bot.stopPolling({ cancel: true });
-          bot.removeAllListeners();
+          bot.removeAllListeners('message');
+          bot.removeAllListeners('callback_query');
+          bot.on('error', () => {});
+          bot.on('polling_error', () => {});
+          await bot.stopPolling();
         } catch (e) {}
       }
       console.error(`[ResellerBotManager] Error launching bot for seller ${sellerChatId}:`, err?.message || err);
@@ -129,11 +148,14 @@ class ResellerBotManager {
   public async stopResellerBot(sellerChatId: number): Promise<boolean> {
     const record = this.activeBots.get(sellerChatId);
     if (record) {
-      try {
-        await record.bot.stopPolling({ cancel: true });
-        record.bot.removeAllListeners();
-      } catch (e) {}
       this.activeBots.delete(sellerChatId);
+      try {
+        record.bot.removeAllListeners('message');
+        record.bot.removeAllListeners('callback_query');
+        record.bot.on('error', () => {});
+        record.bot.on('polling_error', () => {});
+        await record.bot.stopPolling();
+      } catch (e) {}
       console.log(`[ResellerBotManager] Stopped bot for seller ${sellerChatId}`);
       return true;
     }

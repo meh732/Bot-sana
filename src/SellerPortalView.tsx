@@ -310,9 +310,23 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
     }
   };
 
-  const handleSaveBotConfig = async (e?: React.FormEvent) => {
+  const handleSaveBotConfig = async (e?: React.FormEvent, overrideConfig?: any) => {
     if (e) e.preventDefault();
-    if (!chatId || !botConfig) return;
+    const baseConfig = overrideConfig || botConfig;
+    if (!chatId || !baseConfig) return;
+
+    const cleanToken = String(baseConfig.botToken || '').trim();
+    // If clicked via the form submit button ("ذخیره تنظیمات و آنلاین‌سازی ربات") and a token is provided, automatically enable the bot
+    const payloadConfig = overrideConfig
+      ? { ...baseConfig, botToken: cleanToken }
+      : { ...baseConfig, botToken: cleanToken, enabled: cleanToken ? true : !!baseConfig.enabled };
+
+    if (payloadConfig.enabled && !cleanToken) {
+      setBotSaveErrorMsg('لطفاً ابتدا در کادر شماره ۱، «توکن ربات تلگرام (Bot Token)» دریافتی از @BotFather را وارد نمایید.');
+      setBotSaveSuccessMsg('');
+      return;
+    }
+
     setSavingBotConfig(true);
     setBotSaveSuccessMsg('');
     setBotSaveErrorMsg('');
@@ -320,19 +334,25 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       const res = await fetch(`/api/seller-portal/bot-config/${chatId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(botConfig)
+        body: JSON.stringify(payloadConfig)
       });
       const data = await res.json();
+      if (data.status) setBotStatus(data.status);
+      if (data.sellerBot) {
+        setBotConfig({
+          ...data.sellerBot,
+          customRetailPrices: data.sellerBot.customRetailPrices || {},
+          adminChatId: data.sellerBot.adminChatId || ''
+        });
+      }
       if (data.success) {
         setBotSaveSuccessMsg(data.message || 'تنظیمات ربات اختصاصی با موفقیت ذخیره و اعمال شد.');
-        if (data.status) setBotStatus(data.status);
-        if (data.sellerBot) setBotConfig(data.sellerBot);
         fetchBotConfig(chatId);
       } else {
-        setBotSaveErrorMsg(data.message || 'خطا در ذخیره تنظیمات ربات.');
+        setBotSaveErrorMsg(data.message || 'خطا در راه‌اندازی یا ذخیره تنظیمات ربات.');
       }
     } catch (err: any) {
-      setBotSaveErrorMsg('خطا در برقراری ارتباط با سرور.');
+      setBotSaveErrorMsg('خطا در برقراری ارتباط با سرور. لطفاً چند ثانیه صبر کرده و مجدداً تلاش کنید.');
     } finally {
       setSavingBotConfig(false);
     }
@@ -2329,20 +2349,28 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   )}
 
                   <button
+                    type="button"
                     onClick={() => {
-                      const nextEnabled = !botConfig.enabled;
-                      setBotConfig((prev: any) => ({ ...prev, enabled: nextEnabled }));
-                      setTimeout(() => handleSaveBotConfig(), 50);
+                      const isCurrentlyActive = !!(botStatus.isOnline || botConfig.enabled);
+                      const nextEnabled = !isCurrentlyActive;
+                      if (nextEnabled && !String(botConfig.botToken || '').trim()) {
+                        setBotSaveErrorMsg('لطفاً ابتدا در کادر زیر «توکن ربات تلگرام (Bot Token)» دریافتی از @BotFather را وارد نمایید و سپس دکمه روشن کردن ربات را بزنید.');
+                        setBotSaveSuccessMsg('');
+                        return;
+                      }
+                      const updatedCfg = { ...botConfig, enabled: nextEnabled };
+                      setBotConfig(updatedCfg);
+                      handleSaveBotConfig(undefined, updatedCfg);
                     }}
                     disabled={savingBotConfig}
                     className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                      botConfig.enabled
+                      (botStatus.isOnline || botConfig.enabled)
                         ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30'
                         : 'bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold shadow-lg shadow-emerald-500/20'
                     }`}
                   >
                     <Power className="w-3.5 h-3.5" />
-                    <span>{botConfig.enabled ? 'خاموش کردن ربات' : 'روشن کردن ربات'}</span>
+                    <span>{(botStatus.isOnline || botConfig.enabled) ? 'خاموش کردن ربات' : 'روشن کردن ربات'}</span>
                   </button>
                 </div>
               </div>
