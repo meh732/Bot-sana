@@ -477,6 +477,7 @@ export async function executeSellerCustomVolumePurchase(params: {
   if (bot) {
     const headerMsg = source === 'api' 
       ? `🔌 <b>سفارش حجم دلخواه از طریق وب‌سرویس API (ربات متصل همکار)</b>`
+      : `⚡ <b>سفارش حجم دلخواه همکار ثبت شد</b>`;
     const mainLink = newPurchase.subUrl || newPurchase.panel4SubUrl || newPurchase.mroceanSubUrl || newPurchase.sanaeiSubUrl || newPurchase.rebeccaSubUrl || '';
     const notifyMsg = `${headerMsg}\n\n` +
       `📦 <b>سرویس:</b> ${newPurchase.name}\n` +
