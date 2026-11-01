@@ -2001,9 +2001,25 @@ async function startServer() {
       }
     }
 
-    const seller = (state.users || []).find(
-      (u) => u.isSeller && u.apiKey && u.apiKey.trim() === apiKey
+    let seller = (state.users || []).find(
+      (u) => u.isSeller && u.apiKey && u.apiKey.trim() === apiKey.trim()
     );
+
+    // Smart Fallback: If not matched directly by exact string, check if apiKey contains the seller's chatId
+    if (!seller && apiKey.startsWith('sk_seller_')) {
+      const parts = apiKey.split('_');
+      const chatIdNum = parseInt(parts[2]);
+      if (!isNaN(chatIdNum)) {
+        const candidate = (state.users || []).find((u) => u.chatId === chatIdNum && u.isSeller);
+        if (candidate) {
+          console.log(`[Seller API] Matched seller ${chatIdNum} via chatId in key format, syncing apiKey...`);
+          candidate.apiKey = apiKey.trim();
+          candidate.apiEnabled = true;
+          db.saveUser(candidate);
+          seller = candidate;
+        }
+      }
+    }
 
     if (!seller) {
       res.status(401).json({
@@ -2197,6 +2213,23 @@ async function startServer() {
   };
 
   const handleProviderProductsRequest = (req: express.Request, res: express.Response) => {
+    const params = { ...(req.query || {}), ...(req.body || {}) } as any;
+    const action = String(params.action || params.method || params.type || '').toLowerCase().trim();
+    if (
+      action === 'buy' || action === 'purchase' || action === 'order' || action === 'create' || action === 'new' ||
+      (req.method === 'POST' && (
+        params.productId || params.product_id || params.product ||
+        params.planId || params.plan_id || params.plan ||
+        params.serviceId || params.service_id || params.service ||
+        params.tariffId || params.tariff_id || params.tariff ||
+        params.packageId || params.package_id || params.package ||
+        params.itemId || params.item_id || params.item ||
+        params.volumeGb || params.volume_gb || params.volume
+      ))
+    ) {
+      return handleProviderPurchaseRequest(req, res);
+    }
+
     const seller = authenticateSellerApi(req, res);
     if (!seller) return;
 

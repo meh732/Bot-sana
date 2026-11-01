@@ -380,8 +380,14 @@ do_update() {
   fi
 
   # 4. Rebuild project to compile newly pulled frontend & backend changes
-  echo -e "\n${CYAN}>> Compiling latest updates (npm run build)...${NC}"
-  npm run build 2>/dev/null || (npx vite build && npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs)
+  echo -e "\n${CYAN}>> Compiling latest updates...${NC}"
+  if [ -f "dist/index.html" ]; then
+    echo -e "${GREEN}⚡ Pre-built frontend bundle verified. Compiling backend with esbuild (Fast & Low RAM)...${NC}"
+    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || npm run build
+  else
+    echo -e "${YELLOW}ℹ️ Compiling full frontend and backend...${NC}"
+    NODE_OPTIONS="--max-old-space-size=400" npm run build
+  fi
 
   echo -e "\n${CYAN}>> Restarting bot service with PM2...${NC}"
   # Completely kill stale PM2 daemon and clear stale socket files
