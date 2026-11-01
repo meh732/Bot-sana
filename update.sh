@@ -144,14 +144,8 @@ if [ ! -f "package.json" ]; then
 fi
 
 # 4. Rebuild project to compile newly pulled frontend & backend changes
-echo -e "\n${YELLOW}🔹 4. Compiling latest updates...${NC}"
-if [ -f "dist/index.html" ]; then
-    echo -e "${GREEN}⚡ Pre-built frontend bundle verified. Compiling backend with esbuild (Fast & Low RAM)...${NC}"
-    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || npm run build
-else
-    echo -e "${YELLOW}ℹ️ Compiling full frontend and backend...${NC}"
-    NODE_OPTIONS="--max-old-space-size=400" npm run build
-fi
+echo -e "\n${YELLOW}🔹 4. Compiling latest updates (Frontend & Backend)...${NC}"
+NODE_OPTIONS="--max-old-space-size=400" npm run build
 
 # 5. Restart application service cleanly
 echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
