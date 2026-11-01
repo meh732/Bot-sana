@@ -98,6 +98,8 @@ export interface SellerDiscountRule {
 export interface Purchase {
   id: string;
   name: string;
+  productId?: string;
+  customName?: string;
   price: number;
   subId?: string;
   subUrl: string;
@@ -155,7 +157,7 @@ export interface SellerBotOrder {
   buyerChatId: number;
   buyerUsername?: string;
   buyerName?: string;
-  type: 'product' | 'custom_volume' | 'free_test';
+  type: 'product' | 'custom_volume' | 'free_test' | 'renew' | 'deposit';
   productId?: string;
   productName?: string;
   volumeGb?: number;
@@ -164,6 +166,7 @@ export interface SellerBotOrder {
   wholesalePrice: number;
   profit: number;
   customName?: string;
+  targetOrderId?: string;
   receiptBase64?: string;
   receiptFileId?: string;
   status: 'pending' | 'approved' | 'rejected';
@@ -193,7 +196,7 @@ export interface SellerBotConfig {
   freeTestVolumeGb?: number;
   freeTestDurationDays?: number;
   orders?: SellerBotOrder[];
-  buyers?: { chatId: number; username?: string; name?: string; joinedAt: string; testUsed?: boolean }[];
+  buyers?: { chatId: number; username?: string; name?: string; joinedAt: string; testUsed?: boolean; balance?: number }[];
   totalRevenueToman?: number;
   totalWholesaleCostToman?: number;
   totalProfitToman?: number;
