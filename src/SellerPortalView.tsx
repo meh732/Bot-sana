@@ -36,7 +36,8 @@ import {
   Key,
   Info,
   Bot,
-  Power
+  Power,
+  Save
 } from 'lucide-react';
 
 interface SellerPortalProps {
@@ -281,10 +282,26 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
       const res = await fetch(`/api/seller-portal/bot-config/${targetId}`);
       const data = await res.json();
       if (data.success) {
-        if (data.sellerBot) setBotConfig(data.sellerBot);
-        if (data.status) setBotStatus(data.status);
-        if (data.products) setBotProducts(data.products);
-        if (data.customVolume) setBotCustomVolume(data.customVolume);
+        if (data.sellerBot) {
+          setBotConfig({
+            ...data.sellerBot,
+            customRetailPrices: data.sellerBot.customRetailPrices || {},
+            adminChatId: data.sellerBot.adminChatId || ''
+          });
+        }
+        if (data.status) {
+          setBotStatus({
+            isOnline: !!data.status.isOnline,
+            botUsername: data.status.botUsername || '',
+            buyersCount: data.status.buyersCount || 0,
+            ordersCount: data.status.ordersCount || 0,
+            pendingOrdersCount: data.status.pendingOrdersCount || 0,
+            totalRevenue: data.status.totalRevenue || 0,
+            totalProfit: data.status.totalProfit || 0
+          });
+        }
+        if (data.products) setBotProducts(Array.isArray(data.products) ? data.products : []);
+        if (data.customVolume) setBotCustomVolume(data.customVolume || { wholesalePricePerGb: 3000 });
       }
     } catch (e) {
       console.error('Error fetching reseller bot config', e);
@@ -2557,44 +2574,53 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-vazir">
-                      {botProducts.map((p) => {
-                        const retailVal = botConfig.customRetailPrices?.[p.id] !== undefined
-                          ? botConfig.customRetailPrices[p.id]
-                          : p.retailPrice;
-                        const profitVal = Math.max(0, retailVal - p.wholesalePrice);
+                      {(!botProducts || botProducts.length === 0) ? (
+                        <tr>
+                          <td colSpan={5} className="py-6 text-center text-slate-500">
+                            در حال بارگذاری یا هیچ محصول فعالی یافت نشد.
+                          </td>
+                        </tr>
+                      ) : (
+                        botProducts.map((p) => {
+                          const wholesale = Number(p.wholesalePrice) || 0;
+                          const retailVal = (botConfig?.customRetailPrices && botConfig.customRetailPrices[p.id] !== undefined)
+                            ? Number(botConfig.customRetailPrices[p.id])
+                            : Number(p.retailPrice) || wholesale;
+                          const profitVal = Math.max(0, retailVal - wholesale);
 
-                        return (
-                          <tr key={p.id} className="hover:bg-slate-800/40 transition">
-                            <td className="py-3 px-3 font-bold text-slate-200">{p.name}</td>
-                            <td className="py-3 px-3 text-slate-400 font-mono text-[11px]">
-                              {p.volumeGb} GB / {p.durationDays ? `${p.durationDays} روز` : 'نامحدود'}
-                            </td>
-                            <td className="py-3 px-3 font-mono text-slate-300">
-                              {p.wholesalePrice.toLocaleString()} ت
-                            </td>
-                            <td className="py-3 px-3">
-                              <input
-                                type="number"
-                                value={retailVal || ''}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value) || 0;
-                                  setBotConfig((prev: any) => ({
-                                    ...prev,
-                                    customRetailPrices: {
-                                      ...(prev.customRetailPrices || {}),
-                                      [p.id]: val
-                                    }
-                                  }));
-                                }}
-                                className="w-36 bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-xl px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold outline-none"
-                              />
-                            </td>
-                            <td className="py-3 px-3 text-left font-mono font-bold text-emerald-400">
-                              +{profitVal.toLocaleString()} تومان
-                            </td>
-                          </tr>
-                        );
-                      })}
+                          return (
+                            <tr key={p.id} className="hover:bg-slate-800/40 transition">
+                              <td className="py-3 px-3 font-bold text-slate-200">{p.name}</td>
+                              <td className="py-3 px-3 text-slate-400 font-mono text-[11px]">
+                                {p.volumeGb} GB / {p.durationDays ? `${p.durationDays} روز` : 'نامحدود'}
+                              </td>
+                              <td className="py-3 px-3 font-mono text-slate-300">
+                                {wholesale.toLocaleString()} ت
+                              </td>
+                              <td className="py-3 px-3">
+                                <input
+                                  type="number"
+                                  value={retailVal || ''}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    setBotConfig((prev: any) => ({
+                                      ...prev,
+                                      customRetailPrices: {
+                                        ...(prev?.customRetailPrices || {}),
+                                        [p.id]: val
+                                      }
+                                    }));
+                                  }}
+                                  className="w-36 bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-xl px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold outline-none"
+                                />
+                              </td>
+                              <td className="py-3 px-3 text-left font-mono font-bold text-emerald-400">
+                                +{profitVal.toLocaleString()} تومان
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -2604,19 +2630,19 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   <div>
                     <h5 className="text-xs font-bold text-slate-200">⚡ نرخ فروش هر گیگابایت در سفارش حجم دلخواه:</h5>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      قیمت عمده خرید هر گیگابایت شما: <b>{botCustomVolume.wholesalePricePerGb?.toLocaleString()} تومان</b>
+                      قیمت عمده خرید هر گیگابایت شما: <b>{((botCustomVolume && botCustomVolume.wholesalePricePerGb) || 0).toLocaleString()} تومان</b>
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
                     <label className="text-xs text-slate-400">نرخ فروش شما به مشتری:</label>
                     <input
                       type="number"
-                      value={botConfig.customVolumeRetailPricePerGb || ''}
+                      value={botConfig?.customVolumeRetailPricePerGb || ''}
                       onChange={(e) => setBotConfig({ ...botConfig, customVolumeRetailPricePerGb: parseInt(e.target.value) || 0 })}
                       className="w-32 bg-slate-900 border border-slate-700 focus:border-emerald-400 rounded-xl px-3 py-1.5 text-xs text-emerald-400 font-mono font-bold outline-none"
                     />
                     <span className="text-xs text-emerald-400 font-mono font-bold">
-                      سود: +{Math.max(0, (botConfig.customVolumeRetailPricePerGb || 0) - (botCustomVolume.wholesalePricePerGb || 0)).toLocaleString()} ت/گیگ
+                      سود: +{Math.max(0, (botConfig?.customVolumeRetailPricePerGb || 0) - ((botCustomVolume && botCustomVolume.wholesalePricePerGb) || 0)).toLocaleString()} ت/گیگ
                     </span>
                   </div>
                 </div>

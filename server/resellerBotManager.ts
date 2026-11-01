@@ -461,8 +461,8 @@ class ResellerBotManager {
           }
         });
 
-        const cardNum = botCfg.cardNumber || seller.cardNumber || state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
-        const cardHolder = botCfg.cardHolder || seller.cardHolder || state.cardHolder || 'مدیر فروشگاه';
+        const cardNum = botCfg.cardNumber || (seller as any).cardNumber || state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
+        const cardHolder = botCfg.cardHolder || (seller as any).cardHolder || state.cardHolder || 'مدیر فروشگاه';
 
         await bot.sendMessage(
           buyerChatId,
@@ -745,8 +745,8 @@ class ResellerBotManager {
           }
         });
 
-        const cardNum = botCfg.cardNumber || seller.cardNumber || state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
-        const cardHolder = botCfg.cardHolder || seller.cardHolder || state.cardHolder || 'مدیر فروشگاه';
+        const cardNum = botCfg.cardNumber || (seller as any).cardNumber || state.cardNumber || '۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸';
+        const cardHolder = botCfg.cardHolder || (seller as any).cardHolder || state.cardHolder || 'مدیر فروشگاه';
 
         const paymentMsg = `💳 <b>فاکتور خرید ${product.name}:</b>\n\n` +
           `📊 حجم: <b>${product.volumeGb} گیگابایت</b>\n` +
@@ -828,7 +828,8 @@ class ResellerBotManager {
       db.saveUser(seller);
 
       // Send config and QR code to the buyer in the child bot
-      if (childBot && configLink) {
+      const targetBot = childBot || (seller.sellerBot?.botToken ? new TelegramBot(seller.sellerBot.botToken) : null);
+      if (targetBot && configLink) {
         try {
           const qrBuffer = await QRCode.toBuffer(configLink, { width: 400, margin: 2 });
           const buyerDeliveryMsg = `🎉 <b>سرویس اختصاصی شما با موفقیت فعال و صادر شد!</b>\n\n` +
@@ -841,13 +842,13 @@ class ResellerBotManager {
             `۲. در برنامه (v2rayNG / Mahsa / Streisand / V2Box / Nekobox) دکمه <b>+</b> را زده و <b>Import from Clipboard</b> را انتخاب کنید.\n` +
             `۳. سرورها ظاهر می‌شوند و می‌توانید متصل شوید!`;
 
-          await childBot.sendPhoto(order.buyerChatId, qrBuffer, {
+          await targetBot.sendPhoto(order.buyerChatId, qrBuffer, {
             caption: buyerDeliveryMsg,
             parse_mode: 'HTML'
           });
         } catch (deliveryErr) {
           console.error('[Reseller Bot Buyer Delivery Error]', deliveryErr);
-          await childBot.sendMessage(order.buyerChatId, `🎉 سرویس شما صادر شد:\n<code>${configLink}</code>`, { parse_mode: 'HTML' });
+          await targetBot.sendMessage(order.buyerChatId, `🎉 سرویس شما صادر شد:\n<code>${configLink}</code>`, { parse_mode: 'HTML' });
         }
       }
 
