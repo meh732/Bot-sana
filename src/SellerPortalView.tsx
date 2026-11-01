@@ -1937,6 +1937,29 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   📌 <strong>توضیح:</strong> این همان لینکی است که باید در بخش «افزودن ارائه‌دهنده» در ربات تلگرام وارد کنید. شامل تمام محصولات با فیلدهای <span className="font-mono text-slate-200">name, category, price, description</span>.
                 </p>
 
+                <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-amber-300">💡 مخصوص ربات‌های دومرحله‌ای (مثل کانفیگ‌هاب Config Hub):</span>
+                    <button
+                      onClick={() => {
+                        const url = `${window.location.origin}/api/provider`;
+                        navigator.clipboard.writeText(url);
+                        alert('✅ لینک پایه کپی شد. در مرحله اول این لینک، و در مرحله بعد کد API را بفرستید.');
+                      }}
+                      className="text-xs text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>کپی لینک پایه</span>
+                    </button>
+                  </div>
+                  <code className="block bg-slate-950 border border-amber-500/30 p-2.5 rounded-xl font-mono text-[11px] text-amber-300 select-all text-left overflow-x-auto break-all" dir="ltr">
+                    {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/provider`}
+                  </code>
+                  <p className="text-[10px] text-slate-400">
+                    مرحله ۱ (لینک): لینک بالا را بفرستید | مرحله ۲ (کد): کلید API خود را بفرستید.
+                  </p>
+                </div>
+
                 <div className="pt-2 border-t border-slate-800/80">
                   <span className="text-[10px] text-slate-500 block mb-1">فرمت جایگزین برای ربات‌هایی که مستقیماً آرایه [...] می‌خواهند:</span>
                   <div className="flex items-center justify-between bg-slate-950 p-2 rounded-xl border border-slate-800/80">

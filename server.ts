@@ -47,8 +47,23 @@ async function startServer() {
   // Optional Basic Auth for Admin routes (excluding seller-portal)
   if (process.env.PANEL_USERNAME && process.env.PANEL_PASSWORD) {
     app.use('/api', (req, res, next) => {
-      // Exclude seller portal and external reseller/provider API endpoints from admin basic auth
-      if (req.path.startsWith('/seller-portal') || req.path.startsWith('/v1/reseller') || req.path.startsWith('/provider')) {
+      // Exclude seller portal, external reseller/provider API endpoints, and any request with API key from admin basic auth
+      const hasApiKey = !!(
+        req.query.key || req.query.api_key || req.query.apiKey || req.query.token || req.query.code ||
+        req.headers['x-api-key'] || req.headers['api-key'] || req.headers['apikey'] ||
+        req.headers['token'] || req.headers['Token' as any] || req.headers['auth'] ||
+        (req.headers.authorization && !req.headers.authorization.toLowerCase().startsWith('basic '))
+      );
+
+      if (
+        hasApiKey ||
+        req.path.startsWith('/seller-portal') ||
+        req.path.startsWith('/v1') ||
+        req.path.startsWith('/provider') ||
+        req.path.startsWith('/reseller') ||
+        req.path.startsWith('/products') ||
+        req.path.startsWith('/services')
+      ) {
         return next();
       }
       const b64auth = (req.headers.authorization || '').split(' ')[1] || '';
@@ -1900,31 +1915,70 @@ async function startServer() {
   // ============================================================================
 
   const extractResellerApiKey = (req: express.Request): string => {
-    const paramKey = (req.params as any)?.apiKey;
-    if (paramKey) return String(paramKey).trim();
+    // 1. Route params
+    const paramKey = (req.params as any)?.apiKey || (req.params as any)?.key || (req.params as any)?.token;
+    if (paramKey) return String(paramKey).trim().replace(/^['"]|['"]$/g, '');
 
-    const headerKey = req.headers['x-api-key'] || req.headers['apikey'] || req.headers['api-key'];
-    if (headerKey) return String(headerKey).trim();
-
-    const authHeader = req.headers['authorization'];
-    if (authHeader && typeof authHeader === 'string') {
-      if (authHeader.toLowerCase().startsWith('bearer ')) {
-        return authHeader.slice(7).trim();
-      }
-      if (authHeader.toLowerCase().startsWith('apikey ')) {
-        return authHeader.slice(7).trim();
-      }
-      if (!authHeader.toLowerCase().startsWith('basic ')) {
-        return authHeader.trim();
+    // 2. Custom & standard headers (case-insensitive in Express, but check common aliases)
+    const headers = req.headers || {};
+    const headerCandidates = [
+      headers['x-api-key'],
+      headers['apikey'],
+      headers['api-key'],
+      headers['token'],
+      headers['Token' as any],
+      headers['x-token'],
+      headers['auth-token'],
+      headers['api_token'],
+      headers['api_key'],
+      headers['key'],
+      headers['secret'],
+      headers['auth'],
+      headers['reseller_token'],
+      headers['reseller-token'],
+      headers['reseller_key'],
+      headers['reseller-key']
+    ];
+    for (const h of headerCandidates) {
+      if (h && typeof h === 'string' && h.trim()) {
+        return h.trim().replace(/^['"]|['"]$/g, '');
       }
     }
 
-    const q = req.query as any;
+    // 3. Authorization header variations
+    const authHeader = headers['authorization'];
+    if (authHeader && typeof authHeader === 'string') {
+      const trimmed = authHeader.trim();
+      const lower = trimmed.toLowerCase();
+      if (lower.startsWith('bearer ')) {
+        return trimmed.slice(7).trim().replace(/^['"]|['"]$/g, '');
+      }
+      if (lower.startsWith('apikey ') || lower.startsWith('api-key ')) {
+        return trimmed.slice(lower.indexOf(' ') + 1).trim().replace(/^['"]|['"]$/g, '');
+      }
+      if (lower.startsWith('token ')) {
+        return trimmed.slice(6).trim().replace(/^['"]|['"]$/g, '');
+      }
+      if (!lower.startsWith('basic ')) {
+        return trimmed.replace(/^['"]|['"]$/g, '');
+      }
+    }
+
+    // 4. Query params
+    const q = (req.query || {}) as any;
+    const queryCandidate =
+      q?.apiKey || q?.api_key || q?.key || q?.token || q?.apiToken || q?.api_token ||
+      q?.code || q?.auth || q?.secret || q?.password;
+    if (queryCandidate) return String(queryCandidate).trim().replace(/^['"]|['"]$/g, '');
+
+    // 5. Body params (JSON or urlencoded)
     const b = (req.body || {}) as any;
-    const candidate =
-      q?.apiKey || q?.api_key || q?.key || q?.token ||
-      b?.apiKey || b?.api_key || b?.key || b?.token;
-    return candidate ? String(candidate).trim() : '';
+    const bodyCandidate =
+      b?.apiKey || b?.api_key || b?.key || b?.token || b?.apiToken || b?.api_token ||
+      b?.code || b?.auth || b?.secret || b?.password || b?.api;
+    if (bodyCandidate) return String(bodyCandidate).trim().replace(/^['"]|['"]$/g, '');
+
+    return '';
   };
 
   const authenticateSellerApi = (req: express.Request, res: express.Response) => {
@@ -2024,6 +2078,10 @@ async function startServer() {
           name: p.name,
           title: p.name,
           product_name: p.name,
+          productName: p.name,
+          'نام محصول': p.name,
+          'نام_محصول': p.name,
+          'نام': p.name,
           // 3. Category Name (نام دسته‌بندی)
           category: categoryName,
           category_name: categoryName,
@@ -2031,19 +2089,31 @@ async function startServer() {
           category_title: categoryName,
           categoryId: p.categoryId || 'default',
           category_id: p.categoryId || 'default',
+          'نام دسته بندی': categoryName,
+          'نام دسته‌بندی': categoryName,
+          'نام_دسته_بندی': categoryName,
+          'دسته بندی': categoryName,
+          'دسته‌بندی': categoryName,
+          'دسته': categoryName,
           // 4. Price (قیمت)
           price: wholesalePrice,
           rate: wholesalePrice,
           amount: wholesalePrice,
           cost: wholesalePrice,
+          fee: wholesalePrice,
           wholesale_price: wholesalePrice,
           original_price: Number(p.price || 0),
           discount_percent: sellerDiscount,
+          'قیمت': wholesalePrice,
+          'قیمت همکار': wholesalePrice,
+          'قیمت_همکار': wholesalePrice,
           // 5. Description (توضیحات)
           description: finalDescription,
           desc: finalDescription,
           details: finalDescription,
           info: finalDescription,
+          'توضیحات': finalDescription,
+          'توضیح': finalDescription,
           // 6. Technical Specs
           volume: volumeGb,
           volume_gb: volumeGb,
@@ -2370,10 +2440,12 @@ async function startServer() {
     }
   };
 
-  // Dispatcher for root /api/v1/reseller or /api/provider when a bot calls with ?action=... or defaults to products list
+  // Dispatcher for root /api/v1/reseller, /api/provider, /provider, /products, etc.
   const handleProviderRootDispatch = async (req: express.Request, res: express.Response) => {
     const params = { ...(req.query || {}), ...(req.body || {}) } as any;
     const action = String(params.action || params.method || params.type || '').toLowerCase().trim();
+
+    console.log(`[Provider API Request] ${req.method} ${req.originalUrl} | action=${action || 'none'}`);
 
     if (action === 'buy' || action === 'purchase' || action === 'order' || action === 'create' || (req.method === 'POST' && (params.productId || params.product_id || params.service || params.volumeGb))) {
       return handleProviderPurchaseRequest(req, res);
@@ -2391,13 +2463,23 @@ async function startServer() {
     return handleProviderProductsRequest(req, res);
   };
 
-  // Register routes under both /v1/reseller and /provider (and with /key/:apiKey path prefix)
-  const providerPrefixes = ['/v1/reseller', '/provider', '/v1/reseller/key/:apiKey', '/provider/key/:apiKey'];
+  // Register routes under all standard provider aliases: /provider, /reseller, /v1/reseller, /v1, and root
+  const providerPrefixes = [
+    '/v1/reseller', 
+    '/provider', 
+    '/reseller',
+    '/v1',
+    '',
+    '/v1/reseller/key/:apiKey', 
+    '/provider/key/:apiKey'
+  ];
   for (const prefix of providerPrefixes) {
     api.all(`${prefix}`, handleProviderRootDispatch);
     api.all(`${prefix}/products`, handleProviderProductsRequest);
+    api.all(`${prefix}/products/*`, handleProviderProductsRequest);
     api.all(`${prefix}/products-list`, handleProviderProductsRequest);
     api.all(`${prefix}/services`, handleProviderProductsRequest);
+    api.all(`${prefix}/services/*`, handleProviderProductsRequest);
     api.all(`${prefix}/me`, handleProviderMeRequest);
     api.all(`${prefix}/balance`, handleProviderMeRequest);
     api.all(`${prefix}/purchase`, handleProviderPurchaseRequest);
@@ -2408,6 +2490,31 @@ async function startServer() {
     api.all(`${prefix}/config/:purchaseId`, handleProviderStatusRequest);
   }
 
+  // Also mount directly on app for external bots that call without /api prefix (e.g. http://ip:port/provider or /v1/reseller)
+  const rootProviderRouter = express.Router();
+  const rootPrefixes = ['/provider', '/v1/reseller', '/reseller', '/v1'];
+  for (const prefix of rootPrefixes) {
+    rootProviderRouter.all(`${prefix}`, handleProviderRootDispatch);
+    rootProviderRouter.all(`${prefix}/products`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/products/*`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/products-list`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/services`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/services/*`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/me`, handleProviderMeRequest);
+    rootProviderRouter.all(`${prefix}/balance`, handleProviderMeRequest);
+    rootProviderRouter.all(`${prefix}/purchase`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/buy`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/order`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/cancel`, handleProviderCancelRequest);
+    rootProviderRouter.all(`${prefix}/status`, handleProviderStatusRequest);
+    rootProviderRouter.all(`${prefix}/config/:purchaseId`, handleProviderStatusRequest);
+  }
+  // Standalone aliases directly at root
+  rootProviderRouter.all('/products', handleProviderProductsRequest);
+  rootProviderRouter.all('/products-list', handleProviderProductsRequest);
+  rootProviderRouter.all('/services', handleProviderProductsRequest);
+
+  app.use('/', rootProviderRouter);
   app.use("/api", api);
 
   // Dynamically resolve static assets directory across all deployment environments (PM2, systemd, local, dev, etc.)
@@ -2521,6 +2628,11 @@ async function startServer() {
       if (req.originalUrl.startsWith('/api')) {
         return next();
       }
+      const hasKey = !!extractResellerApiKey(req);
+      const isProviderPath = /^\/(v1|provider|reseller|products|services)/i.test(req.path);
+      if (hasKey || isProviderPath) {
+        return handleProviderRootDispatch(req, res);
+      }
       return sendSpaHtml(req, res);
     });
   } else {
@@ -2539,6 +2651,11 @@ async function startServer() {
     app.use('*', async (req, res, next) => {
       if (req.originalUrl.startsWith('/api')) {
         return next();
+      }
+      const hasKey = !!extractResellerApiKey(req);
+      const isProviderPath = /^\/(v1|provider|reseller|products|services)/i.test(req.path);
+      if (hasKey || isProviderPath) {
+        return handleProviderRootDispatch(req, res);
       }
       try {
         const indexPath = path.resolve(process.cwd(), 'index.html');
