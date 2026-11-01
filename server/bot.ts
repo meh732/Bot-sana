@@ -586,7 +586,7 @@ async function fetchSubscriptionLiveInfo(subUrl: string): Promise<{
       headers: {
         'User-Agent': 'v2rayNG/1.8.5'
       },
-      timeout: 5000,
+      timeout: 2500,
       validateStatus: () => true
     });
 
@@ -847,12 +847,6 @@ async function sendServiceInfo(chatId: number, purchase: any) {
   bot.sendMessage(chatId, '⏳ در حال دریافت اطلاعات دقیق، حجم، زمان و لینک ساب از سرور...').catch(() => {});
   try {
     let clientObj: any = null;
-    let allClients: any[] = [];
-    try {
-      allClients = await multiPanel.getAllClientsWithTraffic();
-    } catch (e: any) {
-      console.error('[Bot] sendServiceInfo error fetching clients:', e.message);
-    }
 
     const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
     
@@ -867,7 +861,7 @@ async function sendServiceInfo(chatId: number, purchase: any) {
       effectiveSubUrl = effectiveSubUrl.replace(/\/sub\/sub\//g, '/sub/');
     }
 
-    // 0. FIRST & MOST SPECIFIC: Query the subscription link directly for live userinfo headers!
+    // 0. FIRST & FASTEST: Query the subscription link directly for live userinfo headers!
     if (effectiveSubUrl) {
       try {
         const liveSub = await fetchSubscriptionLiveInfo(effectiveSubUrl);
@@ -883,14 +877,20 @@ async function sendServiceInfo(chatId: number, purchase: any) {
             enable: true,
             fromLiveSub: true
           };
-          console.log(`[Subscription Inquiry] Live traffic fetched via subscription URL for ${targetSubId || purchase.id}: Used=${(liveSub.totalUsed / (1024*1024*1024)).toFixed(2)}GB, Exp=${liveSub.expiryTime}`);
         }
+      } catch (e: any) {}
+    }
+
+    // 1. ONLY query panel APIs if live subscription header did not return client info
+    let allClients: any[] = [];
+    if (!clientObj) {
+      try {
+        allClients = await multiPanel.getAllClientsWithTraffic();
       } catch (e: any) {
-        console.error('[Subscription Inquiry] Live sub fetch failed:', e.message);
+        console.error('[Bot] sendServiceInfo error fetching clients:', e.message);
       }
     }
 
-    // 1. If not fetched from live sub header, match strictly by unique subscription ID (subId / token)
     if (!clientObj && allClients && allClients.length > 0) {
       if (targetSubId) {
         clientObj = allClients.find((cl: any) => {
@@ -1259,30 +1259,30 @@ async function sendServiceInfo(chatId: number, purchase: any) {
 
     const inlineButtons: any[] = [
       [
-        { text: '🔄 بروزرسانی وضعیت لحظه‌ای', callback_data: `refresh_service_${purchase.id}` },
-        { text: '⚙️ دریافت کانفیگ مستقیم', callback_data: `direct_configs_${purchase.id}` }
+        { text: '🔄 بروزرسانی وضعیت لحظه‌ای', callback_data: `refresh_service_${purchase.id}`, style: 'primary' },
+        { text: '⚙️ دریافت کانفیگ مستقیم', callback_data: `direct_configs_${purchase.id}`, style: 'primary' }
       ]
     ];
 
     if (purchase.price > 0 && purchase.volumeGb > 0 && purchase.durationDays > 0) {
       inlineButtons.push([
-        { text: '♻️ تمدید سرویس', callback_data: `renew_service_${purchase.id}` }
+        { text: '♻️ تمدید سرویس', callback_data: `renew_service_${purchase.id}`, style: 'success' }
       ]);
     }
 
     inlineButtons.push([
-      { text: '🤫 ارسال بدون نام و برند (مخصوص مشتری)', callback_data: `clean_customer_msg_${purchase.id}` }
+      { text: '🤫 ارسال بدون نام و برند (مخصوص مشتری)', callback_data: `clean_customer_msg_${purchase.id}`, style: 'primary' }
     ]);
 
     const currentUserObj = db.getUser(chatId);
     if (currentUserObj && currentUserObj.isSeller && !purchase.isCancelled) {
       inlineButtons.push([
-        { text: '🚫 توقف و ابطال کانفیگ', callback_data: `cancel_seller_cfg_${purchase.id}` }
+        { text: '🚫 توقف و ابطال کانفیگ', callback_data: `cancel_seller_cfg_${purchase.id}`, style: 'danger' }
       ]);
     }
 
     inlineButtons.push([
-      { text: '📋 بازگشت به لیست خریدها', callback_data: 'user_purchases_list' }
+      { text: '📋 بازگشت به لیست خریدها', callback_data: 'user_purchases_list', style: 'danger' }
     ]);
 
     let photoSent = false;
@@ -1316,21 +1316,6 @@ async function sendServiceInfo(chatId: number, purchase: any) {
 export async function sendCleanCustomerConfigMessage(chatId: number, purchase: any) {
   if (!bot) return;
   try {
-    let clientObj: any = null;
-    try {
-      const allClients = await multiPanel.getAllClientsWithTraffic();
-      const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) ||
-                          rebecca.extractSubToken(purchase.subUrl);
-      if (targetSubId && allClients) {
-        clientObj = allClients.find((cl: any) => {
-          const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : '';
-          const clToken = cl.token ? String(cl.token).trim().toLowerCase() : '';
-          const clId = cl.id ? String(cl.id).trim().toLowerCase() : '';
-          return clSubId === targetSubId || clToken === targetSubId || clId === targetSubId;
-        });
-      }
-    } catch (e) {}
-
     const volStr = purchase.isPayAsYouGo
       ? 'نامحدود (سرویس مصرف آزاد)'
       : (purchase.volumeGb ? `${purchase.volumeGb} گیگابایت` : 'نامحدود');
@@ -1472,6 +1457,94 @@ function getSellerReplyKeyboard(): any {
   };
 }
 
+let cachedMainBotUsername = '';
+
+export function inferGlassButtonStyle(btn: any): 'primary' | 'success' | 'danger' {
+  if (btn && (btn.style === 'primary' || btn.style === 'success' || btn.style === 'danger')) {
+    return btn.style;
+  }
+  const text = String(btn?.text || '');
+  const cb = String(btn?.callback_data || '').toLowerCase();
+
+  if (
+    /بازگشت|انصراف|لغو|حذف|رد |توقف|ابطال|مسدود|غیرفعال|خیر|بستن|❌|🔙|🚫|🗑/.test(text) ||
+    /^(back|cancel|reject|del_|delete|disable|close)/.test(cb) ||
+    cb.includes('cancel') ||
+    cb.includes('back_to_') ||
+    cb.includes('reject_') ||
+    cb.includes('delete_')
+  ) {
+    return 'danger';
+  }
+
+  if (
+    /خرید|تایید|تمدید|شارژ|افزایش موجودی|پرداخت|سفارش|حجم دلخواه|تومان|رایگان|بله|فروش|🛒|✅|♻️|⚡|💳|🎁|🌊|🔵|🟣|🔸|💎/.test(text) ||
+    /^(buy_|select_prod_|confirm_|approve_|renew_|seller_cvol|open_cvol|enable)/.test(cb)
+  ) {
+    return 'success';
+  }
+
+  return 'primary';
+}
+
+export function enhanceBotForSpeedAndColoredButtons(botInstance: TelegramBot) {
+  if (!botInstance || (botInstance as any).__glassEnhanced) return;
+  (botInstance as any).__glassEnhanced = true;
+
+  const colorizeReplyMarkup = (options?: any) => {
+    if (!options || typeof options !== 'object') return options;
+    const rm = options.reply_markup;
+    if (!rm || typeof rm !== 'object') return options;
+
+    if (Array.isArray(rm.inline_keyboard)) {
+      rm.inline_keyboard = rm.inline_keyboard.map((row: any) =>
+        Array.isArray(row)
+          ? row.map((btn: any) => {
+              if (btn && typeof btn === 'object' && !btn.style) {
+                return { ...btn, style: inferGlassButtonStyle(btn) };
+              }
+              return btn;
+            })
+          : row
+      );
+    }
+
+    if (Array.isArray(rm.keyboard)) {
+      rm.keyboard = rm.keyboard.map((row: any) =>
+        Array.isArray(row)
+          ? row.map((btn: any) => {
+              if (btn && typeof btn === 'object' && !btn.style) {
+                return { ...btn, style: inferGlassButtonStyle(btn) };
+              }
+              return btn;
+            })
+          : row
+      );
+    }
+    return options;
+  };
+
+  const origSendMessage = botInstance.sendMessage.bind(botInstance);
+  botInstance.sendMessage = ((chatId: any, text: string, options?: any) => {
+    return origSendMessage(chatId, text, colorizeReplyMarkup(options));
+  }) as any;
+
+  const origEditMessageText = botInstance.editMessageText.bind(botInstance);
+  botInstance.editMessageText = ((text: string, options?: any) => {
+    return origEditMessageText(text, colorizeReplyMarkup(options));
+  }) as any;
+
+  const origSendPhoto = botInstance.sendPhoto.bind(botInstance);
+  botInstance.sendPhoto = ((chatId: any, photo: any, options?: any, fileOptions?: any) => {
+    return origSendPhoto(chatId, photo, colorizeReplyMarkup(options), fileOptions);
+  }) as any;
+
+  const origSendDocument = botInstance.sendDocument.bind(botInstance);
+  botInstance.sendDocument = ((chatId: any, doc: any, options?: any, fileOptions?: any) => {
+    return origSendDocument(chatId, doc, colorizeReplyMarkup(options), fileOptions);
+  }) as any;
+}
+
 export async function initBot() {
   clearAllActiveIntervals();
   const state = db.getState();
@@ -1501,42 +1574,37 @@ export async function initBot() {
     isPolling = false;
   }
 
-  // Grace delay to let Telegram servers process the connection teardown
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  // Brief grace delay to let Telegram servers process the connection teardown
+  await new Promise(resolve => setTimeout(resolve, 400));
 
   try {
     console.log(`[Bot] Initializing Telegram Bot with token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
 
     bot = new TelegramBot(rawToken, { 
       polling: {
-        interval: 300,
+        interval: 80,
         autoStart: true,
         params: {
-          timeout: 10,
+          timeout: 25,
           allowed_updates: [
             'message',
-            'edited_message',
-            'channel_post',
-            'edited_channel_post',
-            'inline_query',
-            'chosen_inline_result',
-            'callback_query',
-            'shipping_query',
-            'pre_checkout_query',
-            'poll',
-            'poll_answer',
-            'my_chat_member',
-            'chat_member',
-            'chat_join_request'
+            'callback_query'
           ]
         }
-      } 
+      },
+      request: {
+        forever: true,
+        pool: { maxSockets: 100 },
+        timeout: 30000
+      } as any
     });
+    enhanceBotForSpeedAndColoredButtons(bot);
     isPolling = true;
 
     // Asynchronously delete webhook and verify identity without blocking event listener registration
     (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
     bot.getMe().then((me) => {
+      if (me?.username) cachedMainBotUsername = me.username;
       console.log(`[Bot] Successfully connected & verified as @${me.username} (${me.first_name})`);
     }).catch((verr: any) => {
       console.warn(`[Bot Warning] getMe check returned: ${verr.message || verr}. Polling is active and waiting for connection.`);
@@ -5026,9 +5094,9 @@ export async function initBot() {
 
       if (nonEmptyCategories.length > 0) {
         const inlineKeyboard = nonEmptyCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: 'primary' }
         ]));
-        inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol' }]);
+        inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol', style: 'success' }]);
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول مورد نظر را انتخاب کنید یا حجم دلخواه سفارش دهید:', {
            parse_mode: 'HTML',
            reply_markup: {
@@ -5039,9 +5107,9 @@ export async function initBot() {
       }
 
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'success' }
       ]));
-      inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol' }]);
+      inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol', style: 'success' }]);
 
       bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:', {
          parse_mode: 'HTML',
@@ -5178,8 +5246,13 @@ export async function initBot() {
     }
 
     if (cleanText === 'زیرمجموعه‌گیری' || cleanText === 'زیرمجموعه' || text.includes('زیرمجموعه') || text.includes('دعوت')) {
-      const me = await bot!.getMe();
-      const refLink = `https://t.me/${me.username}?start=ref_${chatId}`;
+      let botUsername = cachedMainBotUsername;
+      if (!botUsername) {
+        const me = await bot!.getMe();
+        botUsername = me.username || '';
+        if (botUsername) cachedMainBotUsername = botUsername;
+      }
+      const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
       const state = db.getState();
       bot!.sendMessage(chatId, `🔗 لینک اختصاصی شما برای دعوت دوستان:\n\n${refLink}\n\n🎁 با دعوت هر دوست ${state.referralRewardToman || 0} تومان پاداش بگیرید!`);
       return;
@@ -5218,7 +5291,7 @@ export async function initBot() {
 
       if (nonEmptyCategories.length > 0) {
         const inlineKeyboard = nonEmptyCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         bot!.sendMessage(chatId, '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
            parse_mode: 'HTML',
@@ -5231,7 +5304,7 @@ export async function initBot() {
 
       const userObj = db.getUser(chatId);
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}`, style: 'success' }
       ]));
 
       bot!.sendMessage(chatId, '🛍 لطفا یک محصول انتخاب کنید:', {
@@ -7738,7 +7811,7 @@ export async function initBot() {
 
       if (nonEmptyCategories.length > 0) {
         const inlineKeyboard = nonEmptyCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}`, style: 'primary' }
         ]));
         bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'Markdown',
@@ -7748,7 +7821,7 @@ export async function initBot() {
         });
       } else {
         const inlineKeyboard = activeProducts.map(p => ([
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'success' }
         ]));
 
         bot!.sendMessage(chatId, '🛍 لطفا یک محصول انتخاب کنید:', {
@@ -7762,8 +7835,9 @@ export async function initBot() {
     }
 
     if (data && (data === 'back_to_categories' || data === 'back_to_categories_seller')) {
-      try { await answerQuery(); } catch (e) {}
+      answerQuery().catch(() => {});
       const isSeller = data === 'back_to_categories_seller';
+      const msgId = query.message?.message_id;
       const allCategories = state.categories || [];
       const activeCategories = allCategories.filter(c => c && !c.disabled);
       const hasCategories = allCategories.length > 0;
@@ -7791,41 +7865,71 @@ export async function initBot() {
 
       if (nonEmptyCategories.length > 0) {
         const inlineKeyboard = nonEmptyCategories.map(c => ([
-          { text: `📁 ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}` }
+          { text: `📁 ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}`, style: 'primary' }
         ]));
-        bot!.sendMessage(chatId, isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول را انتخاب کنید:' : '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
-           parse_mode: 'HTML',
-           reply_markup: {
-             inline_keyboard: inlineKeyboard
-           } as any
-        });
+        if (isSeller) {
+          inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol', style: 'success' }]);
+        }
+        const menuTitle = isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول را انتخاب کنید:' : '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>';
+        if (msgId) {
+          await bot!.editMessageText(menuTitle, {
+            chat_id: chatId,
+            message_id: msgId,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: inlineKeyboard } as any
+          }).catch(async () => {
+            await bot!.sendMessage(chatId, menuTitle, {
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard } as any
+            });
+          });
+        } else {
+          await bot!.sendMessage(chatId, menuTitle, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: inlineKeyboard } as any
+          });
+        }
         return;
       }
 
       const inlineKeyboard = activeProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'success' }
       ]));
 
-      bot!.sendMessage(chatId, isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:' : '🛍 <b>لطفا یک محصول انتخاب کنید:</b>', {
-         parse_mode: 'HTML',
-         reply_markup: {
-           inline_keyboard: inlineKeyboard
-         } as any
-      });
+      const fallbackTitle = isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>:\nلطفا یکی از پکیج‌های زیر را جهت ساخت اتوماتیک انتخاب کنید:' : '🛍 <b>لطفا یک محصول انتخاب کنید:</b>';
+      if (msgId) {
+        await bot!.editMessageText(fallbackTitle, {
+          chat_id: chatId,
+          message_id: msgId,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineKeyboard } as any
+        }).catch(async () => {
+          await bot!.sendMessage(chatId, fallbackTitle, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: inlineKeyboard } as any
+          });
+        });
+      } else {
+        await bot!.sendMessage(chatId, fallbackTitle, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineKeyboard } as any
+        });
+      }
       return;
     }
 
     if (data && data.startsWith('show_category_')) {
-      try { await answerQuery(); } catch (e) {}
+      answerQuery().catch(() => {});
       const isSeller = data.startsWith('show_category_seller_');
       const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
+      const msgId = query.message?.message_id;
       
       const catObj = (state.categories || []).find(c => c && !c.disabled && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
       if (!catObj) {
         bot!.sendMessage(chatId, '❌ این دسته‌بندی غیرفعال یا حذف شده است.', {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories' }]
+              [{ text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories', style: 'danger' } as any]
             ]
           }
         });
@@ -7846,7 +7950,7 @@ export async function initBot() {
         bot!.sendMessage(chatId, '❌ هیچ محصول فعالی در این دسته‌بندی موجود نیست.', {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories' }]
+              [{ text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories', style: 'danger' } as any]
             ]
           }
         });
@@ -7854,20 +7958,32 @@ export async function initBot() {
       }
 
       const inlineKeyboard: any[] = filteredProducts.map(p => ([
-        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+        { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: 'success' }
       ]));
 
       inlineKeyboard.push([
-        { text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories' }
+        { text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories', style: 'danger' }
       ]);
 
-      const catName = categoryId === 'uncategorized' 
-        ? 'سایر محصولات' 
-        : (catObj?.name || 'دسته‌بندی انتخابی');
+      const catName = catObj?.name || 'دسته‌بندی انتخابی';
 
       const msgText = isSeller 
         ? `🛒 <b>محصولات دسته «${escapeHtml(catName)}» (همکاران):</b>\nلطفا یکی از پکیج‌های زیر را انتخاب کنید:` 
         : `🛍 <b>محصولات دسته «${escapeHtml(catName)}»:</b>\nلطفا پکیج مورد نظر خود را انتخاب کنید:`;
+
+      if (msgId) {
+        try {
+          await bot!.editMessageText(msgText, {
+            chat_id: chatId,
+            message_id: msgId,
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: inlineKeyboard
+            } as any
+          });
+          return;
+        } catch (editErr) {}
+      }
 
       try {
         await bot!.sendMessage(chatId, msgText, {

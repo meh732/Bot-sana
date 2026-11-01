@@ -10,7 +10,8 @@ import {
   isSellerUnlimitedLimit,
   sanitizeCustomConfigName,
   parseAmountInput,
-  getBot
+  getBot,
+  enhanceBotForSpeedAndColoredButtons
 } from './bot.js';
 import { getTehranShamsiDayRange } from './accounting.js';
 import { multiPanel } from './multiPanel.js';
@@ -47,7 +48,7 @@ async function fetchSubscriptionLiveInfo(subUrl: string): Promise<{
   try {
     const res = await axios.get(subUrl, {
       headers: { 'User-Agent': 'v2rayNG/1.8.5' },
-      timeout: 5000,
+      timeout: 2500,
       validateStatus: () => true
     });
     const userInfoHeader = res.headers['subscription-userinfo'] || res.headers['Subscription-Userinfo'];
@@ -195,15 +196,21 @@ class ResellerBotManager {
     try {
       bot = new TelegramBot(token, {
         polling: {
-          interval: 400,
+          interval: 80,
           autoStart: false,
           params: {
-            timeout: 10,
+            timeout: 25,
             allowed_updates: ['message', 'callback_query']
           }
-        }
+        },
+        request: {
+          forever: true,
+          pool: { maxSockets: 100 },
+          timeout: 30000
+        } as any
       });
 
+      enhanceBotForSpeedAndColoredButtons(bot);
       this.attachBotHandlers(bot, sellerChatId);
 
       (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
@@ -460,10 +467,6 @@ class ResellerBotManager {
       }
 
       let clientObj: any = null;
-      let allClients: any[] = [];
-      try {
-        allClients = await multiPanel.getAllClientsWithTraffic();
-      } catch (e) {}
 
       const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : '';
       const targetSubId =
@@ -486,7 +489,7 @@ class ResellerBotManager {
         effectiveSubUrl = effectiveSubUrl.replace(/\/sub\/sub\//g, '/sub/');
       }
 
-      // 1. Live subscription header inquiry
+      // 1. Live subscription header inquiry FIRST (fast ~100ms)
       if (effectiveSubUrl) {
         try {
           const liveSub = await fetchSubscriptionLiveInfo(effectiveSubUrl);
@@ -506,7 +509,14 @@ class ResellerBotManager {
         } catch (e) {}
       }
 
-      // 2. Match in multiPanel clients list
+      // 2. ONLY query multiPanel if live subscription header did not return client info
+      let allClients: any[] = [];
+      if (!clientObj) {
+        try {
+          allClients = await multiPanel.getAllClientsWithTraffic();
+        } catch (e) {}
+      }
+
       if (!clientObj && allClients && allClients.length > 0) {
         if (targetSubId) {
           clientObj = allClients.find((cl: any) => {

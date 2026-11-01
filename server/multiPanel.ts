@@ -313,14 +313,22 @@ export class MultiPanelService {
   }
 
   private trafficCache: { data: UnifiedTrafficClient[]; timestamp: number } | null = null;
-  private trafficCacheTtlMs = 60 * 1000; // 60 seconds TTL
+  private trafficCacheTtlMs = 90 * 1000; // 90 seconds TTL
+  private inflightTrafficPromise: Promise<UnifiedTrafficClient[]> | null = null;
 
   public invalidateTrafficCache(): void {
     this.trafficCache = null;
   }
 
+  private withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+    return Promise.race([
+      promise.catch(() => fallback),
+      new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))
+    ]);
+  }
+
   /**
-   * Retrieves all clients and traffic data across all connected panels in parallel with caching
+   * Retrieves all clients and traffic data across all connected panels in parallel with caching & deduplication
    */
   public async getAllClientsWithTraffic(forceRefresh: boolean = false): Promise<UnifiedTrafficClient[]> {
     const now = Date.now();
@@ -328,14 +336,26 @@ export class MultiPanelService {
       return this.trafficCache.data;
     }
 
-    const results: UnifiedTrafficClient[] = [];
+    if (this.inflightTrafficPromise) {
+      return this.inflightTrafficPromise;
+    }
 
-    const [sanaeiRes, rebeccaRes, mroceanRes, p4Res] = await Promise.allSettled([
-      xui.getAllClientsWithTraffic().catch(() => []),
-      rebecca.getAllClientsWithTraffic().catch(() => []),
-      mrocean.getAllClientsWithTraffic().catch(() => []),
-      panel4.getAllClientsWithTraffic().catch(() => [])
-    ]);
+    this.inflightTrafficPromise = (async () => {
+      try {
+        const state = db.getState();
+        const results: UnifiedTrafficClient[] = [];
+
+        const hasSanaei = !!(state.panel?.url && state.panel.url.trim() !== '');
+        const hasRebecca = !!(state.rebeccaPanel?.url && state.rebeccaPanel?.enabled !== false);
+        const hasMrOcean = !!(state.mroceanPanel?.url && state.mroceanPanel?.enabled !== false);
+        const hasPanel4 = !!(state.panel4?.url && state.panel4?.enabled !== false);
+
+        const [sanaeiRes, rebeccaRes, mroceanRes, p4Res] = await Promise.allSettled([
+          hasSanaei ? this.withTimeout(xui.getAllClientsWithTraffic(), 5000, []) : Promise.resolve([]),
+          hasRebecca ? this.withTimeout(rebecca.getAllClientsWithTraffic(), 5000, []) : Promise.resolve([]),
+          hasMrOcean ? this.withTimeout(mrocean.getAllClientsWithTraffic(), 5000, []) : Promise.resolve([]),
+          hasPanel4 ? this.withTimeout(panel4.getAllClientsWithTraffic(), 5000, []) : Promise.resolve([])
+        ]);
 
     if (sanaeiRes.status === 'fulfilled' && Array.isArray(sanaeiRes.value)) {
       for (const cl of sanaeiRes.value) {
@@ -409,8 +429,14 @@ export class MultiPanelService {
       }
     }
 
-    this.trafficCache = { data: results, timestamp: now };
-    return results;
+        this.trafficCache = { data: results, timestamp: Date.now() };
+        return results;
+      } finally {
+        this.inflightTrafficPromise = null;
+      }
+    })();
+
+    return this.inflightTrafficPromise;
   }
 
   /**

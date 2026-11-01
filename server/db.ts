@@ -349,10 +349,23 @@ const defaultState: AppState = {
 
 class Database {
   private state: AppState;
+  private userMap = new Map<number, User>();
 
   constructor() {
     this.state = { ...defaultState };
     this.load();
+    this.rebuildUserMap();
+  }
+
+  private rebuildUserMap() {
+    this.userMap.clear();
+    if (Array.isArray(this.state?.users)) {
+      for (const u of this.state.users) {
+        if (u && u.chatId !== undefined && u.chatId !== null) {
+          this.userMap.set(Number(u.chatId), u);
+        }
+      }
+    }
   }
 
   private sanitizeState(rawState: any): AppState {
@@ -657,7 +670,7 @@ class Database {
       } catch (e: any) {
         console.error('Failed to save db.json asynchronously:', e.message);
       }
-    }, 200);
+    }, 350);
   }
 
   public getState() {
@@ -666,21 +679,42 @@ class Database {
 
   public updateState(partial: Partial<AppState>) {
     this.state = { ...this.state, ...partial };
-    this.save();
-  }
-
-  public saveUser(user: User) {
-    const idx = this.state.users.findIndex(u => u.chatId === user.chatId);
-    if (idx >= 0) {
-      this.state.users[idx] = user;
-    } else {
-      this.state.users.push(user);
+    if (partial.users) {
+      this.rebuildUserMap();
     }
     this.save();
   }
 
+  public saveUser(user: User) {
+    const cid = Number(user.chatId);
+    user.chatId = cid;
+    const existing = this.userMap.get(cid);
+    if (!existing) {
+      const idx = this.state.users.findIndex(u => Number(u.chatId) === cid);
+      if (idx >= 0) {
+        this.state.users[idx] = user;
+      } else {
+        this.state.users.push(user);
+      }
+    } else if (existing !== user) {
+      const idx = this.state.users.findIndex(u => Number(u.chatId) === cid);
+      if (idx >= 0) {
+        this.state.users[idx] = user;
+      }
+    }
+    this.userMap.set(cid, user);
+    this.save();
+  }
+
   public getUser(chatId: number): User | undefined {
-    return this.state.users.find(u => u.chatId === chatId);
+    const cid = Number(chatId);
+    const cached = this.userMap.get(cid);
+    if (cached) return cached;
+    const found = this.state.users.find(u => Number(u.chatId) === cid);
+    if (found) {
+      this.userMap.set(cid, found);
+    }
+    return found;
   }
 
   public getUserByUsername(username: string): User | undefined {

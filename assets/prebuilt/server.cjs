@@ -27941,11 +27941,23 @@ var init_db = __esm({
     };
     Database = class {
       constructor() {
+        this.userMap = /* @__PURE__ */ new Map();
         this.lastBackupTime = 0;
         this.saveTimer = null;
         this.pendingSave = false;
         this.state = { ...defaultState };
         this.load();
+        this.rebuildUserMap();
+      }
+      rebuildUserMap() {
+        this.userMap.clear();
+        if (Array.isArray(this.state?.users)) {
+          for (const u of this.state.users) {
+            if (u && u.chatId !== void 0 && u.chatId !== null) {
+              this.userMap.set(Number(u.chatId), u);
+            }
+          }
+        }
       }
       sanitizeState(rawState) {
         const sanitized = {
@@ -28195,26 +28207,47 @@ var init_db = __esm({
           } catch (e) {
             console.error("Failed to save db.json asynchronously:", e.message);
           }
-        }, 200);
+        }, 350);
       }
       getState() {
         return this.state;
       }
       updateState(partial) {
         this.state = { ...this.state, ...partial };
-        this.save();
-      }
-      saveUser(user) {
-        const idx = this.state.users.findIndex((u) => u.chatId === user.chatId);
-        if (idx >= 0) {
-          this.state.users[idx] = user;
-        } else {
-          this.state.users.push(user);
+        if (partial.users) {
+          this.rebuildUserMap();
         }
         this.save();
       }
+      saveUser(user) {
+        const cid = Number(user.chatId);
+        user.chatId = cid;
+        const existing = this.userMap.get(cid);
+        if (!existing) {
+          const idx = this.state.users.findIndex((u) => Number(u.chatId) === cid);
+          if (idx >= 0) {
+            this.state.users[idx] = user;
+          } else {
+            this.state.users.push(user);
+          }
+        } else if (existing !== user) {
+          const idx = this.state.users.findIndex((u) => Number(u.chatId) === cid);
+          if (idx >= 0) {
+            this.state.users[idx] = user;
+          }
+        }
+        this.userMap.set(cid, user);
+        this.save();
+      }
       getUser(chatId) {
-        return this.state.users.find((u) => u.chatId === chatId);
+        const cid = Number(chatId);
+        const cached = this.userMap.get(cid);
+        if (cached) return cached;
+        const found = this.state.users.find((u) => Number(u.chatId) === cid);
+        if (found) {
+          this.userMap.set(cid, found);
+        }
+        return found;
       }
       getUserByUsername(username) {
         const cleanUsername = username.replace("@", "").toLowerCase();
@@ -82999,7 +83032,9 @@ var init_multiPanel = __esm({
     MultiPanelService = class {
       constructor() {
         this.trafficCache = null;
-        this.trafficCacheTtlMs = 60 * 1e3;
+        this.trafficCacheTtlMs = 90 * 1e3;
+        // 90 seconds TTL
+        this.inflightTrafficPromise = null;
       }
       /**
        * Creates client config on Sanaei, Rebecca, Mr Ocean, or any combination
@@ -83196,95 +83231,115 @@ ${errDetails}`);
           panel4Details
         };
       }
-      // 60 seconds TTL
       invalidateTrafficCache() {
         this.trafficCache = null;
       }
+      withTimeout(promise, ms, fallback) {
+        return Promise.race([
+          promise.catch(() => fallback),
+          new Promise((resolve) => setTimeout(() => resolve(fallback), ms))
+        ]);
+      }
       /**
-       * Retrieves all clients and traffic data across all connected panels in parallel with caching
+       * Retrieves all clients and traffic data across all connected panels in parallel with caching & deduplication
        */
       async getAllClientsWithTraffic(forceRefresh = false) {
         const now = Date.now();
         if (!forceRefresh && this.trafficCache && now - this.trafficCache.timestamp < this.trafficCacheTtlMs) {
           return this.trafficCache.data;
         }
-        const results = [];
-        const [sanaeiRes, rebeccaRes, mroceanRes, p4Res] = await Promise.allSettled([
-          xui.getAllClientsWithTraffic().catch(() => []),
-          rebecca.getAllClientsWithTraffic().catch(() => []),
-          mrocean.getAllClientsWithTraffic().catch(() => []),
-          panel4.getAllClientsWithTraffic().catch(() => [])
-        ]);
-        if (sanaeiRes.status === "fulfilled" && Array.isArray(sanaeiRes.value)) {
-          for (const cl of sanaeiRes.value) {
-            results.push({
-              id: cl.id || cl.email,
-              email: cl.email,
-              subId: cl.subId || cl.id,
-              up: cl.up || 0,
-              down: cl.down || 0,
-              totalUsed: (cl.up || 0) + (cl.down || 0),
-              total: cl.total || 0,
-              expiryTime: cl.expiryTime || 0,
-              enable: cl.enable !== false,
-              panel: "sanaei"
-            });
-          }
+        if (this.inflightTrafficPromise) {
+          return this.inflightTrafficPromise;
         }
-        if (rebeccaRes.status === "fulfilled" && Array.isArray(rebeccaRes.value)) {
-          for (const cl of rebeccaRes.value) {
-            results.push({
-              id: cl.id || cl.email,
-              email: cl.email,
-              subId: cl.subId,
-              token: cl.token,
-              subUrl: cl.subUrl,
-              up: cl.up || 0,
-              down: cl.down || 0,
-              totalUsed: cl.totalUsed || (cl.up || 0) + (cl.down || 0),
-              total: cl.total || 0,
-              expiryTime: cl.expiryTime || 0,
-              enable: cl.enable !== false,
-              panel: "rebecca"
-            });
+        this.inflightTrafficPromise = (async () => {
+          try {
+            const state = db.getState();
+            const results = [];
+            const hasSanaei = !!(state.panel?.url && state.panel.url.trim() !== "");
+            const hasRebecca = !!(state.rebeccaPanel?.url && state.rebeccaPanel?.enabled !== false);
+            const hasMrOcean = !!(state.mroceanPanel?.url && state.mroceanPanel?.enabled !== false);
+            const hasPanel4 = !!(state.panel4?.url && state.panel4?.enabled !== false);
+            const [sanaeiRes, rebeccaRes, mroceanRes, p4Res] = await Promise.allSettled([
+              hasSanaei ? this.withTimeout(xui.getAllClientsWithTraffic(), 5e3, []) : Promise.resolve([]),
+              hasRebecca ? this.withTimeout(rebecca.getAllClientsWithTraffic(), 5e3, []) : Promise.resolve([]),
+              hasMrOcean ? this.withTimeout(mrocean.getAllClientsWithTraffic(), 5e3, []) : Promise.resolve([]),
+              hasPanel4 ? this.withTimeout(panel4.getAllClientsWithTraffic(), 5e3, []) : Promise.resolve([])
+            ]);
+            if (sanaeiRes.status === "fulfilled" && Array.isArray(sanaeiRes.value)) {
+              for (const cl of sanaeiRes.value) {
+                results.push({
+                  id: cl.id || cl.email,
+                  email: cl.email,
+                  subId: cl.subId || cl.id,
+                  up: cl.up || 0,
+                  down: cl.down || 0,
+                  totalUsed: (cl.up || 0) + (cl.down || 0),
+                  total: cl.total || 0,
+                  expiryTime: cl.expiryTime || 0,
+                  enable: cl.enable !== false,
+                  panel: "sanaei"
+                });
+              }
+            }
+            if (rebeccaRes.status === "fulfilled" && Array.isArray(rebeccaRes.value)) {
+              for (const cl of rebeccaRes.value) {
+                results.push({
+                  id: cl.id || cl.email,
+                  email: cl.email,
+                  subId: cl.subId,
+                  token: cl.token,
+                  subUrl: cl.subUrl,
+                  up: cl.up || 0,
+                  down: cl.down || 0,
+                  totalUsed: cl.totalUsed || (cl.up || 0) + (cl.down || 0),
+                  total: cl.total || 0,
+                  expiryTime: cl.expiryTime || 0,
+                  enable: cl.enable !== false,
+                  panel: "rebecca"
+                });
+              }
+            }
+            if (mroceanRes.status === "fulfilled" && Array.isArray(mroceanRes.value)) {
+              for (const cl of mroceanRes.value) {
+                results.push({
+                  id: cl.id || cl.email,
+                  email: cl.email,
+                  subId: cl.subId,
+                  subUrl: cl.subUrl,
+                  portalUrl: cl.portalUrl,
+                  up: cl.up || 0,
+                  down: cl.down || 0,
+                  totalUsed: cl.totalUsed || (cl.up || 0) + (cl.down || 0),
+                  total: cl.total || 0,
+                  expiryTime: cl.expiryTime || 0,
+                  enable: cl.enable !== false,
+                  panel: "mrocean"
+                });
+              }
+            }
+            if (p4Res.status === "fulfilled" && Array.isArray(p4Res.value)) {
+              for (const cl of p4Res.value) {
+                results.push({
+                  id: cl.id || cl.email,
+                  email: cl.email,
+                  subId: cl.subId || cl.id,
+                  up: cl.up || 0,
+                  down: cl.down || 0,
+                  totalUsed: cl.totalUsed || (cl.up || 0) + (cl.down || 0),
+                  total: cl.total || 0,
+                  expiryTime: cl.expiryTime || 0,
+                  enable: cl.enable !== false,
+                  panel: "panel4"
+                });
+              }
+            }
+            this.trafficCache = { data: results, timestamp: Date.now() };
+            return results;
+          } finally {
+            this.inflightTrafficPromise = null;
           }
-        }
-        if (mroceanRes.status === "fulfilled" && Array.isArray(mroceanRes.value)) {
-          for (const cl of mroceanRes.value) {
-            results.push({
-              id: cl.id || cl.email,
-              email: cl.email,
-              subId: cl.subId,
-              subUrl: cl.subUrl,
-              portalUrl: cl.portalUrl,
-              up: cl.up || 0,
-              down: cl.down || 0,
-              totalUsed: cl.totalUsed || (cl.up || 0) + (cl.down || 0),
-              total: cl.total || 0,
-              expiryTime: cl.expiryTime || 0,
-              enable: cl.enable !== false,
-              panel: "mrocean"
-            });
-          }
-        }
-        if (p4Res.status === "fulfilled" && Array.isArray(p4Res.value)) {
-          for (const cl of p4Res.value) {
-            results.push({
-              id: cl.id || cl.email,
-              email: cl.email,
-              subId: cl.subId || cl.id,
-              up: cl.up || 0,
-              down: cl.down || 0,
-              totalUsed: cl.totalUsed || (cl.up || 0) + (cl.down || 0),
-              total: cl.total || 0,
-              expiryTime: cl.expiryTime || 0,
-              enable: cl.enable !== false,
-              panel: "panel4"
-            });
-          }
-        }
-        this.trafficCache = { data: results, timestamp: now };
-        return results;
+        })();
+        return this.inflightTrafficPromise;
       }
       /**
        * Disables or enables client across all associated panels
@@ -84739,7 +84794,7 @@ async function fetchSubscriptionLiveInfo(subUrl) {
   try {
     const res = await axios_default.get(subUrl, {
       headers: { "User-Agent": "v2rayNG/1.8.5" },
-      timeout: 5e3,
+      timeout: 2500,
       validateStatus: () => true
     });
     const userInfoHeader = res.headers["subscription-userinfo"] || res.headers["Subscription-Userinfo"];
@@ -84876,14 +84931,20 @@ var init_resellerBotManager = __esm({
         try {
           bot2 = new import_node_telegram_bot_api.default(token, {
             polling: {
-              interval: 400,
+              interval: 80,
               autoStart: false,
               params: {
-                timeout: 10,
+                timeout: 25,
                 allowed_updates: ["message", "callback_query"]
               }
+            },
+            request: {
+              forever: true,
+              pool: { maxSockets: 100 },
+              timeout: 3e4
             }
           });
+          enhanceBotForSpeedAndColoredButtons(bot2);
           this.attachBotHandlers(bot2, sellerChatId);
           bot2.deleteWebHook({ drop_pending_updates: false }).catch(() => {
           });
@@ -85090,11 +85151,6 @@ var init_resellerBotManager = __esm({
             return;
           }
           let clientObj = null;
-          let allClients = [];
-          try {
-            allClients = await multiPanel.getAllClientsWithTraffic();
-          } catch (e) {
-          }
           const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : "";
           const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) || rebecca.extractSubToken(purchase.subUrl) || rebecca.extractSubToken(purchase.sanaeiSubUrl) || rebecca.extractSubToken(purchase.rebeccaSubUrl);
           let effectiveSubUrl = (purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || purchase.mroceanSubUrl || purchase.panel4SubUrl || order?.deliveredSubUrl || "").trim();
@@ -85117,6 +85173,13 @@ var init_resellerBotManager = __esm({
                   fromLiveSub: true
                 };
               }
+            } catch (e) {
+            }
+          }
+          let allClients = [];
+          if (!clientObj) {
+            try {
+              allClients = await multiPanel.getAllClientsWithTraffic();
             } catch (e) {
             }
           }
@@ -88641,7 +88704,7 @@ async function fetchSubscriptionLiveInfo2(subUrl) {
       headers: {
         "User-Agent": "v2rayNG/1.8.5"
       },
-      timeout: 5e3,
+      timeout: 2500,
       validateStatus: () => true
     });
     const userInfoHeader = res.headers["subscription-userinfo"] || res.headers["Subscription-Userinfo"];
@@ -88848,12 +88911,6 @@ async function sendServiceInfo(chatId, purchase) {
   });
   try {
     let clientObj = null;
-    let allClients = [];
-    try {
-      allClients = await multiPanel.getAllClientsWithTraffic();
-    } catch (e) {
-      console.error("[Bot] sendServiceInfo error fetching clients:", e.message);
-    }
     const cleanPId = purchase.id ? String(purchase.id).trim().toLowerCase() : "";
     const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) || rebecca.extractSubToken(purchase.subUrl) || rebecca.extractSubToken(purchase.sanaeiSubUrl) || rebecca.extractSubToken(purchase.rebeccaSubUrl);
     let effectiveSubUrl = (purchase.subUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || "").trim();
@@ -88875,10 +88932,16 @@ async function sendServiceInfo(chatId, purchase) {
             enable: true,
             fromLiveSub: true
           };
-          console.log(`[Subscription Inquiry] Live traffic fetched via subscription URL for ${targetSubId || purchase.id}: Used=${(liveSub.totalUsed / (1024 * 1024 * 1024)).toFixed(2)}GB, Exp=${liveSub.expiryTime}`);
         }
       } catch (e) {
-        console.error("[Subscription Inquiry] Live sub fetch failed:", e.message);
+      }
+    }
+    let allClients = [];
+    if (!clientObj) {
+      try {
+        allClients = await multiPanel.getAllClientsWithTraffic();
+      } catch (e) {
+        console.error("[Bot] sendServiceInfo error fetching clients:", e.message);
       }
     }
     if (!clientObj && allClients && allClients.length > 0) {
@@ -89225,26 +89288,26 @@ async function sendServiceInfo(chatId, purchase) {
 \u06F2. \u062F\u0631 \u0646\u0631\u0645\u200C\u0627\u0641\u0632\u0627\u0631 (V2rayNG / Streisand / V2rayN / Sing-box / Shadowrocket) \u06AF\u0632\u06CC\u0646\u0647 <b>Update Subscription</b> \u0631\u0627 \u0628\u0632\u0646\u06CC\u062F.`;
     const inlineButtons = [
       [
-        { text: "\u{1F504} \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0648\u0636\u0639\u06CC\u062A \u0644\u062D\u0638\u0647\u200C\u0627\u06CC", callback_data: `refresh_service_${purchase.id}` },
-        { text: "\u2699\uFE0F \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0627\u0646\u0641\u06CC\u06AF \u0645\u0633\u062A\u0642\u06CC\u0645", callback_data: `direct_configs_${purchase.id}` }
+        { text: "\u{1F504} \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0648\u0636\u0639\u06CC\u062A \u0644\u062D\u0638\u0647\u200C\u0627\u06CC", callback_data: `refresh_service_${purchase.id}`, style: "primary" },
+        { text: "\u2699\uFE0F \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0627\u0646\u0641\u06CC\u06AF \u0645\u0633\u062A\u0642\u06CC\u0645", callback_data: `direct_configs_${purchase.id}`, style: "primary" }
       ]
     ];
     if (purchase.price > 0 && purchase.volumeGb > 0 && purchase.durationDays > 0) {
       inlineButtons.push([
-        { text: "\u267B\uFE0F \u062A\u0645\u062F\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633", callback_data: `renew_service_${purchase.id}` }
+        { text: "\u267B\uFE0F \u062A\u0645\u062F\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633", callback_data: `renew_service_${purchase.id}`, style: "success" }
       ]);
     }
     inlineButtons.push([
-      { text: "\u{1F92B} \u0627\u0631\u0633\u0627\u0644 \u0628\u062F\u0648\u0646 \u0646\u0627\u0645 \u0648 \u0628\u0631\u0646\u062F (\u0645\u062E\u0635\u0648\u0635 \u0645\u0634\u062A\u0631\u06CC)", callback_data: `clean_customer_msg_${purchase.id}` }
+      { text: "\u{1F92B} \u0627\u0631\u0633\u0627\u0644 \u0628\u062F\u0648\u0646 \u0646\u0627\u0645 \u0648 \u0628\u0631\u0646\u062F (\u0645\u062E\u0635\u0648\u0635 \u0645\u0634\u062A\u0631\u06CC)", callback_data: `clean_customer_msg_${purchase.id}`, style: "primary" }
     ]);
     const currentUserObj = db.getUser(chatId);
     if (currentUserObj && currentUserObj.isSeller && !purchase.isCancelled) {
       inlineButtons.push([
-        { text: "\u{1F6AB} \u062A\u0648\u0642\u0641 \u0648 \u0627\u0628\u0637\u0627\u0644 \u06A9\u0627\u0646\u0641\u06CC\u06AF", callback_data: `cancel_seller_cfg_${purchase.id}` }
+        { text: "\u{1F6AB} \u062A\u0648\u0642\u0641 \u0648 \u0627\u0628\u0637\u0627\u0644 \u06A9\u0627\u0646\u0641\u06CC\u06AF", callback_data: `cancel_seller_cfg_${purchase.id}`, style: "danger" }
       ]);
     }
     inlineButtons.push([
-      { text: "\u{1F4CB} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062E\u0631\u06CC\u062F\u0647\u0627", callback_data: "user_purchases_list" }
+      { text: "\u{1F4CB} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062E\u0631\u06CC\u062F\u0647\u0627", callback_data: "user_purchases_list", style: "danger" }
     ]);
     let photoSent = false;
     if (subUrl) {
@@ -89277,20 +89340,6 @@ async function sendServiceInfo(chatId, purchase) {
 async function sendCleanCustomerConfigMessage(chatId, purchase) {
   if (!bot) return;
   try {
-    let clientObj = null;
-    try {
-      const allClients = await multiPanel.getAllClientsWithTraffic();
-      const targetSubId = (purchase.subId ? String(purchase.subId).trim().toLowerCase() : null) || rebecca.extractSubToken(purchase.subUrl);
-      if (targetSubId && allClients) {
-        clientObj = allClients.find((cl) => {
-          const clSubId = cl.subId ? String(cl.subId).trim().toLowerCase() : "";
-          const clToken = cl.token ? String(cl.token).trim().toLowerCase() : "";
-          const clId = cl.id ? String(cl.id).trim().toLowerCase() : "";
-          return clSubId === targetSubId || clToken === targetSubId || clId === targetSubId;
-        });
-      }
-    } catch (e) {
-    }
     const volStr = purchase.isPayAsYouGo ? "\u0646\u0627\u0645\u062D\u062F\u0648\u062F (\u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F)" : purchase.volumeGb ? `${purchase.volumeGb} \u06AF\u06CC\u06AF\u0627\u0628\u0627\u06CC\u062A` : "\u0646\u0627\u0645\u062D\u062F\u0648\u062F";
     const durStr = purchase.isPayAsYouGo ? "\u0646\u0627\u0645\u062D\u062F\u0648\u062F" : purchase.durationDays ? `${purchase.durationDays} \u0631\u0648\u0632` : "\u0646\u0627\u0645\u062D\u062F\u0648\u062F";
     let subLinks = "";
@@ -89413,6 +89462,66 @@ function getSellerReplyKeyboard() {
     resize_keyboard: true
   };
 }
+function inferGlassButtonStyle(btn) {
+  if (btn && (btn.style === "primary" || btn.style === "success" || btn.style === "danger")) {
+    return btn.style;
+  }
+  const text = String(btn?.text || "");
+  const cb = String(btn?.callback_data || "").toLowerCase();
+  if (/بازگشت|انصراف|لغو|حذف|رد |توقف|ابطال|مسدود|غیرفعال|خیر|بستن|❌|🔙|🚫|🗑/.test(text) || /^(back|cancel|reject|del_|delete|disable|close)/.test(cb) || cb.includes("cancel") || cb.includes("back_to_") || cb.includes("reject_") || cb.includes("delete_")) {
+    return "danger";
+  }
+  if (/خرید|تایید|تمدید|شارژ|افزایش موجودی|پرداخت|سفارش|حجم دلخواه|تومان|رایگان|بله|فروش|🛒|✅|♻️|⚡|💳|🎁|🌊|🔵|🟣|🔸|💎/.test(text) || /^(buy_|select_prod_|confirm_|approve_|renew_|seller_cvol|open_cvol|enable)/.test(cb)) {
+    return "success";
+  }
+  return "primary";
+}
+function enhanceBotForSpeedAndColoredButtons(botInstance) {
+  if (!botInstance || botInstance.__glassEnhanced) return;
+  botInstance.__glassEnhanced = true;
+  const colorizeReplyMarkup = (options) => {
+    if (!options || typeof options !== "object") return options;
+    const rm = options.reply_markup;
+    if (!rm || typeof rm !== "object") return options;
+    if (Array.isArray(rm.inline_keyboard)) {
+      rm.inline_keyboard = rm.inline_keyboard.map(
+        (row) => Array.isArray(row) ? row.map((btn) => {
+          if (btn && typeof btn === "object" && !btn.style) {
+            return { ...btn, style: inferGlassButtonStyle(btn) };
+          }
+          return btn;
+        }) : row
+      );
+    }
+    if (Array.isArray(rm.keyboard)) {
+      rm.keyboard = rm.keyboard.map(
+        (row) => Array.isArray(row) ? row.map((btn) => {
+          if (btn && typeof btn === "object" && !btn.style) {
+            return { ...btn, style: inferGlassButtonStyle(btn) };
+          }
+          return btn;
+        }) : row
+      );
+    }
+    return options;
+  };
+  const origSendMessage = botInstance.sendMessage.bind(botInstance);
+  botInstance.sendMessage = ((chatId, text, options) => {
+    return origSendMessage(chatId, text, colorizeReplyMarkup(options));
+  });
+  const origEditMessageText = botInstance.editMessageText.bind(botInstance);
+  botInstance.editMessageText = ((text, options) => {
+    return origEditMessageText(text, colorizeReplyMarkup(options));
+  });
+  const origSendPhoto = botInstance.sendPhoto.bind(botInstance);
+  botInstance.sendPhoto = ((chatId, photo, options, fileOptions) => {
+    return origSendPhoto(chatId, photo, colorizeReplyMarkup(options), fileOptions);
+  });
+  const origSendDocument = botInstance.sendDocument.bind(botInstance);
+  botInstance.sendDocument = ((chatId, doc, options, fileOptions) => {
+    return origSendDocument(chatId, doc, colorizeReplyMarkup(options), fileOptions);
+  });
+}
 async function initBot() {
   clearAllActiveIntervals();
   const state = db.getState();
@@ -89435,38 +89544,33 @@ async function initBot() {
     }
     isPolling = false;
   }
-  await new Promise((resolve) => setTimeout(resolve, 1e3));
+  await new Promise((resolve) => setTimeout(resolve, 400));
   try {
     console.log(`[Bot] Initializing Telegram Bot with token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
     bot = new import_node_telegram_bot_api2.default(rawToken, {
       polling: {
-        interval: 300,
+        interval: 80,
         autoStart: true,
         params: {
-          timeout: 10,
+          timeout: 25,
           allowed_updates: [
             "message",
-            "edited_message",
-            "channel_post",
-            "edited_channel_post",
-            "inline_query",
-            "chosen_inline_result",
-            "callback_query",
-            "shipping_query",
-            "pre_checkout_query",
-            "poll",
-            "poll_answer",
-            "my_chat_member",
-            "chat_member",
-            "chat_join_request"
+            "callback_query"
           ]
         }
+      },
+      request: {
+        forever: true,
+        pool: { maxSockets: 100 },
+        timeout: 3e4
       }
     });
+    enhanceBotForSpeedAndColoredButtons(bot);
     isPolling = true;
     bot.deleteWebHook({ drop_pending_updates: false }).catch(() => {
     });
     bot.getMe().then((me) => {
+      if (me?.username) cachedMainBotUsername = me.username;
       console.log(`[Bot] Successfully connected & verified as @${me.username} (${me.first_name})`);
     }).catch((verr) => {
       console.warn(`[Bot Warning] getMe check returned: ${verr.message || verr}. Polling is active and waiting for connection.`);
@@ -92844,9 +92948,9 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
         );
         if (nonEmptyCategories.length > 0) {
           const inlineKeyboard2 = nonEmptyCategories.map((c) => [
-            { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_seller_${c.id}` }
+            { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_seller_${c.id}`, style: "primary" }
           ]);
-          inlineKeyboard2.unshift([{ text: "\u26A1 \u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 (\u0646\u0631\u062E \u0647\u0631 \u06AF\u06CC\u06AF)", callback_data: "seller_open_cvol" }]);
+          inlineKeyboard2.unshift([{ text: "\u26A1 \u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 (\u0646\u0631\u062E \u0647\u0631 \u06AF\u06CC\u06AF)", callback_data: "seller_open_cvol", style: "success" }]);
           bot.sendMessage(chatId, "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>\n\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F \u06CC\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 \u0633\u0641\u0627\u0631\u0634 \u062F\u0647\u06CC\u062F:", {
             parse_mode: "HTML",
             reply_markup: {
@@ -92856,9 +92960,9 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
           return;
         }
         const inlineKeyboard = activeProducts.map((p) => [
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: "success" }
         ]);
-        inlineKeyboard.unshift([{ text: "\u26A1 \u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 (\u0646\u0631\u062E \u0647\u0631 \u06AF\u06CC\u06AF)", callback_data: "seller_open_cvol" }]);
+        inlineKeyboard.unshift([{ text: "\u26A1 \u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 (\u0646\u0631\u062E \u0647\u0631 \u06AF\u06CC\u06AF)", callback_data: "seller_open_cvol", style: "success" }]);
         bot.sendMessage(chatId, "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>:\n\u0644\u0637\u0641\u0627 \u06CC\u06A9\u06CC \u0627\u0632 \u067E\u06A9\u06CC\u062C\u200C\u0647\u0627\u06CC \u0632\u06CC\u0631 \u0631\u0627 \u062C\u0647\u062A \u0633\u0627\u062E\u062A \u0627\u062A\u0648\u0645\u0627\u062A\u06CC\u06A9 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:", {
           parse_mode: "HTML",
           reply_markup: {
@@ -92989,8 +93093,13 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
         return;
       }
       if (cleanText === "\u0632\u06CC\u0631\u0645\u062C\u0645\u0648\u0639\u0647\u200C\u06AF\u06CC\u0631\u06CC" || cleanText === "\u0632\u06CC\u0631\u0645\u062C\u0645\u0648\u0639\u0647" || text.includes("\u0632\u06CC\u0631\u0645\u062C\u0645\u0648\u0639\u0647") || text.includes("\u062F\u0639\u0648\u062A")) {
-        const me = await bot.getMe();
-        const refLink = `https://t.me/${me.username}?start=ref_${chatId}`;
+        let botUsername = cachedMainBotUsername;
+        if (!botUsername) {
+          const me = await bot.getMe();
+          botUsername = me.username || "";
+          if (botUsername) cachedMainBotUsername = botUsername;
+        }
+        const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
         const state3 = db.getState();
         bot.sendMessage(chatId, `\u{1F517} \u0644\u06CC\u0646\u06A9 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0634\u0645\u0627 \u0628\u0631\u0627\u06CC \u062F\u0639\u0648\u062A \u062F\u0648\u0633\u062A\u0627\u0646:
 
@@ -93028,7 +93137,7 @@ ${refLink}
         );
         if (nonEmptyCategories.length > 0) {
           const inlineKeyboard2 = nonEmptyCategories.map((c) => [
-            { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_${c.id}` }
+            { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_${c.id}`, style: "primary" }
           ]);
           bot.sendMessage(chatId, "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>", {
             parse_mode: "HTML",
@@ -93040,7 +93149,7 @@ ${refLink}
         }
         const userObj = db.getUser(chatId);
         const inlineKeyboard = activeProducts.map((p) => [
-          { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(userObj, p), callback_data: `buy_${p.id}`, style: "success" }
         ]);
         bot.sendMessage(chatId, "\u{1F6CD} \u0644\u0637\u0641\u0627 \u06CC\u06A9 \u0645\u062D\u0635\u0648\u0644 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:", {
           reply_markup: {
@@ -95405,7 +95514,7 @@ ${result.message}
         );
         if (nonEmptyCategories.length > 0) {
           const inlineKeyboard = nonEmptyCategories.map((c) => [
-            { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_${c.id}` }
+            { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_${c.id}`, style: "primary" }
           ]);
           bot.sendMessage(chatId, "\u{1F6CD} \u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:", {
             parse_mode: "Markdown",
@@ -95415,7 +95524,7 @@ ${result.message}
           });
         } else {
           const inlineKeyboard = activeProducts.map((p) => [
-            { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+            { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: "success" }
           ]);
           bot.sendMessage(chatId, "\u{1F6CD} \u0644\u0637\u0641\u0627 \u06CC\u06A9 \u0645\u062D\u0635\u0648\u0644 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:", {
             reply_markup: {
@@ -95427,11 +95536,10 @@ ${result.message}
         return;
       }
       if (data && (data === "back_to_categories" || data === "back_to_categories_seller")) {
-        try {
-          await answerQuery();
-        } catch (e) {
-        }
+        answerQuery().catch(() => {
+        });
         const isSeller = data === "back_to_categories_seller";
+        const msgId = query.message?.message_id;
         const allCategories = state2.categories || [];
         const activeCategories = allCategories.filter((c) => c && !c.disabled);
         const hasCategories = allCategories.length > 0;
@@ -95455,40 +95563,68 @@ ${result.message}
         );
         if (nonEmptyCategories.length > 0) {
           const inlineKeyboard2 = nonEmptyCategories.map((c) => [
-            { text: `\u{1F4C1} ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}` }
+            { text: `\u{1F4C1} ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}`, style: "primary" }
           ]);
-          bot.sendMessage(chatId, isSeller ? "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>\n\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:" : "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>", {
-            parse_mode: "HTML",
-            reply_markup: {
-              inline_keyboard: inlineKeyboard2
-            }
-          });
+          if (isSeller) {
+            inlineKeyboard2.unshift([{ text: "\u26A1 \u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 (\u0646\u0631\u062E \u0647\u0631 \u06AF\u06CC\u06AF)", callback_data: "seller_open_cvol", style: "success" }]);
+          }
+          const menuTitle = isSeller ? "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>\n\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:" : "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>";
+          if (msgId) {
+            await bot.editMessageText(menuTitle, {
+              chat_id: chatId,
+              message_id: msgId,
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard: inlineKeyboard2 }
+            }).catch(async () => {
+              await bot.sendMessage(chatId, menuTitle, {
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: inlineKeyboard2 }
+              });
+            });
+          } else {
+            await bot.sendMessage(chatId, menuTitle, {
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard: inlineKeyboard2 }
+            });
+          }
           return;
         }
         const inlineKeyboard = activeProducts.map((p) => [
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: "success" }
         ]);
-        bot.sendMessage(chatId, isSeller ? "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>:\n\u0644\u0637\u0641\u0627 \u06CC\u06A9\u06CC \u0627\u0632 \u067E\u06A9\u06CC\u062C\u200C\u0647\u0627\u06CC \u0632\u06CC\u0631 \u0631\u0627 \u062C\u0647\u062A \u0633\u0627\u062E\u062A \u0627\u062A\u0648\u0645\u0627\u062A\u06CC\u06A9 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:" : "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u06CC\u06A9 \u0645\u062D\u0635\u0648\u0644 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>", {
-          parse_mode: "HTML",
-          reply_markup: {
-            inline_keyboard: inlineKeyboard
-          }
-        });
+        const fallbackTitle = isSeller ? "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>:\n\u0644\u0637\u0641\u0627 \u06CC\u06A9\u06CC \u0627\u0632 \u067E\u06A9\u06CC\u062C\u200C\u0647\u0627\u06CC \u0632\u06CC\u0631 \u0631\u0627 \u062C\u0647\u062A \u0633\u0627\u062E\u062A \u0627\u062A\u0648\u0645\u0627\u062A\u06CC\u06A9 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:" : "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u06CC\u06A9 \u0645\u062D\u0635\u0648\u0644 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>";
+        if (msgId) {
+          await bot.editMessageText(fallbackTitle, {
+            chat_id: chatId,
+            message_id: msgId,
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: inlineKeyboard }
+          }).catch(async () => {
+            await bot.sendMessage(chatId, fallbackTitle, {
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard: inlineKeyboard }
+            });
+          });
+        } else {
+          await bot.sendMessage(chatId, fallbackTitle, {
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: inlineKeyboard }
+          });
+        }
         return;
       }
       if (data && data.startsWith("show_category_")) {
-        try {
-          await answerQuery();
-        } catch (e) {
-        }
+        answerQuery().catch(() => {
+        });
         const isSeller = data.startsWith("show_category_seller_");
         const categoryId = data.replace(isSeller ? "show_category_seller_" : "show_category_", "");
+        const msgId = query.message?.message_id;
         const catObj = (state2.categories || []).find((c) => c && !c.disabled && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
         if (!catObj) {
           bot.sendMessage(chatId, "\u274C \u0627\u06CC\u0646 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u06CC\u0627 \u062D\u0630\u0641 \u0634\u062F\u0647 \u0627\u0633\u062A.", {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories" }]
+                [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories", style: "danger" }]
               ]
             }
           });
@@ -95505,22 +95641,36 @@ ${result.message}
           bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644 \u0641\u0639\u0627\u0644\u06CC \u062F\u0631 \u0627\u06CC\u0646 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.", {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories" }]
+                [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories", style: "danger" }]
               ]
             }
           });
           return;
         }
         const inlineKeyboard = filteredProducts.map((p) => [
-          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}` }
+          { text: getProductButtonText(user, p), callback_data: `buy_${p.id}`, style: "success" }
         ]);
         inlineKeyboard.push([
-          { text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories" }
+          { text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories", style: "danger" }
         ]);
-        const catName = categoryId === "uncategorized" ? "\u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A" : catObj?.name || "\u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0627\u0646\u062A\u062E\u0627\u0628\u06CC";
+        const catName = catObj?.name || "\u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0627\u0646\u062A\u062E\u0627\u0628\u06CC";
         const msgText = isSeller ? `\u{1F6D2} <b>\u0645\u062D\u0635\u0648\u0644\u0627\u062A \u062F\u0633\u062A\u0647 \xAB${escapeHtml2(catName)}\xBB (\u0647\u0645\u06A9\u0627\u0631\u0627\u0646):</b>
 \u0644\u0637\u0641\u0627 \u06CC\u06A9\u06CC \u0627\u0632 \u067E\u06A9\u06CC\u062C\u200C\u0647\u0627\u06CC \u0632\u06CC\u0631 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:` : `\u{1F6CD} <b>\u0645\u062D\u0635\u0648\u0644\u0627\u062A \u062F\u0633\u062A\u0647 \xAB${escapeHtml2(catName)}\xBB:</b>
 \u0644\u0637\u0641\u0627 \u067E\u06A9\u06CC\u062C \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u062E\u0648\u062F \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:`;
+        if (msgId) {
+          try {
+            await bot.editMessageText(msgText, {
+              chat_id: chatId,
+              message_id: msgId,
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: inlineKeyboard
+              }
+            });
+            return;
+          } catch (editErr) {
+          }
+        }
         try {
           await bot.sendMessage(chatId, msgText, {
             parse_mode: "HTML",
@@ -96174,7 +96324,7 @@ async function syncAllUsersAndSellersFinancials() {
   }
   return { updatedCount };
 }
-var import_node_telegram_bot_api2, import_fs3, import_path4, import_qrcode2, bot, isPolling, activeIntervals, adminSession, giftCodeDrafts, userSession, purchaseLocks, forceJoinCache;
+var import_node_telegram_bot_api2, import_fs3, import_path4, import_qrcode2, bot, isPolling, activeIntervals, adminSession, giftCodeDrafts, userSession, purchaseLocks, forceJoinCache, cachedMainBotUsername;
 var init_bot = __esm({
   "server/bot.ts"() {
     import_node_telegram_bot_api2 = __toESM(require_node_telegram_bot_api(), 1);
@@ -96200,6 +96350,7 @@ var init_bot = __esm({
     userSession = /* @__PURE__ */ new Map();
     purchaseLocks = /* @__PURE__ */ new Set();
     forceJoinCache = /* @__PURE__ */ new Map();
+    cachedMainBotUsername = "";
   }
 });
 
