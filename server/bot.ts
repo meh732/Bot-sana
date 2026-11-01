@@ -344,11 +344,14 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
 
   if (bot) {
     const titleLabel = source === 'api' ? '🔌 <b>سفارش جدید از طریق وب‌سرویس API (ربات متصل همکار)</b>' : '🛍 <b>سفارش جدید از پورتال اختصاصی بی‌نام همکار</b>';
+    const mainLink = newPurchase.subUrl || newPurchase.panel4SubUrl || newPurchase.mroceanSubUrl || newPurchase.sanaeiSubUrl || newPurchase.rebeccaSubUrl || '';
     const notifyMsg = `${titleLabel}\n\n` +
       `📦 <b>پکیج:</b> ${newPurchase.name}\n` +
       `👤 <b>عنوان کانفیگ:</b> <code>${escapeHtml(customName || clientEmail)}</code>\n` +
       `💰 <b>مبلغ ثبت‌شده در بدهی:</b> ${finalPrice.toLocaleString()} تومان\n` +
-      `📉 <b>بدهی جدید:</b> ${(user.debt || 0).toLocaleString()} تومان`;
+      `📉 <b>بدهی جدید:</b> ${(user.debt || 0).toLocaleString()} تومان\n\n` +
+      (mainLink ? `🔗 <b>لینک سابسکریپشن صادر شده:</b>\n<code>${mainLink}</code>\n\n` : '') +
+      `ℹ️ <i>این لینک به صورت وب‌سرویس به ربات خریدار (بات دوم) تحویل داده شد تا به مشتری نمایش داده شود.</i>`;
     
     bot.sendMessage(sellerChatId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
   }
@@ -474,14 +477,16 @@ export async function executeSellerCustomVolumePurchase(params: {
   if (bot) {
     const headerMsg = source === 'api' 
       ? `🔌 <b>سفارش حجم دلخواه از طریق وب‌سرویس API (ربات متصل همکار)</b>`
-      : `⚡ <b>سفارش حجم دلخواه همکار ثبت شد</b>`;
+    const mainLink = newPurchase.subUrl || newPurchase.panel4SubUrl || newPurchase.mroceanSubUrl || newPurchase.sanaeiSubUrl || newPurchase.rebeccaSubUrl || '';
     const notifyMsg = `${headerMsg}\n\n` +
       `📦 <b>سرویس:</b> ${newPurchase.name}\n` +
       `📊 <b>حجم:</b> ${vol} گیگابایت (${dur} روز)\n` +
       `🏷 <b>نرخ هر گیگ:</b> ${finalRatePerGb.toLocaleString()} تومان\n` +
       `💰 <b>مبلغ ثبت‌شده در بدهی:</b> ${finalPrice.toLocaleString()} تومان\n` +
       `🏢 <b>پنل:</b> ${targetPanel}\n` +
-      `📉 <b>بدهی جدید:</b> ${(user.debt || 0).toLocaleString()} تومان`;
+      `📉 <b>بدهی جدید:</b> ${(user.debt || 0).toLocaleString()} تومان\n\n` +
+      (mainLink ? `🔗 <b>لینک سابسکریپشن صادر شده:</b>\n<code>${mainLink}</code>\n\n` : '') +
+      `ℹ️ <i>این لینک به صورت وب‌سرویس به ربات خریدار (بات دوم) تحویل داده شد تا به مشتری نمایش داده شود.</i>`;
     
     bot.sendMessage(sellerChatId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
   }
