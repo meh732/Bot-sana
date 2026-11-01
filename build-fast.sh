@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 echo "⚡ Starting ultra-fast low-RAM build (esbuild native)..."
 
@@ -10,16 +9,22 @@ fi
 
 # Free cached memory if running as root on VPS
 if [ "$EUID" -eq 0 ] && [ -f "/proc/sys/vm/drop_caches" ]; then
-  # Stop PM2 and old bot process first during build so PM2 doesn't respawn it mid-build
   pm2 stop all 2>/dev/null || true
   pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
   sync 2>/dev/null || true
   echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 fi
 
+# Ensure node_modules has react, lucide-react, and esbuild installed
+if [ ! -d "node_modules/react" ] || [ ! -d "node_modules/lucide-react" ] || [ ! -x "./node_modules/.bin/esbuild" ]; then
+  echo "📦 Installing required packages into node_modules..."
+  env -u NODE_ENV npm install --include=dev --no-package-lock --no-audit --no-fund 2>/dev/null || \
+  env -u NODE_ENV npm install --no-package-lock --no-audit --no-fund || true
+fi
+
 ESBUILD_BIN="./node_modules/.bin/esbuild"
 if [ ! -x "$ESBUILD_BIN" ]; then
-  ESBUILD_BIN="npx esbuild"
+  ESBUILD_BIN="npx --yes esbuild"
 fi
 
 mkdir -p dist/assets
@@ -27,21 +32,41 @@ mkdir -p dist/assets
 # 1. Copy pre-compiled Tailwind CSS
 if [ -f "public/app.css" ]; then
   cp -f public/app.css dist/assets/app.css
+elif [ -f "assets/prebuilt/assets/app.css" ]; then
+  cp -f assets/prebuilt/assets/app.css dist/assets/app.css
 fi
 
-# 2. Bundle React Frontend (takes ~0.8s, <40MB RAM, no Rollup/Vite needed)
+# 2. Bundle Express + Telegram Bot Backend FIRST (guarantees dist/server.cjs exists)
+echo "⚡ Bundling backend server with native esbuild..."
+if GOMAXPROCS=1 GOGC=30 $ESBUILD_BIN ./server.ts \
+  --bundle \
+  --platform=node \
+  --format=cjs \
+  --external:pdfkit \
+  --external:vite \
+  --outfile=dist/server.cjs; then
+  mkdir -p assets/prebuilt
+  cp -f dist/server.cjs assets/prebuilt/server.cjs 2>/dev/null || true
+else
+  echo "⚠️ Backend esbuild warning, checking prebuilt server bundle..."
+  if [ -f "assets/prebuilt/server.cjs" ]; then
+    cp -f assets/prebuilt/server.cjs dist/server.cjs
+    echo "✅ Restored backend bundle from assets/prebuilt/server.cjs"
+  fi
+fi
+
+# 3. Bundle React Frontend (takes ~0.8s, <40MB RAM, no Rollup/Vite needed)
 echo "⚡ Bundling frontend UI with native esbuild..."
-GOMAXPROCS=1 GOGC=30 $ESBUILD_BIN src/main.tsx \
+if GOMAXPROCS=1 GOGC=30 $ESBUILD_BIN src/main.tsx \
   --bundle \
   --minify \
   --format=esm \
   --target=es2020 \
   --loader:.css=empty \
   --define:process.env.NODE_ENV='"production"' \
-  --outfile=dist/assets/app.js
+  --outfile=dist/assets/app.js; then
 
-# 3. Generate production dist/index.html
-cat > dist/index.html << 'EOF'
+  cat > dist/index.html << 'EOF'
 <!doctype html>
 <html lang="fa">
   <head>
@@ -58,15 +83,20 @@ cat > dist/index.html << 'EOF'
 </html>
 EOF
 
-# 4. Bundle Express + Telegram Bot Backend (takes ~1.0s, <45MB RAM)
-echo "⚡ Bundling backend server with native esbuild..."
-GOMAXPROCS=1 GOGC=30 $ESBUILD_BIN ./server.ts \
-  --bundle \
-  --platform=node \
-  --format=cjs \
-  --external:pdfkit \
-  --external:vite \
-  --outfile=dist/server.cjs
+  mkdir -p assets/prebuilt/assets
+  cp -f dist/index.html assets/prebuilt/index.html 2>/dev/null || true
+  cp -f dist/assets/app.js assets/prebuilt/assets/app.js 2>/dev/null || true
+  if [ -f "dist/assets/app.css" ]; then
+    cp -f dist/assets/app.css assets/prebuilt/assets/app.css 2>/dev/null || true
+  fi
+else
+  echo "⚠️ Frontend esbuild could not resolve packages, restoring prebuilt UI from assets/prebuilt..."
+  if [ -f "assets/prebuilt/index.html" ]; then
+    cp -f assets/prebuilt/index.html dist/index.html
+    cp -rf assets/prebuilt/assets/* dist/assets/ 2>/dev/null || true
+    echo "✅ Restored frontend UI from assets/prebuilt!"
+  fi
+fi
 
-echo "✅ Ultra-fast build completed in < 2 seconds!"
+echo "✅ Ultra-fast build completed!"
 

@@ -243,7 +243,8 @@ do_fresh_install() {
   fi
 
   cd "$DIR_NAME" || safe_exit 1
-  ensure_valid_cwd "$PWD"
+  APP_DIR="$(pwd -P 2>/dev/null || pwd)"
+  ensure_valid_cwd "$APP_DIR"
 
   echo "PORT=$PANEL_PORT" > .env
   echo "NODE_ENV=production" >> .env
@@ -253,25 +254,22 @@ do_fresh_install() {
   fi
 
   if [ ! -f "package.json" ]; then
-    echo -e "${RED}❌ Error: package.json is missing in $PWD.${NC}"
+    echo -e "${RED}❌ Error: package.json is missing in $APP_DIR.${NC}"
     safe_exit 1
   fi
+
+  echo -e "\n${CYAN}>> Installing project dependencies...${NC}"
+  pkill -9 -f "npm install" 2>/dev/null || true
+  nice -n 19 env -u NODE_ENV npm install --include=dev --no-package-lock --no-audit --no-fund 2>/dev/null || \
+  nice -n 19 env -u NODE_ENV npm install --no-package-lock --no-audit --no-fund || true
 
   # Compile or verify bundle using ultra-fast native esbuild (< 2 seconds, < 45MB RAM)
   if [ -f "build-fast.sh" ]; then
     echo -e "\n${CYAN}>> Building frontend & backend with ultra-fast native compiler...${NC}"
-    if [ ! -f "./node_modules/.bin/esbuild" ] && ! command -v esbuild &>/dev/null; then
-      echo -e "${CYAN}>> Installing lightweight dependencies...${NC}"
-      pkill -9 -f "npm install" 2>/dev/null || true
-      nice -n 19 env NODE_ENV=production npm install --no-package-lock --no-audit --no-fund || true
-    fi
     bash build-fast.sh
   elif [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
     echo -e "${GREEN}✅ Pre-built standalone backend (dist/server.cjs) and frontend (dist/index.html) verified.${NC}"
   else
-    echo -e "\n${CYAN}>> Installing lightweight backend runtime dependencies...${NC}"
-    pkill -9 -f "npm install" 2>/dev/null || true
-    nice -n 19 env NODE_ENV=production npm install --omit=dev --no-package-lock --no-audit --no-fund || true
     if [ ! -f "dist/server.cjs" ]; then
       echo -e "\n${CYAN}>> Generating backend bundle with esbuild...${NC}"
       GOMAXPROCS=1 GOGC=30 ./node_modules/.bin/esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || true
@@ -286,14 +284,15 @@ do_fresh_install() {
     iptables -I INPUT -p tcp --dport ${PANEL_PORT} -j ACCEPT 2>/dev/null || true
   fi
 
-  echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT} with working directory $PWD...${NC}"
+  # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js (preserving APP_DIR!)
+  cd /root 2>/dev/null && cd "$APP_DIR" 2>/dev/null || true
+  export PWD="$APP_DIR"
+
+  echo -e "\n${CYAN}>> Starting bot service with PM2 on port ${PANEL_PORT} with working directory $APP_DIR...${NC}"
   # Completely kill stale PM2 daemon and clear stale socket files
   pm2 kill 2>/dev/null || true
   pkill -9 -f "PM2" 2>/dev/null || true
   rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
-
-  # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
-  cd /root 2>/dev/null && cd "$PWD" 2>/dev/null || true
 
   # Reset oom_score_adj to 0 before spawning service
   if [ -f "/proc/$$/oom_score_adj" ]; then
@@ -309,11 +308,11 @@ do_fresh_install() {
 
   if command -v pm2 &> /dev/null; then
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" -f --cwd "$PWD" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
+    PORT=$PANEL_PORT NODE_ENV=production pm2 start "$APP_DIR/dist/server.cjs" --name "sanaei-bot" -f --cwd "$APP_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
     pm2 startup 2>/dev/null || true
   else
-    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
+    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$APP_DIR/dist/server.cjs" > bot_output.log 2>&1 &
   fi
 
   sleep 3
@@ -342,11 +341,11 @@ do_update() {
   elif [ -d "/root/$DIR_NAME" ]; then
     TARGET_DIR="/root/$DIR_NAME"
   elif [ -d "$DIR_NAME" ]; then
-    TARGET_DIR="$DIR_NAME"
+    TARGET_DIR="$(cd "$DIR_NAME" && pwd -P)"
   elif [ -d "/root/Bot-sana" ]; then
     TARGET_DIR="/root/Bot-sana"
   elif [ -d "Bot-sana" ]; then
-    TARGET_DIR="Bot-sana"
+    TARGET_DIR="$(cd "Bot-sana" && pwd -P)"
   fi
 
   if [ -z "$TARGET_DIR" ]; then
@@ -356,6 +355,7 @@ do_update() {
   fi
 
   cd "$TARGET_DIR" || safe_exit 1
+  TARGET_DIR="$(pwd -P 2>/dev/null || pwd)"
   ensure_valid_cwd "$TARGET_DIR"
 
   # 1. Secure backup of current database & env FIRST
@@ -424,6 +424,7 @@ do_update() {
 
   # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
   cd /root 2>/dev/null && cd "$TARGET_DIR" 2>/dev/null || true
+  export PWD="$TARGET_DIR"
 
   PORT_VAL=2020
   if [ -f ".env" ]; then

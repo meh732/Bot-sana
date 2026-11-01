@@ -5,12 +5,14 @@ import { db, User, SellerBotConfig, SellerBotOrder, recordUserTransaction } from
 import {
   executeSellerPortalPurchase,
   executeSellerCustomVolumePurchase,
+  cancelSellerPurchase,
   getSellerDiscountForProduct,
   isSellerUnlimitedLimit,
   sanitizeCustomConfigName,
   parseAmountInput,
   getBot
 } from './bot.js';
+import { getTehranShamsiDayRange } from './accounting.js';
 import { multiPanel } from './multiPanel.js';
 import { rebecca } from './rebecca.js';
 import { xui } from './xui.js';
@@ -639,6 +641,10 @@ class ResellerBotManager {
         `۱. بارکد QR بالا را اسکن کرده یا لینک سابسکریپشن را کپی و اضافه نمایید.\n` +
         `۲. در نرم‌افزار (V2rayNG / Streisand / V2rayN / Sing-box / Shadowrocket) گزینه <b>Update Subscription</b> را بزنید.`;
 
+      const isViewerSellerAdmin =
+        targetChatId === seller.chatId ||
+        (seller.sellerBot?.adminChatId && targetChatId === Number(seller.sellerBot.adminChatId));
+
       const inlineButtons: any[][] = [
         [
           { text: '🔄 بروزرسانی وضعیت لحظه‌ای', callback_data: `refresh_srv_${refKey}`, style: 'primary' },
@@ -646,11 +652,19 @@ class ResellerBotManager {
         ],
         [
           { text: '♻️ تمدید همین سرویس (شارژ مجدد حجم و زمان)', callback_data: `renew_srv_${refKey}`, style: 'success' }
-        ],
-        [
-          { text: '📋 بازگشت به لیست سرویس‌های من', callback_data: 'my_services_list', style: 'danger' }
         ]
       ];
+
+      if (isViewerSellerAdmin) {
+        inlineButtons.push([
+          { text: '👑 تمدید مستقیم همکار (با نرخ عمده)', callback_data: `admin_direct_renew_${refKey}`, style: 'primary' },
+          { text: '🚫 ابطال و توقف سرویس (<1GB رایگان)', callback_data: `admin_cancel_srv_${refKey}`, style: 'danger' }
+        ]);
+      }
+
+      inlineButtons.push([
+        { text: '📋 بازگشت به لیست سرویس‌های من', callback_data: 'my_services_list', style: 'danger' }
+      ]);
 
       let photoSent = false;
       if (effectiveSubUrl) {
@@ -708,7 +722,7 @@ class ResellerBotManager {
       ]);
 
       if (isUserAdmin) {
-        keyboard.push([{ text: '👑 پنل مدیریت ربات (ویژه شما)', style: 'danger' }]);
+        keyboard.push([{ text: '👑 پنل مدیریت ربات و پنل همکار (ویژه شما)', style: 'danger' }]);
       }
 
       return {
@@ -884,44 +898,69 @@ class ResellerBotManager {
       const totalBuyers = (botCfg.buyers || []).length;
       const totalOrders = (botCfg.orders || []).filter(o => o.type !== 'deposit' && o.status === 'approved').length;
 
+      const isUnlimited = isSellerUnlimitedLimit(seller);
+      const debtVal = seller.debt || 0;
+      const limitVal = seller.debtLimit !== undefined && seller.debtLimit > 0 ? seller.debtLimit : 1000000;
+      const remainingCredit = isUnlimited ? null : Math.max(0, limitVal - debtVal);
+      const creditDisplay = isUnlimited
+        ? 'سقف آزاد (نامحدود)'
+        : `${(remainingCredit || 0).toLocaleString()} تومان (از سقف ${limitVal.toLocaleString()})`;
+
       const cardInfo = botCfg.cardNumber
         ? `<code>${escapeHtml(botCfg.cardNumber)}</code> (${escapeHtml(botCfg.cardHolder || 'بدون نام')})`
         : '❌ ثبت نشده (الزامی)';
 
       const adminMsg =
-        `👑 <b>پنل مدیریت ربات اختصاصی (${escapeHtml(botCfg.botName || 'فروشگاه شما')})</b>\n\n` +
-        `👤 <b>شناسه ادمین (شما):</b> <code>${adminChatId}</code>\n` +
-        `👥 <b>کل مشتریان ربات:</b> <b>${totalBuyers.toLocaleString()} نفر</b>\n` +
-        `📦 <b>سرویس‌های تحویل‌شده:</b> <b>${totalOrders.toLocaleString()} عدد</b>\n` +
+        `👑 <b>پنل مدیریت ربات دوم شما و پنل همکار (${escapeHtml(botCfg.botName || 'فروشگاه شما')})</b>\n\n` +
+        `👤 <b>شناسه همکار (شما):</b> <code>${adminChatId}</code>\n` +
+        `👥 <b>کل مشتریان ربات شما:</b> <b>${totalBuyers.toLocaleString()} نفر</b>\n` +
+        `📦 <b>سرویس‌های تحویل‌شده در این ربات:</b> <b>${totalOrders.toLocaleString()} عدد</b>\n` +
         `⏳ <b>فیش‌های منتظر تایید شما:</b> <b>${pendingOrders.length} مورد</b>\n` +
-        `💳 <b>کارت بانکی فعال در ربات:</b> ${cardInfo}\n` +
+        `💳 <b>کارت بانکی شما در ربات دوم:</b> ${cardInfo}\n` +
         `⚡ <b>تحویل آنی خودکار:</b> <b>${botCfg.autoDeliverAfterPayment ? '✅ فعال' : '❌ غیرفعال (تایید دستی فیش)'}</b>\n\n` +
-        `💰 <b>تراز مالی شما با مشتریان این ربات:</b>\n` +
+        `💰 <b>تراز مالی شما با مشتریان ربات دوم:</b>\n` +
         `• کل دریافتی از مشتریان: <b>${(botCfg.totalRevenueToman || 0).toLocaleString()} تومان</b>\n` +
-        `• هزینه عمده ثبت‌شده در بدهی شما: <b>${(botCfg.totalWholesaleCostToman || 0).toLocaleString()} تومان</b>\n` +
-        `• 💎 <b>سود خالص شما: ${(botCfg.totalProfitToman || 0).toLocaleString()} تومان</b>\n` +
-        `• 📉 <b>بدهی فعلی شما در ربات مادر: ${(seller.debt || 0).toLocaleString()} تومان</b>\n\n` +
-        `از دکمه‌های شیشه‌ای زیر جهت مدیریت کامل مشتریان، شارژ کیف پول، تایید فیش‌ها، استعلام و تمدید کانفیگ‌ها و تنظیم قیمت و شماره کارت خود استفاده کنید:`;
+        `• هزینه عمده ثبت‌شده: <b>${(botCfg.totalWholesaleCostToman || 0).toLocaleString()} تومان</b>\n` +
+        `• 💎 <b>سود خالص شما: ${(botCfg.totalProfitToman || 0).toLocaleString()} تومان</b>\n\n` +
+        `🏦 <b>وضعیت حساب همکار شما:</b>\n` +
+        `• 📉 <b>بدهی فعلی همکار: ${debtVal.toLocaleString()} تومان</b>\n` +
+        `• 🔋 <b>اعتبار خرید باقیمانده: ${creditDisplay}</b>\n\n` +
+        `از دکمه‌های شیشه‌ای زیر جهت مدیریت مشتریان ربات دوم، قیمت‌گذاری، شماره کارت، و امکانات کامل پنل همکار خود استفاده کنید:`;
 
       const inline_keyboard: any[][] = [];
       if (pendingOrders.length > 0) {
         inline_keyboard.push([
           {
-            text: `🔔 بررسی ${pendingOrders.length} فیش و سفارش منتظر تایید`,
+            text: `🔔 بررسی ${pendingOrders.length} فیش و سفارش منتظر تایید مشتریان`,
             callback_data: 'admin_view_pending',
             style: 'success'
           }
         ]);
       }
 
+      // Section 1: Bot 2 Storefront & Customers Management
       inline_keyboard.push([
         { text: '👥 مدیریت مشتریان و شارژ دستی', callback_data: 'admin_buyers_menu', style: 'primary' },
-        { text: '📋 استعلام و تمدید کانفیگ‌ها', callback_data: 'admin_all_configs', style: 'primary' }
+        { text: '📋 استعلام، تمدید و ابطال کانفیگ‌ها', callback_data: 'admin_all_configs', style: 'primary' }
       ]);
 
       inline_keyboard.push([
         { text: '💰 تعیین قیمت فروش محصولات', callback_data: 'admin_price_settings', style: 'success' },
         { text: '💳 تنظیم شماره کارت بانکی من', callback_data: 'admin_card_settings', style: 'success' }
+      ]);
+
+      // Section 2: Reseller's Own Seller Panel Capabilities (پنل همکار)
+      inline_keyboard.push([
+        { text: '🛒 صدور مستقیم کانفیگ همکار (قیمت همکاری)', callback_data: 'seller_direct_issue_menu', style: 'success' }
+      ]);
+
+      inline_keyboard.push([
+        { text: '📉 وضعیت بدهی و اعتبار همکار', callback_data: 'seller_credit_status', style: 'primary' },
+        { text: '💳 پرداخت بدهی همکار (ثبت فیش)', callback_data: 'seller_pay_debt_start', style: 'success' }
+      ]);
+
+      inline_keyboard.push([
+        { text: '📊 گزارش فروش امروز، ماهانه و صورتحساب من', callback_data: 'seller_sales_report', style: 'primary' }
       ]);
 
       inline_keyboard.push([
@@ -1139,8 +1178,10 @@ class ResellerBotManager {
 
         // Handle Admin Panel
         if (
-          (text === '👑 پنل مدیریت ربات (ویژه شما)' ||
+          (text === '👑 پنل مدیریت ربات و پنل همکار (ویژه شما)' ||
+            text === '👑 پنل مدیریت ربات (ویژه شما)' ||
             text === '👑 پنل مدیریت ربات' ||
+            text === '👑 پنل همکار' ||
             text === '/admin' ||
             text === '/panel' ||
             text === 'مدیریت') &&
@@ -1490,6 +1531,73 @@ class ResellerBotManager {
               .catch(() => {});
             return;
           }
+
+          if (session.action === 'seller_pay_debt_amount') {
+            const amount = parseAmountInput(text);
+            if (amount === null || amount < 10000) {
+              await bot.sendMessage(buyerChatId, '❌ لطفاً مبلغ تسویه بدهی را به تومان (حداقل ۱۰,۰۰۰ تومان) وارد فرمایید:');
+              return;
+            }
+            const state = db.getState();
+            const masterCard = (state.cardNumber || '').trim() || 'شماره کارت مدیریت ثبت نشده است';
+            const masterHolder = (state.cardHolder || '').trim() || 'مدیریت اصلی';
+
+            this.userSessionStates.set(sessionKey, {
+              action: 'seller_pay_debt_receipt',
+              data: { amount }
+            });
+
+            await bot.sendMessage(
+              buyerChatId,
+              `💳 <b>تسویه بدهی حساب همکاری شما:</b>\n\n` +
+                `💰 <b>مبلغ تسویه:</b> <b>${amount.toLocaleString()} تومان</b>\n` +
+                `📉 <b>بدهی فعلی شما:</b> <b>${(seller.debt || 0).toLocaleString()} تومان</b>\n\n` +
+                `🏦 <b>شماره کارت جهت واریز وجه تسویه:</b>\n` +
+                `<code>${escapeHtml(masterCard)}</code>\n` +
+                `👤 <b>به نام:</b> <b>${escapeHtml(masterHolder)}</b>\n\n` +
+                `📸 لطفاً پس از واریز، <b>تصویر فیش واریزی</b> را همینجا ارسال نمایید تا پس از تایید، از بدهی همکاری شما کسر و سقف اعتبارتان آزاد شود:`,
+              {
+                parse_mode: 'HTML',
+                reply_markup: {
+                  keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                  resize_keyboard: true
+                }
+              }
+            );
+            return;
+          }
+
+          if (session.action === 'seller_direct_cvol_gb') {
+            const gb = parseInt(text.replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 1728)));
+            if (isNaN(gb) || gb <= 0 || gb > 1000) {
+              await bot.sendMessage(buyerChatId, '❌ لطفاً یک عدد معتبر بین ۱ تا ۱۰۰۰ گیگابایت وارد فرمایید:');
+              return;
+            }
+            this.userSessionStates.delete(sessionKey);
+            await bot.sendMessage(buyerChatId, `⏳ در حال صدور مستقیم کانفیگ حجم دلخواه ${gb} گیگابایت با نرخ همکاری شما...`, {
+              reply_markup: getMainKeyboard(seller, true)
+            });
+
+            try {
+              const purchase = await executeSellerCustomVolumePurchase({
+                sellerChatId,
+                volumeGb: gb,
+                source: 'portal'
+              });
+              const updatedSeller = db.getUser(sellerChatId) || seller;
+              await this.sendBuyerServiceInfo(bot, updatedSeller, buyerChatId, { purchase });
+              await bot.sendMessage(
+                buyerChatId,
+                `✅ <b>کانفیگ مستقیم همکار (${gb} گیگابایت) صادر شد!</b>\n` +
+                  `📉 مبلغ همکاری به لیست بدهی شما اضافه گردید.\n` +
+                  `💰 بدهی فعلی شما: <b>${(updatedSeller.debt || 0).toLocaleString()} تومان</b>`,
+                { parse_mode: 'HTML' }
+              );
+            } catch (err: any) {
+              await bot.sendMessage(buyerChatId, `❌ خطا در صدور مستقیم کانفیگ: ${err?.message || String(err)}`);
+            }
+            return;
+          }
         }
 
         // 2. Buyer Session: Entering custom config name
@@ -1640,8 +1748,68 @@ class ResellerBotManager {
           return;
         }
 
-        // 5. Handle Photo Uploads (Receipt for Pending Order / Renewal / Wallet Deposit)
+        // 5. Handle Photo Uploads (Receipt for Pending Order / Renewal / Wallet Deposit / Seller Debt Settlement)
         if (msg.photo && msg.photo.length > 0) {
+          if (isUserAdmin && session?.action === 'seller_pay_debt_receipt' && session.data?.amount) {
+            const amount = Number(session.data.amount) || 0;
+            const largestPhoto = msg.photo[msg.photo.length - 1];
+            const payId = `pay_${Date.now()}_${Math.floor(100 + Math.random() * 899)}`;
+            const state = db.getState();
+            state.pendingPayments = state.pendingPayments || [];
+            state.pendingPayments.push({
+              id: payId,
+              chatId: sellerChatId,
+              amount,
+              fileId: largestPhoto.file_id,
+              timestamp: Date.now(),
+              pendingPurchase: {
+                isSellerDebtPayment: true
+              }
+            });
+            db.updateState({ pendingPayments: state.pendingPayments });
+            this.userSessionStates.delete(sessionKey);
+
+            // Forward receipt photo to main bot admins for 1-click debt settlement approval
+            try {
+              const masterBot = getBot();
+              if (masterBot) {
+                const fileUrl = await bot.getFileLink(largestPhoto.file_id);
+                const imgRes = await axios.get(fileUrl, { responseType: 'arraybuffer', timeout: 15000 });
+                const photoBuffer = Buffer.from(imgRes.data);
+                const caption =
+                  `💳 <b>فیش تسویه بدهی همکار (ارسال شده از ربات اختصاصی همکار)</b>\n\n` +
+                  `👤 همکار: <b>${escapeHtml(seller.name || '')}</b> (<code>${sellerChatId}</code>)\n` +
+                  `💰 مبلغ اعلامی واریزشده: <b>${amount.toLocaleString()} تومان</b>\n` +
+                  `📉 بدهی فعلی همکار: <b>${(seller.debt || 0).toLocaleString()} تومان</b>`;
+
+                for (const adminId of state.adminIds || []) {
+                  await masterBot
+                    .sendPhoto(adminId, photoBuffer, {
+                      caption,
+                      parse_mode: 'HTML',
+                      reply_markup: {
+                        inline_keyboard: [
+                          [
+                            { text: '✅ تایید و کسر از بدهی همکار', callback_data: `approve_pay_${payId}`, style: 'success' } as any,
+                            { text: '❌ رد فیش', callback_data: `reject_pay_${payId}`, style: 'danger' } as any
+                          ]
+                        ]
+                      }
+                    })
+                    .catch(() => {});
+                }
+              }
+            } catch (err) {}
+
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ <b>تصویر فیش تسویه بدهی شما به مبلغ ${amount.toLocaleString()} تومان با موفقیت ثبت و برای تایید ارسال شد.</b>\n` +
+                `⏳ به محض تایید فیش، مبلغ از بدهی همکاری شما کسر خواهد شد.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+            return;
+          }
+
           if (!session || session.action !== 'awaiting_receipt' || !session.data) {
             await bot.sendMessage(
               buyerChatId,
@@ -2341,6 +2509,255 @@ class ResellerBotManager {
           } else {
             await bot.sendMessage(buyerChatId, `❌ خطا در تمدید: ${res.message}`);
           }
+          return;
+        }
+
+        // Reseller Admin: Cancel / Revoke Service (<1GB refund rule)
+        if (data.startsWith('admin_cancel_srv_')) {
+          if (!isFromAdmin) return;
+          const refKey = data.replace('admin_cancel_srv_', '');
+          const order = (botCfg.orders || []).find(o => o.id === refKey);
+          const purchaseId = order?.deliveredPurchaseId || refKey;
+          await bot.answerCallbackQuery(query.id, { text: '⏳ در حال بررسی مصرف و ابطال کانفیگ در سرور...' }).catch(() => {});
+
+          const cancelRes = await cancelSellerPurchase(sellerChatId, purchaseId);
+          if (cancelRes.success) {
+            if (order) {
+              const updatedSeller = db.getUser(sellerChatId) || seller;
+              const matchingOrder = (updatedSeller.sellerBot?.orders || []).find(o => o.id === order.id);
+              if (matchingOrder) {
+                matchingOrder.status = 'rejected';
+                matchingOrder.rejectReason = 'ابطال شده توسط مدیر فروشگاه';
+                db.saveUser(updatedSeller);
+              }
+            }
+            await bot.sendMessage(buyerChatId, cancelRes.message, { parse_mode: 'HTML' });
+          } else {
+            await bot.sendMessage(buyerChatId, cancelRes.message, { parse_mode: 'HTML' });
+          }
+          return;
+        }
+
+        // Seller Panel in Bot 2: Credit & Debt Status
+        if (data === 'seller_credit_status') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          const currentSeller = db.getUser(sellerChatId) || seller;
+          const debt = currentSeller.debt || 0;
+          const limit = currentSeller.debtLimit || 0;
+          const remainingCredit = currentSeller.isUnlimitedLimit ? -1 : Math.max(0, limit - debt);
+          const discount = currentSeller.sellerDiscount || 0;
+
+          const msgText =
+            `📉 <b>وضعیت بدهی و اعتبار پنل همکاری شما:</b>\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `👤 <b>نام همکار:</b> <b>${escapeHtml(currentSeller.name || '')}</b>\n` +
+            `💳 <b>بدهی فعلی شما:</b> <b>${debt.toLocaleString()} تومان</b>\n` +
+            `🏦 <b>سقف مجاز بدهی (اعتبار):</b> <b>${currentSeller.isUnlimitedLimit ? 'نامحدود' : `${limit.toLocaleString()} تومان`}</b>\n` +
+            `🟢 <b>اعتبار باقی‌مانده جهت صدور آنی:</b> <b>${remainingCredit === -1 ? 'نامحدود' : `${remainingCredit.toLocaleString()} تومان`}</b>\n` +
+            (discount > 0 ? `🎁 <b>تخفیف همکاری شما:</b> <b>${discount}%</b>\n` : '') +
+            `📦 <b>تعداد کل کانفیگ‌های صادر شده:</b> <b>${(currentSeller.purchases || []).length} عدد</b>\n` +
+            `💰 <b>مجموع خرید همکاری:</b> <b>${(currentSeller.totalSales || 0).toLocaleString()} تومان</b>\n` +
+            `💵 <b>مجموع تسویه شده تا امروز:</b> <b>${(currentSeller.totalPayments || 0).toLocaleString()} تومان</b>\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `💡 <i>در هر زمان می‌توانید از طریق دکمه زیر فیش واریزی تسویه بدهی خود را ثبت نمایید:</i>`;
+
+          await bot.sendMessage(buyerChatId, msgText, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '💳 پرداخت بدهی همکار (ثبت فیش تسویه)', callback_data: 'seller_pay_debt_start', style: 'success' }],
+                [{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_panel_main', style: 'primary' }]
+              ]
+            }
+          });
+          return;
+        }
+
+        // Seller Panel in Bot 2: Pay Debt Start
+        if (data === 'seller_pay_debt_start') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          const currentSeller = db.getUser(sellerChatId) || seller;
+          this.userSessionStates.set(sessionKey, { action: 'seller_pay_debt_amount' });
+
+          await bot.sendMessage(
+            buyerChatId,
+            `💳 <b>تسویه حساب و پرداخت بدهی همکاری</b>\n\n` +
+              `📉 بدهی فعلی شما: <b>${(currentSeller.debt || 0).toLocaleString()} تومان</b>\n` +
+              `🏦 سقف اعتبار شما: <b>${currentSeller.isUnlimitedLimit ? 'نامحدود' : `${(currentSeller.debtLimit || 0).toLocaleString()} تومان`}</b>\n\n` +
+              `لطفاً <b>مبلغی که می‌خواهید تسویه کنید</b> را به <b>تومان</b> (مثلاً: <code>500000</code>) ارسال نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
+        // Seller Panel in Bot 2: Today & Monthly Sales Report
+        if (data === 'seller_sales_report') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          const currentSeller = db.getUser(sellerChatId) || seller;
+          const orders = (currentSeller.sellerBot?.orders || []).filter(
+            o => o.status === 'approved' && o.type !== 'deposit' && o.type !== 'free_test'
+          );
+
+          const { startMs: todayStartMs, todayFa: todayLabel } = getTehranShamsiDayRange();
+          const monthStartMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+          let todayCount = 0;
+          let todayRetail = 0;
+          let todayWholesale = 0;
+          let todayProfit = 0;
+
+          let monthCount = 0;
+          let monthRetail = 0;
+          let monthWholesale = 0;
+          let monthProfit = 0;
+
+          for (const ord of orders) {
+            const ts = Date.parse(ord.approvedAt || ord.createdAt || '');
+            if (isNaN(ts)) continue;
+            const rPrice = ord.retailPrice || 0;
+            const wPrice = ord.wholesalePrice || 0;
+            const prof = ord.profit ?? Math.max(0, rPrice - wPrice);
+
+            if (ts >= todayStartMs) {
+              todayCount++;
+              todayRetail += rPrice;
+              todayWholesale += wPrice;
+              todayProfit += prof;
+            }
+            if (ts >= monthStartMs) {
+              monthCount++;
+              monthRetail += rPrice;
+              monthWholesale += wPrice;
+              monthProfit += prof;
+            }
+          }
+
+          const reportMsg =
+            `📊 <b>گزارش فروش و صورتحساب ربات و پنل همکاری شما</b>\n` +
+            `📅 تاریخ امروز: <b>${todayLabel}</b>\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `☀️ <b>آمار فروش امروز ربات شما:</b>\n` +
+            `• تعداد فروش امروز: <b>${todayCount} سرویس</b>\n` +
+            `• کل دریافتی از مشتریان: <b>${todayRetail.toLocaleString()} تومان</b>\n` +
+            `• هزینه همکاری (منظور در بدهی): <b>${todayWholesale.toLocaleString()} تومان</b>\n` +
+            `• سود خالص امروز شما: <b>${todayProfit.toLocaleString()} تومان</b>\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `📆 <b>آمار فروش ۳۰ روز اخیر ربات شما:</b>\n` +
+            `• تعداد فروش ماهانه: <b>${monthCount} سرویس</b>\n` +
+            `• کل فروش به مشتریان: <b>${monthRetail.toLocaleString()} تومان</b>\n` +
+            `• کل هزینه همکاری: <b>${monthWholesale.toLocaleString()} تومان</b>\n` +
+            `• سود خالص ۳۰ روز اخیر: <b>${monthProfit.toLocaleString()} تومان</b>\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `📉 <b>وضعیت حساب همکاری شما:</b>\n` +
+            `• بدهی فعلی شما: <b>${(currentSeller.debt || 0).toLocaleString()} تومان</b>\n` +
+            `• سقف اعتبار شما: <b>${currentSeller.isUnlimitedLimit ? 'نامحدود' : `${(currentSeller.debtLimit || 0).toLocaleString()} تومان`}</b>`;
+
+          await bot.sendMessage(buyerChatId, reportMsg, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '💳 پرداخت بدهی همکار (ثبت فیش)', callback_data: 'seller_pay_debt_start', style: 'success' }],
+                [{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_panel_main', style: 'primary' }]
+              ]
+            }
+          });
+          return;
+        }
+
+        // Seller Panel in Bot 2: Direct Wholesale Config Issuance Menu
+        if (data === 'seller_direct_issue_menu') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          const state = db.getState();
+          const products = state.products || [];
+          const inline_keyboard: any[][] = [];
+
+          for (const prod of products) {
+            const { wholesalePrice } = this.getProductPricesForSeller(seller, prod);
+            inline_keyboard.push([
+              {
+                text: `⚡ ${prod.name} (${prod.volumeGb}GB) | نرخ شما: ${wholesalePrice.toLocaleString()} ت`,
+                callback_data: `seller_direct_prod_${prod.id}`,
+                style: 'primary'
+              }
+            ]);
+          }
+
+          if (state.customVolumeEnabled !== false) {
+            const { wholesalePricePerGb } = this.getCustomVolumePricesForSeller(seller);
+            inline_keyboard.push([
+              {
+                text: `⚡ صدور حجم دلخواه (هر گیگ ${wholesalePricePerGb.toLocaleString()} تومان)`,
+                callback_data: 'seller_direct_cvol',
+                style: 'success'
+              }
+            ]);
+          }
+
+          inline_keyboard.push([
+            { text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_panel_main', style: 'danger' }
+          ]);
+
+          await bot.sendMessage(
+            buyerChatId,
+            `🛒 <b>صدور مستقیم کانفیگ همکار (با نرخ عمده همکاری شما):</b>\n\n` +
+              `با انتخاب هر یک از محصولات زیر، کانفیگ بلافاصله صادر شده و لینک اشتراک و QR Code آن به شما تحویل داده می‌شود و فقط <b>نرخ همکاری شما</b> در لیست بدهی منظوره می‌گردد:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard }
+            }
+          );
+          return;
+        }
+
+        if (data.startsWith('seller_direct_prod_')) {
+          if (!isFromAdmin) return;
+          const prodId = data.replace('seller_direct_prod_', '');
+          await bot.answerCallbackQuery(query.id, { text: '⏳ در حال صدور مستقیم کانفیگ همکار...' }).catch(() => {});
+          try {
+            const purchase = await executeSellerPortalPurchase(sellerChatId, prodId, undefined, 'portal');
+            const updatedSeller = db.getUser(sellerChatId) || seller;
+            await this.sendBuyerServiceInfo(bot, updatedSeller, buyerChatId, { purchase });
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ <b>کانفیگ مستقیم همکار با موفقیت صادر شد!</b>\n` +
+                `📉 مبلغ همکاری: <b>${(purchase.price || 0).toLocaleString()} تومان</b> در بدهی شما ثبت گردید.\n` +
+                `💰 بدهی فعلی شما: <b>${(updatedSeller.debt || 0).toLocaleString()} تومان</b>`,
+              { parse_mode: 'HTML' }
+            );
+          } catch (err: any) {
+            await bot.sendMessage(buyerChatId, `❌ خطا در صدور مستقیم کانفیگ: ${err?.message || String(err)}`);
+          }
+          return;
+        }
+
+        if (data === 'seller_direct_cvol') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          const { wholesalePricePerGb } = this.getCustomVolumePricesForSeller(seller);
+          this.userSessionStates.set(sessionKey, { action: 'seller_direct_cvol_gb' });
+          await bot.sendMessage(
+            buyerChatId,
+            `⚡ <b>صدور مستقیم کانفیگ با حجم دلخواه (نرخ همکاری):</b>\n\n` +
+              `💰 نرخ همکاری هر گیگابایت برای شما: <b>${wholesalePricePerGb.toLocaleString()} تومان</b>\n\n` +
+              `لطفاً حجم مورد نظر خود را به <b>گیگابایت</b> (مثلاً: <code>30</code> یا <code>100</code>) ارسال نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
           return;
         }
 
