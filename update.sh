@@ -102,8 +102,19 @@ if [ -f ".env" ]; then
     echo -e "${GREEN}✅ Environment file .env backed up safely.${NC}"
 fi
 
-# 2. Fetch and apply updates from Git
-echo -e "\n${YELLOW}🔹 2. Pulling latest code changes from repository...${NC}"
+# 2. Stop running services first so 100% of VPS RAM is free
+echo -e "\n${YELLOW}🔹 2. Stopping running bot processes to free VPS memory...${NC}"
+pm2 stop all 2>/dev/null || true
+pm2 kill 2>/dev/null || true
+pkill -9 -f "PM2" 2>/dev/null || true
+rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
+pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+pkill -9 -f "server\.ts" 2>/dev/null || true
+sync 2>/dev/null || true
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+# 3. Fetch and apply updates from Git
+echo -e "\n${YELLOW}🔹 3. Pulling latest code changes from repository...${NC}"
 git fetch --all
 git reset --hard origin/main || git reset --hard origin/master
 
@@ -111,8 +122,8 @@ git reset --hard origin/main || git reset --hard origin/master
 ensure_valid_cwd
 ensure_swap_and_memory
 
-# 3. Restore Database & Configs immediately
-echo -e "\n${YELLOW}🔹 3. Restoring database records and credentials...${NC}"
+# 4. Restore Database & Configs immediately
+echo -e "\n${YELLOW}🔹 4. Restoring database records and credentials...${NC}"
 if [ -f "/tmp/sanaei_db_backup.json" ]; then
     # Verify backup is not dummy
     if grep -q "123456789:ABC" /tmp/sanaei_db_backup.json; then
@@ -143,25 +154,24 @@ if [ ! -f "package.json" ]; then
     safe_exit 1
 fi
 
-# 4. Rebuild project to compile newly pulled frontend & backend changes
-echo -e "\n${YELLOW}🔹 4. Compiling latest updates (Frontend & Backend)...${NC}"
-NODE_OPTIONS="--max-old-space-size=400" npm run build
+# 5. Apply pre-built bundle (Zero-RAM instant update) or compile if needed
+echo -e "\n${YELLOW}🔹 5. Preparing latest frontend & backend build...${NC}"
+if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
+    echo -e "${GREEN}⚡ Pre-built production bundle found in repository. Copying to dist/ (Zero RAM)...${NC}"
+    mkdir -p dist
+    cp -rf assets/prebuilt/* dist/
+elif [ -f "dist/index.html" ]; then
+    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || NODE_OPTIONS="--max-old-space-size=400" npm run build
+else
+    NODE_OPTIONS="--max-old-space-size=400" npm run build
+fi
 
-# 5. Restart application service cleanly
-echo -e "\n${YELLOW}🔹 5. Restarting service with PM2...${NC}"
-
-# Completely kill stale PM2 daemon and clear stale socket files
-pm2 kill 2>/dev/null || true
-pkill -9 -f "PM2" 2>/dev/null || true
-rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
+# 6. Restart application service cleanly
+echo -e "\n${YELLOW}🔹 6. Starting service with PM2...${NC}"
 
 # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
 CURR_DIR="$(pwd -P 2>/dev/null || pwd)"
 cd /root 2>/dev/null && cd "$CURR_DIR" 2>/dev/null || true
-
-pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
-pkill -9 -f "node.*server\.ts" 2>/dev/null || true
-pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
 
 PORT_VAL=2020
 if [ -f ".env" ]; then
@@ -179,11 +189,16 @@ if command -v iptables &>/dev/null; then
     iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
 fi
 
+# Reset oom_score_adj to 0 before spawning service
+if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
+fi
+
 echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $CURR_DIR...${NC}"
 if command -v pm2 &> /dev/null; then
-    pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" || \
-    PORT=$PORT_VAL NODE_ENV=production nohup node "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" --node-args="--max-old-space-size=450"; then
+        PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    fi
     pm2 save 2>/dev/null || true
 
     sleep 2
@@ -200,6 +215,6 @@ if command -v pm2 &> /dev/null; then
 else
     echo -e "${YELLOW}⚠️ PM2 not found. Starting in background via nohup...${NC}"
     pkill -9 -f "dist/server.cjs" 2>/dev/null
-    nohup npm start > bot_output.log 2>&1 &
+    PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
     echo -e "${GREEN}✅ Bot started in background (logs in bot_output.log).${NC}"
 fi

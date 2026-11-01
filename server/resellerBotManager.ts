@@ -1,6 +1,6 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { db, User, SellerBotConfig, SellerBotOrder } from './db.js';
-import { executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct } from './bot.js';
+import { executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, getBot } from './bot.js';
 import { multiPanel } from './multiPanel.js';
 import QRCode from 'qrcode';
 
@@ -27,7 +27,7 @@ class ResellerBotManager {
       try {
         await this.startResellerBot(seller.chatId);
       } catch (err: any) {
-        console.error(`[ResellerBotManager] Failed to start bot for seller ${seller.chatId}:`, err.message);
+        console.error(`[ResellerBotManager] Failed to start bot for seller ${seller.chatId}:`, err?.message || err);
       }
     }
     console.log(`[ResellerBotManager] ${this.activeBots.size} reseller bot(s) currently online.`);
@@ -50,15 +50,50 @@ class ResellerBotManager {
       return { success: false, message: 'فرمت توکن ربات تلگرام نامعتبر است. توکن را از @BotFather دریافت نمایید.' };
     }
 
-    try {
-      const bot = new TelegramBot(token, { polling: true });
+    // Prevent using the main system bot token as a reseller bot token (causes 409 Conflict and stops both bots)
+    const state = db.getState();
+    const mainToken = (state.botToken || process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (mainToken && token === mainToken) {
+      return {
+        success: false,
+        message: 'این توکن متعلق به ربات مادر (اصلی) است! لطفاً در @BotFather یک ربات جدید بسازید و توکن ربات دوم را وارد نمایید.'
+      };
+    }
 
-      // Verify token with Telegram
+    // Prevent duplicate token across multiple sellers
+    const duplicateSeller = (state.users || []).find(
+      u => u.chatId !== sellerChatId && u.isSeller && u.sellerBot?.enabled && (u.sellerBot?.botToken || '').trim() === token
+    );
+    if (duplicateSeller) {
+      return {
+        success: false,
+        message: 'این توکن قبلاً برای همکار دیگری ثبت شده است. لطفاً توکن اختصاصی ربات خودتان را وارد نمایید.'
+      };
+    }
+
+    let bot: TelegramBot | null = null;
+    try {
+      // Create bot with polling disabled first so we can verify token and attach error listeners safely
+      bot = new TelegramBot(token, { polling: false });
+
+      this.attachBotHandlers(bot, sellerChatId);
+
+      await (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
+
+      // Verify token with Telegram before starting polling
       const me = await bot.getMe();
       const botUsername = me.username || '';
 
       user.sellerBot.botUsername = botUsername;
       db.saveUser(user);
+
+      await bot.startPolling({
+        polling: {
+          interval: 400,
+          autoStart: true,
+          params: { timeout: 10 }
+        }
+      } as any);
 
       this.activeBots.set(sellerChatId, {
         bot,
@@ -67,8 +102,6 @@ class ResellerBotManager {
         startedAt: Date.now()
       });
 
-      this.attachBotHandlers(bot, sellerChatId);
-
       console.log(`[ResellerBotManager] Reseller bot @${botUsername} started successfully for seller ${sellerChatId}`);
       return {
         success: true,
@@ -76,10 +109,16 @@ class ResellerBotManager {
         message: `ربات اختصاصی شما (@${botUsername}) با موفقیت روشن شد و آنلاین است.`
       };
     } catch (err: any) {
-      console.error(`[ResellerBotManager] Error launching bot for seller ${sellerChatId}:`, err);
+      if (bot) {
+        try {
+          await bot.stopPolling({ cancel: true });
+          bot.removeAllListeners();
+        } catch (e) {}
+      }
+      console.error(`[ResellerBotManager] Error launching bot for seller ${sellerChatId}:`, err?.message || err);
       return {
         success: false,
-        message: 'خطا در اتصال به تلگرام با توکن ارسالی: ' + (err.message || String(err))
+        message: 'خطا در اتصال به تلگرام با توکن ارسالی: ' + (err?.message || String(err))
       };
     }
   }
@@ -92,6 +131,7 @@ class ResellerBotManager {
     if (record) {
       try {
         await record.bot.stopPolling({ cancel: true });
+        record.bot.removeAllListeners();
       } catch (e) {}
       this.activeBots.delete(sellerChatId);
       console.log(`[ResellerBotManager] Stopped bot for seller ${sellerChatId}`);
@@ -156,12 +196,23 @@ class ResellerBotManager {
 
     // Error safety for polling
     bot.on('polling_error', (error: any) => {
-      console.warn(`[ResellerBot @${sellerChatId}] Polling warning:`, error.message);
+      const errMsg = error?.message || String(error);
+      if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
+        console.error(`[ResellerBot @${sellerChatId}] Invalid or revoked token. Stopping child bot polling.`);
+        this.stopResellerBot(sellerChatId).catch(() => {});
+        return;
+      }
+      console.warn(`[ResellerBot @${sellerChatId}] Polling warning:`, errMsg);
+    });
+
+    bot.on('error', (error: any) => {
+      console.warn(`[ResellerBot @${sellerChatId}] General warning:`, error?.message || error);
     });
 
     // Handle incoming messages
     bot.on('message', async (msg) => {
-      if (!msg.from || !msg.chat) return;
+      try {
+        if (!msg.from || !msg.chat) return;
       const buyerChatId = msg.chat.id;
       const text = (msg.text || '').trim();
       const sessionKey = getSessionKey(buyerChatId);
@@ -572,9 +623,8 @@ class ResellerBotManager {
 
           // 2. Also notify in Master Bot as additional safety
           try {
-            const masterBotToken = db.getState().botToken;
-            if (masterBotToken) {
-              const masterBot = new TelegramBot(masterBotToken);
+            const masterBot = getBot();
+            if (masterBot) {
               const notifyMsg = `🔔 <b>سفارش و فیش پرداخت جدید در ربات اختصاصی شما (@${botCfg.botUsername || botCfg.botName})!</b>\n\n` +
                 `👤 مشتری: ${newOrder.buyerName} (@${newOrder.buyerUsername || 'بدون آیدی'})\n` +
                 `📦 محصول: <b>${newOrder.productName}</b>\n` +
@@ -601,10 +651,14 @@ class ResellerBotManager {
         }
         return;
       }
+      } catch (msgErr: any) {
+        console.error(`[ResellerBot @${sellerChatId} Message Handler Error]:`, msgErr?.message || msgErr);
+      }
     });
 
     // Handle Callback Queries (inline button clicks)
     bot.on('callback_query', async (query) => {
+      try {
       if (!query.message || !query.data) return;
       const buyerChatId = query.message.chat.id;
       const data = query.data;
@@ -766,6 +820,9 @@ class ResellerBotManager {
           }
         });
       }
+      } catch (cbErr: any) {
+        console.error(`[ResellerBot @${sellerChatId} Callback Handler Error]:`, cbErr?.message || cbErr);
+      }
     });
   }
 
@@ -828,7 +885,7 @@ class ResellerBotManager {
       db.saveUser(seller);
 
       // Send config and QR code to the buyer in the child bot
-      const targetBot = childBot || (seller.sellerBot?.botToken ? new TelegramBot(seller.sellerBot.botToken) : null);
+      const targetBot = childBot || (seller.sellerBot?.botToken ? new TelegramBot(seller.sellerBot.botToken, { polling: false }) : null);
       if (targetBot && configLink) {
         try {
           const qrBuffer = await QRCode.toBuffer(configLink, { width: 400, margin: 2 });
@@ -848,7 +905,7 @@ class ResellerBotManager {
           });
         } catch (deliveryErr) {
           console.error('[Reseller Bot Buyer Delivery Error]', deliveryErr);
-          await targetBot.sendMessage(order.buyerChatId, `🎉 سرویس شما صادر شد:\n<code>${configLink}</code>`, { parse_mode: 'HTML' });
+          await targetBot.sendMessage(order.buyerChatId, `🎉 سرویس شما صادر شد:\n<code>${configLink}</code>`, { parse_mode: 'HTML' }).catch(() => {});
         }
       }
 

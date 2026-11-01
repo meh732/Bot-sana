@@ -257,7 +257,12 @@ do_fresh_install() {
     safe_exit 1
   fi
 
-  # Check for pre-built distribution bundle
+  # Check for pre-built distribution bundle (in assets/prebuilt or dist)
+  if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
+    mkdir -p dist
+    cp -rf assets/prebuilt/* dist/
+  fi
+
   if [ -f "dist/server.cjs" ] && [ -f "dist/index.html" ]; then
     echo -e "${GREEN}✅ Pre-built standalone backend (dist/server.cjs) and frontend (dist/index.html) verified.${NC}"
     echo -e "${CYAN}⚡ Zero-build deployment: skipping npm install & compilation to conserve VPS RAM.${NC}"
@@ -288,14 +293,24 @@ do_fresh_install() {
   # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
   cd /root 2>/dev/null && cd "$PWD" 2>/dev/null || true
 
-  PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" || \
-  PORT=$PANEL_PORT NODE_ENV=production nohup node "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
-  pm2 save 2>/dev/null || true
-  pm2 startup 2>/dev/null || true
+  # Reset oom_score_adj to 0 before spawning service
+  if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
+  fi
+
+  if command -v pm2 &> /dev/null; then
+    if ! PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" --node-args="--max-old-space-size=450"; then
+      PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=450 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
+    fi
+    pm2 save 2>/dev/null || true
+    pm2 startup 2>/dev/null || true
+  else
+    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=450 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
+  fi
 
   sleep 2
   echo -e "${GREEN}✅ PM2 Process Status:${NC}"
-  pm2 status sanaei-bot
+  pm2 status sanaei-bot 2>/dev/null || true
   pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
 
   SERVER_IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com || echo "YOUR_SERVER_IP")
@@ -335,7 +350,7 @@ do_update() {
   cd "$TARGET_DIR" || safe_exit 1
   ensure_valid_cwd "$TARGET_DIR"
 
-  # Secure backup of current database & env
+  # 1. Secure backup of current database & env FIRST
   if [ -f "db.json" ]; then
     echo -e "${GREEN}📦 Backing up database (db.json)...${NC}"
     cp db.json /tmp/db.json.bak 2>/dev/null || cp db.json ../db.json.bak 2>/dev/null
@@ -344,6 +359,18 @@ do_update() {
     cp .env /tmp/.env.bak 2>/dev/null || cp .env ../.env.bak 2>/dev/null
   fi
 
+  # 2. Stop running services BEFORE git pull/update so 100% of VPS RAM is free and no process gets OOM-killed
+  echo -e "${CYAN}>> Stopping running bot processes to free VPS memory...${NC}"
+  pm2 stop all 2>/dev/null || true
+  pm2 kill 2>/dev/null || true
+  pkill -9 -f "PM2" 2>/dev/null || true
+  rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
+  pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+  pkill -9 -f "server\.ts" 2>/dev/null || true
+  sync 2>/dev/null || true
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+  # 3. Pull latest updates from Git
   echo -e "\n${CYAN}>> Pulling latest updates from Git...${NC}"
   git fetch --all 2>/dev/null || true
   git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || true
@@ -367,7 +394,7 @@ do_update() {
     cp ../.env.bak .env
   fi
 
-  # Ensure package.json exists before attempting npm operations
+  # Ensure package.json exists before attempting operations
   if [ ! -f "package.json" ]; then
     echo -e "${YELLOW}⚠️ package.json is missing in $TARGET_DIR. Restoring repository files...${NC}"
     curl -fsSL "https://codeload.github.com/meh732/Bot-sana/tar.gz/refs/heads/main" | tar -xz --strip-components=1 2>/dev/null || \
@@ -379,28 +406,22 @@ do_update() {
     safe_exit 1
   fi
 
-  # 4. Rebuild project to compile newly pulled frontend & backend changes
-  echo -e "\n${CYAN}>> Compiling latest updates...${NC}"
-  if [ -f "dist/index.html" ]; then
+  # 4. Apply pre-built bundle (Zero-RAM instant update) or compile if needed
+  echo -e "\n${CYAN}>> Preparing latest build...${NC}"
+  if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
+    echo -e "${GREEN}⚡ Pre-built frontend & backend bundle found in repository. Copying to dist/ (Zero RAM)...${NC}"
+    mkdir -p dist
+    cp -rf assets/prebuilt/* dist/
+  elif [ -f "dist/index.html" ]; then
     echo -e "${GREEN}⚡ Pre-built frontend bundle verified. Compiling backend with esbuild (Fast & Low RAM)...${NC}"
-    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || npm run build
+    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || NODE_OPTIONS="--max-old-space-size=400" npm run build
   else
     echo -e "${YELLOW}ℹ️ Compiling full frontend and backend...${NC}"
     NODE_OPTIONS="--max-old-space-size=400" npm run build
   fi
 
-  echo -e "\n${CYAN}>> Restarting bot service with PM2...${NC}"
-  # Completely kill stale PM2 daemon and clear stale socket files
-  pm2 kill 2>/dev/null || true
-  pkill -9 -f "PM2" 2>/dev/null || true
-  rm -rf /root/.pm2/pm2.pid /root/.pm2/rpc.sock /root/.pm2/pub.sock 2>/dev/null || true
-
   # Sanitize working directory inode to prevent uv_cwd ENOENT in Node.js
   cd /root 2>/dev/null && cd "$TARGET_DIR" 2>/dev/null || true
-
-  pkill -9 -f "node.*dist/server\.cjs" 2>/dev/null || true
-  pkill -9 -f "node.*server\.ts" 2>/dev/null || true
-  pkill -9 -f "tsx.*server\.ts" 2>/dev/null || true
 
   PORT_VAL=2020
   if [ -f ".env" ]; then
@@ -418,14 +439,23 @@ do_update() {
     iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
   fi
 
-  echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $TARGET_DIR...${NC}"
+  # Reset oom_score_adj to 0 before spawning service so child processes run normally
+  if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
+  fi
+
+  echo -e "\n${CYAN}>> Starting bot service on port ${PORT_VAL} with working directory $TARGET_DIR...${NC}"
   if command -v pm2 &> /dev/null; then
-    pm2 delete "sanaei-bot" 2>/dev/null || true
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" || \
-    PORT=$PORT_VAL NODE_ENV=production nohup node "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450"; then
+      echo -e "${YELLOW}⚠️ PM2 failed to start, launching via direct node daemon...${NC}"
+      PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    fi
     pm2 save 2>/dev/null || true
+    sleep 2
+    pm2 status sanaei-bot 2>/dev/null || true
+    pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
   else
-    PORT=$PORT_VAL NODE_ENV=production nohup node "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
   fi
 
   echo -e "\n${GREEN}=============================================${NC}"
@@ -436,15 +466,43 @@ do_update() {
 
 do_restart() {
   echo -e "\n${CYAN}>> Restarting bot service...${NC}"
-  if [ -f "./restart.sh" ]; then
-    bash ./restart.sh
-  elif [ -f "../restart.sh" ]; then
-    bash ../restart.sh
-  elif command -v pm2 &> /dev/null; then
-    pm2 restart "sanaei-bot"
-    echo -e "${GREEN}✅ Bot service restarted under PM2.${NC}"
+  TARGET_DIR="/root/$DIR_NAME"
+  if [ -f "server.ts" ] && [ -f "package.json" ]; then
+    TARGET_DIR="$(pwd -P)"
+  elif [ -d "/root/Bot-sana" ]; then
+    TARGET_DIR="/root/Bot-sana"
+  fi
+  cd "$TARGET_DIR" 2>/dev/null || true
+
+  if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
+    mkdir -p dist
+    cp -rf assets/prebuilt/* dist/
+  fi
+
+  PORT_VAL=2020
+  if [ -f ".env" ]; then
+    ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
+    if [ -n "$ENV_PORT" ]; then
+      PORT_VAL="$ENV_PORT"
+    fi
+  fi
+
+  if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
+  fi
+
+  pm2 kill 2>/dev/null || true
+  pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+
+  if command -v pm2 &> /dev/null; then
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450"
+    pm2 save 2>/dev/null || true
+    sleep 2
+    pm2 status sanaei-bot 2>/dev/null || true
+    echo -e "${GREEN}✅ Bot service restarted under PM2 on port ${PORT_VAL}.${NC}"
   else
-    echo -e "${RED}❌ Unable to find restart script or PM2.${NC}"
+    PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
+    echo -e "${GREEN}✅ Bot service started in background on port ${PORT_VAL}.${NC}"
   fi
 }
 

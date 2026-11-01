@@ -51,16 +51,20 @@ pkill -9 -f "dist/server.cjs" 2>/dev/null
 pkill -9 -f "tsx" 2>/dev/null
 echo -e "${GREEN}✅ Stale processes stopped.${NC}"
 
-# 3. Clean and build the project to ensure correct compilation
-echo -e "${YELLOW}🔹 3. Compiling and building project to apply code changes...${NC}"
-npm run clean 2>/dev/null
-nice -n 19 env NODE_OPTIONS="--max-old-space-size=1024" npm run build
-
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️ First build attempt had error, running fallback clean build...${NC}"
-    npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs
+# 3. Ensure latest prebuilt bundle is in dist/
+echo -e "${YELLOW}🔹 3. Checking and preparing application build...${NC}"
+if [ -f "assets/prebuilt/server.cjs" ] && [ -f "assets/prebuilt/index.html" ]; then
+    mkdir -p dist
+    cp -rf assets/prebuilt/* dist/
+    echo -e "${GREEN}✅ Pre-built bundle synced to dist/ (Zero RAM).${NC}"
+elif [ ! -f "dist/server.cjs" ]; then
+    npx esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs || NODE_OPTIONS="--max-old-space-size=400" npm run build
 fi
-echo -e "${GREEN}✅ Project built and compiled successfully.${NC}"
+
+# Reset oom_score_adj to 0 before spawning service
+if [ -f "/proc/$$/oom_score_adj" ]; then
+    echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
+fi
 
 # 4. Start the application
 echo -e "${BLUE}===============================================${NC}"
@@ -70,13 +74,15 @@ echo -e "${BLUE}===============================================${NC}"
 if command -v pm2 &> /dev/null
 then
     echo -e "${YELLOW}ℹ️ PM2 detected. Restarting service with PM2...${NC}"
-    pm2 delete "sanaei-bot" 2>/dev/null
-    pm2 start dist/server.cjs --name "sanaei-bot" 2>/dev/null || pm2 start npm --name "sanaei-bot" -- run start
-    pm2 save
-    echo -e "${GREEN}✅ Bot restarted successfully under PM2 as 'sanaei-bot'.${NC}"
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    if ! PORT=$TARGET_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --node-args="--max-old-space-size=450"; then
+        PORT=$TARGET_PORT NODE_ENV=production nohup node --max-old-space-size=450 dist/server.cjs > bot_output.log 2>&1 &
+    fi
+    pm2 save 2>/dev/null || true
+    echo -e "${GREEN}✅ Bot restarted successfully under PM2 as 'sanaei-bot' on port ${TARGET_PORT}.${NC}"
 else
     echo -e "${YELLOW}⚠️ PM2 not found. Starting process in background...${NC}"
-    nohup npm start > bot_output.log 2>&1 &
+    PORT=$TARGET_PORT NODE_ENV=production nohup node --max-old-space-size=450 dist/server.cjs > bot_output.log 2>&1 &
     echo -e "${GREEN}✅ Bot started in background (logs: bot_output.log).${NC}"
 fi
 

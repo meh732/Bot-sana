@@ -19,6 +19,14 @@ import { resellerBotManager } from "./server/resellerBotManager.js";
 
 const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
 
+// Global crash protection to keep web panel and Telegram bots online 24/7
+process.on('uncaughtException', (err: any) => {
+  console.error('[Process UncaughtException - Prevented Crash]:', err?.message || err);
+});
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[Process UnhandledRejection - Prevented Crash]:', reason?.message || reason);
+});
+
 // Helpers to parse inbound IDs dynamically (supports string tags like "d1" or numbers like 1)
 function parseInboundId(val: any): string | number | undefined {
   if (val === undefined || val === null || val === '') return undefined;
@@ -2869,9 +2877,12 @@ async function startServer() {
     currentDir,
     path.join(currentDir, 'dist'),
     path.join(process.cwd(), 'dist'),
+    path.join(currentDir, 'assets', 'prebuilt'),
+    path.join(process.cwd(), 'assets', 'prebuilt'),
     process.cwd(),
     path.resolve(currentDir, '..', 'dist'),
-    path.resolve(process.cwd(), '..', 'dist')
+    path.resolve(process.cwd(), '..', 'dist'),
+    path.resolve(currentDir, '..', 'assets', 'prebuilt')
   ];
 
   let resolvedDistDir: string | null = null;
