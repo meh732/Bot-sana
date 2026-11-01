@@ -5,6 +5,7 @@ import cors from "cors";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
+import { execSync } from "child_process";
 import { db, recordUserTransaction, ensureSellerApiKey, generateSellerApiKey } from "./server/db.js";
 import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, cancelSellerPurchase, getPurchaseLiveUsedBytes } from "./server/bot.js";
 import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
@@ -3039,21 +3040,42 @@ async function startServer() {
     });
   }
 
-  const httpServer = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    initBot();
-    syncAllUsersAndSellersFinancials().catch(err => {
-      console.error('[Startup Financials Sync Error]', err.message);
+  let listenRetries = 0;
+  function startListening() {
+    const httpServer = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+      initBot();
+      syncAllUsersAndSellersFinancials().catch(err => {
+        console.error('[Startup Financials Sync Error]', err.message);
+      });
+      resellerBotManager.initAllResellerBots().catch(console.error);
     });
-    resellerBotManager.initAllResellerBots().catch(console.error);
-  });
 
-  httpServer.on('error', (err: any) => {
-    if (err && err.code === 'EADDRINUSE') {
-      console.error(`[Server] Port ${PORT} is already in use by another instance. Exiting duplicate process cleanly.`);
-      process.exit(1);
-    }
-  });
+    httpServer.on('error', (err: any) => {
+      if (err && err.code === 'EADDRINUSE') {
+        console.error(`[Server] Port ${PORT} is already in use.`);
+        if (listenRetries < 2 && process.platform === 'linux') {
+          listenRetries++;
+          console.warn(`[Server] Port ${PORT} busy. Terminating orphaned process holding the port (attempt ${listenRetries})...`);
+          try {
+            try { execSync(`fuser -k -9 ${PORT}/tcp 2>/dev/null`); } catch (_) {}
+            try { execSync(`lsof -t -i:${PORT} 2>/dev/null | grep -v "^${process.pid}$" | xargs -r kill -9 2>/dev/null`); } catch (_) {}
+          } catch (e: any) {
+            console.error('[Server] Could not clean port:', e?.message || e);
+          }
+          setTimeout(() => {
+            console.log(`[Server] Retrying to listen on port ${PORT}...`);
+            startListening();
+          }, 1000);
+          return;
+        }
+        console.error(`[Server] Port ${PORT} is still in use by another instance. Exiting cleanly.`);
+        process.exit(1);
+      }
+    });
+  }
+
+  startListening();
 }
 
 startServer();

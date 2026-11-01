@@ -70,21 +70,3 @@ GOMAXPROCS=1 GOGC=30 $ESBUILD_BIN ./server.ts \
 
 echo "✅ Ultra-fast build completed in < 2 seconds!"
 
-# 5. If running on Linux VPS, ensure at least one server.cjs process is running after 12s
-if [ "$EUID" -eq 0 ] && { [ -d "/root/sanaei-bot" ] || [ -d "/root/Bot-sana" ]; }; then
-  WORK_DIR="$(pwd -P 2>/dev/null || pwd)"
-  PORT_VAL=2121
-  if [ -f ".env" ]; then
-    ENV_PORT=$(grep "^PORT=" .env | cut -d '=' -f2 | tr -d ' ' | tr -d '\r')
-    if [ -n "$ENV_PORT" ]; then
-      PORT_VAL="$ENV_PORT"
-    fi
-  fi
-  NODE_BIN=$(command -v node || echo "/usr/bin/node")
-  (
-    sleep 12
-    if ! pgrep -f "dist/server\.cjs" >/dev/null 2>&1; then
-      PORT=${PORT_VAL} NODE_ENV=production nohup ${NODE_BIN} --max-old-space-size=400 "${WORK_DIR}/dist/server.cjs" > "${WORK_DIR}/bot_output.log" 2>&1 &
-    fi
-  ) >/dev/null 2>&1 &
-fi

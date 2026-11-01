@@ -35,6 +35,7 @@ if [ -f ".env" ]; then
 fi
 
 echo -e "${YELLOW}🔹 1. Checking and clearing active processes on port ${TARGET_PORT}...${NC}"
+fuser -k -9 ${TARGET_PORT}/tcp 2>/dev/null || true
 PID_TARGET=$(lsof -t -i:${TARGET_PORT} 2>/dev/null)
 if [ ! -z "$PID_TARGET" ]; then
     echo -e "${RED}⚠️ Active process found on port ${TARGET_PORT} (PID: $PID_TARGET). Terminating...${NC}"
@@ -46,9 +47,9 @@ fi
 
 # 2. Kill all background/stale Node/TSX processes matching server/bot
 echo -e "${YELLOW}🔹 2. Cleaning stale background Node/TSX processes...${NC}"
-pkill -9 -f "server.ts" 2>/dev/null
-pkill -9 -f "dist/server.cjs" 2>/dev/null
-pkill -9 -f "tsx" 2>/dev/null
+pkill -9 -f "server.ts" 2>/dev/null || true
+pkill -9 -f "dist/server.cjs" 2>/dev/null || true
+pkill -9 -f "tsx" 2>/dev/null || true
 echo -e "${GREEN}✅ Stale processes stopped.${NC}"
 
 # 3. Ensure latest bundle is in dist/
@@ -69,14 +70,19 @@ echo -e "${BLUE}===============================================${NC}"
 echo -e "${YELLOW}🔹 4. Restarting Application Service:${NC}"
 echo -e "${BLUE}===============================================${NC}"
 
+# Final sweep of port
+fuser -k -9 ${TARGET_PORT}/tcp 2>/dev/null || true
+pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+sleep 1
+
 if command -v pm2 &> /dev/null
 then
     echo -e "${YELLOW}ℹ️ PM2 detected. Restarting service with PM2...${NC}"
     pm2 delete "sanaei-bot" 2>/dev/null || true
-    if ! PORT=$TARGET_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --node-args="--max-old-space-size=450"; then
-        PORT=$TARGET_PORT NODE_ENV=production nohup node --max-old-space-size=450 dist/server.cjs > bot_output.log 2>&1 &
-    fi
+    PORT=$TARGET_PORT NODE_ENV=production pm2 start dist/server.cjs --name "sanaei-bot" --node-args="--max-old-space-size=450" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
+    sleep 3
+    pm2 status sanaei-bot 2>/dev/null || true
     echo -e "${GREEN}✅ Bot restarted successfully under PM2 as 'sanaei-bot' on port ${TARGET_PORT}.${NC}"
 else
     echo -e "${YELLOW}⚠️ PM2 not found. Starting process in background...${NC}"

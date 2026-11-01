@@ -185,6 +185,13 @@ if command -v iptables &>/dev/null; then
     iptables -I INPUT -p tcp --dport ${PORT_VAL} -j ACCEPT 2>/dev/null || true
 fi
 
+# Kill any rogue process currently holding the target port
+fuser -k -9 ${PORT_VAL}/tcp 2>/dev/null || true
+PID_PORT=$(lsof -t -i:${PORT_VAL} 2>/dev/null || true)
+[ -n "$PID_PORT" ] && kill -9 $PID_PORT 2>/dev/null || true
+pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+sleep 1
+
 # Reset oom_score_adj to 0 before spawning service
 if [ -f "/proc/$$/oom_score_adj" ]; then
     echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
@@ -192,16 +199,11 @@ fi
 
 echo -e "${CYAN}>> Starting on port ${PORT_VAL} with working directory $CURR_DIR...${NC}"
 if command -v pm2 &> /dev/null; then
-    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" --node-args="--max-old-space-size=400"; then
-        PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
-    fi
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$CURR_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$CURR_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
 
-    sleep 2
-    if ! ss -tln 2>/dev/null | grep -q ":${PORT_VAL} "; then
-        PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
-        sleep 1
-    fi
+    sleep 3
     echo -e "${GREEN}✅ Service 'sanaei-bot' status:${NC}"
     pm2 status sanaei-bot
     
@@ -214,7 +216,9 @@ if command -v pm2 &> /dev/null; then
     echo -e "${CYAN}====================================================${NC}"
 else
     echo -e "${YELLOW}⚠️ PM2 not found. Starting in background via nohup...${NC}"
-    pkill -9 -f "dist/server.cjs" 2>/dev/null
+    fuser -k -9 ${PORT_VAL}/tcp 2>/dev/null || true
+    pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
     PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=450 "$CURR_DIR/dist/server.cjs" > bot_output.log 2>&1 &
     echo -e "${GREEN}✅ Bot started in background (logs in bot_output.log).${NC}"
 fi
+

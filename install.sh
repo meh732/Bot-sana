@@ -300,21 +300,23 @@ do_fresh_install() {
     echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
   fi
 
+  # Kill any process currently holding the target port
+  fuser -k -9 ${PANEL_PORT}/tcp 2>/dev/null || true
+  PID_TARGET=$(lsof -t -i:${PANEL_PORT} 2>/dev/null || true)
+  [ -n "$PID_TARGET" ] && kill -9 $PID_TARGET 2>/dev/null || true
+  pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+  sleep 1
+
   if command -v pm2 &> /dev/null; then
-    if ! PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" --node-args="--max-old-space-size=400"; then
-      PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
-    fi
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    PORT=$PANEL_PORT NODE_ENV=production pm2 start "$PWD/dist/server.cjs" --name "sanaei-bot" --cwd "$PWD" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
     pm2 startup 2>/dev/null || true
   else
     PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
   fi
 
-  sleep 2
-  if ! ss -tln 2>/dev/null | grep -q ":${PANEL_PORT} "; then
-    PORT=$PANEL_PORT NODE_ENV=production nohup node --max-old-space-size=400 "$PWD/dist/server.cjs" > bot_output.log 2>&1 &
-    sleep 1
-  fi
+  sleep 3
   echo -e "${GREEN}✅ PM2 Process Status:${NC}"
   pm2 status sanaei-bot 2>/dev/null || true
   pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
@@ -445,17 +447,18 @@ do_update() {
   fi
 
   echo -e "\n${CYAN}>> Starting bot service on port ${PORT_VAL} with working directory $TARGET_DIR...${NC}"
+  # Kill any rogue process currently holding the target port
+  fuser -k -9 ${PORT_VAL}/tcp 2>/dev/null || true
+  PID_TARGET=$(lsof -t -i:${PORT_VAL} 2>/dev/null || true)
+  [ -n "$PID_TARGET" ] && kill -9 $PID_TARGET 2>/dev/null || true
+  pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+  sleep 1
+
   if command -v pm2 &> /dev/null; then
-    if ! PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=400"; then
-      echo -e "${YELLOW}⚠️ PM2 failed to start, launching via direct node daemon...${NC}"
-      PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
-    fi
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=400" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
-    sleep 2
-    if ! ss -tln 2>/dev/null | grep -q ":${PORT_VAL} "; then
-      PORT=$PORT_VAL NODE_ENV=production nohup node --max-old-space-size=400 "$TARGET_DIR/dist/server.cjs" > bot_output.log 2>&1 &
-      sleep 1
-    fi
+    sleep 3
     pm2 status sanaei-bot 2>/dev/null || true
     pm2 logs sanaei-bot --lines 15 --nostream 2>/dev/null || true
   else
@@ -494,13 +497,18 @@ do_restart() {
     echo 0 > /proc/$$/oom_score_adj 2>/dev/null || true
   fi
 
-  pm2 kill 2>/dev/null || true
+  # Kill any rogue process currently holding the target port
+  fuser -k -9 ${PORT_VAL}/tcp 2>/dev/null || true
+  PID_TARGET=$(lsof -t -i:${PORT_VAL} 2>/dev/null || true)
+  [ -n "$PID_TARGET" ] && kill -9 $PID_TARGET 2>/dev/null || true
   pkill -9 -f "dist/server\.cjs" 2>/dev/null || true
+  sleep 1
 
   if command -v pm2 &> /dev/null; then
-    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450"
+    pm2 delete "sanaei-bot" 2>/dev/null || true
+    PORT=$PORT_VAL NODE_ENV=production pm2 start "$TARGET_DIR/dist/server.cjs" --name "sanaei-bot" --cwd "$TARGET_DIR" --node-args="--max-old-space-size=450" --max-restarts 10 --restart-delay 2000
     pm2 save 2>/dev/null || true
-    sleep 2
+    sleep 3
     pm2 status sanaei-bot 2>/dev/null || true
     echo -e "${GREEN}✅ Bot service restarted under PM2 on port ${PORT_VAL}.${NC}"
   else
