@@ -2172,28 +2172,70 @@ async function startServer() {
     };
   };
 
-  const handleProviderProductsRequest = (req: express.Request, res: express.Response) => {
+  const handleProviderCategoriesRequest = (req: express.Request, res: express.Response) => {
     const seller = authenticateSellerApi(req, res);
     if (!seller) return;
 
     const payload = buildProviderProductsPayload(seller);
     const format = String(req.query.format || '').toLowerCase();
-    if (format === 'array' || format === 'list' || req.path.endsWith('/products-list')) {
-      return res.json(payload.products);
+    if (format === 'array' || format === 'list') {
+      return res.json(payload.categories);
     }
 
     return res.json({
       success: true,
       status: true,
       ok: true,
+      code: 200,
+      count: payload.categories.length,
+      categories: payload.categories,
+      data: payload.categories,
+      result: payload.categories,
+      list: payload.categories,
+      items: payload.categories
+    });
+  };
+
+  const handleProviderProductsRequest = (req: express.Request, res: express.Response) => {
+    const seller = authenticateSellerApi(req, res);
+    if (!seller) return;
+
+    const payload = buildProviderProductsPayload(seller);
+    let filteredProducts = payload.products;
+    const catFilter = String(
+      req.query.category_id || req.query.categoryId || req.query.category || req.query.cat || (req.params as any)?.categoryId || ''
+    ).trim();
+
+    if (catFilter && catFilter !== 'all') {
+      filteredProducts = payload.products.filter((p: any) => 
+        String(p.categoryId) === catFilter ||
+        String(p.category_id) === catFilter ||
+        String(p.category).toLowerCase() === catFilter.toLowerCase() ||
+        String(p.category_name).toLowerCase() === catFilter.toLowerCase()
+      );
+    }
+
+    const format = String(req.query.format || '').toLowerCase();
+    if (format === 'array' || format === 'list' || req.path.endsWith('/products-list')) {
+      return res.json(filteredProducts);
+    }
+
+    return res.json({
+      success: true,
+      status: true,
+      ok: true,
+      code: 200,
       message: 'لیست کامل محصولات با جزئیات (قیمت، توضیحات، نام محصول، نام دسته‌بندی)',
-      count: payload.products.length,
+      count: filteredProducts.length,
       seller: payload.seller,
       categories: payload.categories,
-      products: payload.products,
-      data: payload.products,
-      result: payload.products,
-      services: payload.products,
+      products: filteredProducts,
+      data: filteredProducts,
+      result: filteredProducts,
+      services: filteredProducts,
+      plans: filteredProducts,
+      items: filteredProducts,
+      list: filteredProducts,
       customVolume: payload.customVolume
     });
   };
@@ -2207,6 +2249,7 @@ async function startServer() {
       success: true,
       status: true,
       ok: true,
+      code: 200,
       seller: payload.seller,
       balance: payload.seller.remainingCredit,
       debt: payload.seller.debt,
@@ -2223,11 +2266,22 @@ async function startServer() {
       if (!seller) return;
 
       const params = { ...(req.query || {}), ...(req.body || {}) } as any;
-      const productId = params.productId || params.product_id || params.service || params.id || params.code;
+      const productId =
+        params.productId || params.product_id || params.product ||
+        params.planId || params.plan_id || params.plan ||
+        params.serviceId || params.service_id || params.service ||
+        params.tariffId || params.tariff_id || params.tariff ||
+        params.packageId || params.package_id || params.package ||
+        params.itemId || params.item_id || params.item ||
+        params.id || params.code || params.name || params.title;
+
       const volumeGb = params.volumeGb || params.volume_gb || params.volume || params.traffic;
       const durationDays = params.durationDays || params.duration_days || params.duration || params.days || 30;
       const panelType = params.panelType || params.panel_type || params.panel;
-      const customName = params.customName || params.custom_name || params.name || params.username || params.remark || params.client_name;
+      const customName =
+        params.customName || params.custom_name || params.username || params.user ||
+        params.name || params.remark || params.client_name || params.client ||
+        params.customer || params.buyer || params.chat_id || params.chatId;
 
       let purchase: any;
       if (productId) {
@@ -2251,7 +2305,7 @@ async function startServer() {
           success: false,
           status: false,
           error: 'MISSING_PRODUCT_OR_VOLUME',
-          message: 'ارسال شناسه محصول (productId / service / product_id) یا حجم دلخواه (volumeGb) الزامی است.'
+          message: 'ارسال شناسه محصول (productId / service / plan_id) یا حجم دلخواه (volumeGb) الزامی است.'
         });
       }
 
@@ -2260,34 +2314,79 @@ async function startServer() {
       const currentDebt = updatedSeller.debt || 0;
       const debtLimit = updatedSeller.debtLimit || 0;
       const remainingCredit = isUnlimited ? 999999999 : Math.max(0, debtLimit - currentDebt);
-      const configLink = purchase.subUrl || '';
+      const configLink = purchase.subUrl || purchase.panel4SubUrl || purchase.mroceanSubUrl || purchase.sanaeiSubUrl || purchase.rebeccaSubUrl || (Array.isArray(purchase.links) ? purchase.links[0] : '') || '';
+      const clientUsername = purchase.email || purchase.username || purchase.id || purchase.clientEmail || purchase.customName || 'client';
 
       return res.json({
         success: true,
         status: true,
         ok: true,
+        code: 200,
+        msg: 'success',
         message: 'سرویس با موفقیت صادر شد و هزینه آن به حساب بدهی همکار منظور گردید.',
-        // Top-level aliases for maximum compatibility with external Telegram shop bots
+        // Top-level aliases for maximum compatibility with all Telegram shop bots
         order_id: purchase.id,
         orderId: purchase.id,
         id: purchase.id,
-        client_name: purchase.email,
-        username: purchase.email,
+        client_name: clientUsername,
+        username: clientUsername,
+        user: clientUsername,
+        client: clientUsername,
         config: configLink,
         link: configLink,
+        url: configLink,
         sub_url: configLink,
         subUrl: configLink,
         subscription_url: configLink,
+        subscriptionUrl: configLink,
+        subscription: configLink,
+        configs: configLink ? [configLink] : [],
+        links: configLink ? [configLink] : [],
+        token: purchase.subId || purchase.id,
+        sub_id: purchase.subId || purchase.id,
+        subId: purchase.subId || purchase.id,
         vless_link: purchase.vlessLink || configLink,
         price: purchase.price || 0,
         volume_gb: purchase.volumeGb || 0,
         duration_days: purchase.durationDays || 0,
         expires_at: purchase.expiresAt || null,
+        data: {
+          id: purchase.id,
+          order_id: purchase.id,
+          username: clientUsername,
+          user: clientUsername,
+          config: configLink,
+          link: configLink,
+          url: configLink,
+          subUrl: configLink,
+          sub_url: configLink,
+          subscription_url: configLink,
+          token: purchase.subId || purchase.id,
+          price: purchase.price || 0,
+          volumeGb: purchase.volumeGb,
+          volume_gb: purchase.volumeGb,
+          durationDays: purchase.durationDays,
+          duration_days: purchase.durationDays,
+          expiresAt: purchase.expiresAt
+        },
+        result: {
+          id: purchase.id,
+          order_id: purchase.id,
+          username: clientUsername,
+          config: configLink,
+          link: configLink,
+          url: configLink,
+          sub_url: configLink,
+          subUrl: configLink,
+          subscription_url: configLink,
+          token: purchase.subId || purchase.id,
+          price: purchase.price || 0
+        },
         purchase: {
           id: purchase.id,
           productId: purchase.productId,
           productName: purchase.productName,
-          clientName: purchase.email,
+          clientName: clientUsername,
           uuid: purchase.uuid,
           subUrl: configLink,
           vlessLink: purchase.vlessLink || configLink,
@@ -2307,17 +2406,6 @@ async function startServer() {
           isUnlimitedLimit: isUnlimited,
           remainingCredit: remainingCredit,
           totalSales: updatedSeller.totalSales || 0
-        },
-        data: {
-          id: purchase.id,
-          username: purchase.email,
-          config: configLink,
-          link: configLink,
-          subUrl: configLink,
-          price: purchase.price || 0,
-          volumeGb: purchase.volumeGb,
-          durationDays: purchase.durationDays,
-          expiresAt: purchase.expiresAt
         }
       });
     } catch (e: any) {
@@ -2447,8 +2535,23 @@ async function startServer() {
 
     console.log(`[Provider API Request] ${req.method} ${req.originalUrl} | action=${action || 'none'}`);
 
-    if (action === 'buy' || action === 'purchase' || action === 'order' || action === 'create' || (req.method === 'POST' && (params.productId || params.product_id || params.service || params.volumeGb))) {
+    if (
+      action === 'buy' || action === 'purchase' || action === 'order' || action === 'create' || action === 'new' ||
+      action === 'add' || action === 'add_user' || action === 'add_client' || action === 'get_config' ||
+      (req.method === 'POST' && (
+        params.productId || params.product_id || params.product ||
+        params.planId || params.plan_id || params.plan ||
+        params.serviceId || params.service_id || params.service ||
+        params.tariffId || params.tariff_id || params.tariff ||
+        params.packageId || params.package_id || params.package ||
+        params.itemId || params.item_id || params.item ||
+        params.volumeGb || params.volume_gb || params.volume
+      ))
+    ) {
       return handleProviderPurchaseRequest(req, res);
+    }
+    if (action === 'categories' || action === 'get_categories' || action === 'cats' || action === 'category') {
+      return handleProviderCategoriesRequest(req, res);
     }
     if (action === 'me' || action === 'balance' || action === 'profile' || action === 'credit' || action === 'info') {
       return handleProviderMeRequest(req, res);
@@ -2480,11 +2583,28 @@ async function startServer() {
     api.all(`${prefix}/products-list`, handleProviderProductsRequest);
     api.all(`${prefix}/services`, handleProviderProductsRequest);
     api.all(`${prefix}/services/*`, handleProviderProductsRequest);
+    api.all(`${prefix}/plans`, handleProviderProductsRequest);
+    api.all(`${prefix}/packages`, handleProviderProductsRequest);
+    api.all(`${prefix}/tariffs`, handleProviderProductsRequest);
+    api.all(`${prefix}/categories`, handleProviderCategoriesRequest);
+    api.all(`${prefix}/category`, handleProviderCategoriesRequest);
+    api.all(`${prefix}/get_categories`, handleProviderCategoriesRequest);
+    api.all(`${prefix}/category/:categoryId`, handleProviderProductsRequest);
+    api.all(`${prefix}/categories/:categoryId`, handleProviderProductsRequest);
+    api.all(`${prefix}/category/:categoryId/products`, handleProviderProductsRequest);
+    api.all(`${prefix}/categories/:categoryId/products`, handleProviderProductsRequest);
     api.all(`${prefix}/me`, handleProviderMeRequest);
     api.all(`${prefix}/balance`, handleProviderMeRequest);
     api.all(`${prefix}/purchase`, handleProviderPurchaseRequest);
     api.all(`${prefix}/buy`, handleProviderPurchaseRequest);
     api.all(`${prefix}/order`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/create`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/new`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/add_user`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/add_client`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/create_user`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/create_client`, handleProviderPurchaseRequest);
+    api.all(`${prefix}/get_config`, handleProviderPurchaseRequest);
     api.all(`${prefix}/cancel`, handleProviderCancelRequest);
     api.all(`${prefix}/status`, handleProviderStatusRequest);
     api.all(`${prefix}/config/:purchaseId`, handleProviderStatusRequest);
@@ -2492,7 +2612,14 @@ async function startServer() {
 
   // Also mount directly on app for external bots that call without /api prefix (e.g. http://ip:port/provider or /v1/reseller)
   const rootProviderRouter = express.Router();
-  const rootPrefixes = ['/provider', '/v1/reseller', '/reseller', '/v1'];
+  const rootPrefixes = [
+    '/provider', 
+    '/v1/reseller', 
+    '/reseller', 
+    '/v1',
+    '/v1/reseller/key/:apiKey',
+    '/provider/key/:apiKey'
+  ];
   for (const prefix of rootPrefixes) {
     rootProviderRouter.all(`${prefix}`, handleProviderRootDispatch);
     rootProviderRouter.all(`${prefix}/products`, handleProviderProductsRequest);
@@ -2500,11 +2627,28 @@ async function startServer() {
     rootProviderRouter.all(`${prefix}/products-list`, handleProviderProductsRequest);
     rootProviderRouter.all(`${prefix}/services`, handleProviderProductsRequest);
     rootProviderRouter.all(`${prefix}/services/*`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/plans`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/packages`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/tariffs`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/categories`, handleProviderCategoriesRequest);
+    rootProviderRouter.all(`${prefix}/category`, handleProviderCategoriesRequest);
+    rootProviderRouter.all(`${prefix}/get_categories`, handleProviderCategoriesRequest);
+    rootProviderRouter.all(`${prefix}/category/:categoryId`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/categories/:categoryId`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/category/:categoryId/products`, handleProviderProductsRequest);
+    rootProviderRouter.all(`${prefix}/categories/:categoryId/products`, handleProviderProductsRequest);
     rootProviderRouter.all(`${prefix}/me`, handleProviderMeRequest);
     rootProviderRouter.all(`${prefix}/balance`, handleProviderMeRequest);
     rootProviderRouter.all(`${prefix}/purchase`, handleProviderPurchaseRequest);
     rootProviderRouter.all(`${prefix}/buy`, handleProviderPurchaseRequest);
     rootProviderRouter.all(`${prefix}/order`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/create`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/new`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/add_user`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/add_client`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/create_user`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/create_client`, handleProviderPurchaseRequest);
+    rootProviderRouter.all(`${prefix}/get_config`, handleProviderPurchaseRequest);
     rootProviderRouter.all(`${prefix}/cancel`, handleProviderCancelRequest);
     rootProviderRouter.all(`${prefix}/status`, handleProviderStatusRequest);
     rootProviderRouter.all(`${prefix}/config/:purchaseId`, handleProviderStatusRequest);
@@ -2513,6 +2657,15 @@ async function startServer() {
   rootProviderRouter.all('/products', handleProviderProductsRequest);
   rootProviderRouter.all('/products-list', handleProviderProductsRequest);
   rootProviderRouter.all('/services', handleProviderProductsRequest);
+  rootProviderRouter.all('/plans', handleProviderProductsRequest);
+  rootProviderRouter.all('/packages', handleProviderProductsRequest);
+  rootProviderRouter.all('/categories', handleProviderCategoriesRequest);
+  rootProviderRouter.all('/category', handleProviderCategoriesRequest);
+  rootProviderRouter.all('/get_categories', handleProviderCategoriesRequest);
+  rootProviderRouter.all('/purchase', handleProviderPurchaseRequest);
+  rootProviderRouter.all('/buy', handleProviderPurchaseRequest);
+  rootProviderRouter.all('/order', handleProviderPurchaseRequest);
+  rootProviderRouter.all('/create', handleProviderPurchaseRequest);
 
   app.use('/', rootProviderRouter);
   app.use("/api", api);

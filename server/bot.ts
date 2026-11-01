@@ -228,9 +228,28 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
   }
 
   const state = db.getState();
-  const product = state.products.find((p: any) => p && p.id === productId);
+  const cleanId = String(productId || '').trim().toLowerCase();
+  const cleanNoSpace = cleanId.replace(/\s+/g, '');
+
+  let product = state.products.find((p: any) => {
+    if (!p) return false;
+    const pId = String(p.id || '').trim().toLowerCase();
+    const pName = String(p.name || '').trim().toLowerCase();
+    const pTitle = String(p.title || '').trim().toLowerCase();
+    if (pId === cleanId) return true;
+    if (pName === cleanId || pTitle === cleanId) return true;
+    if (pName.replace(/\s+/g, '') === cleanNoSpace) return true;
+    return false;
+  });
+
+  // If still not found, check if cleanId matches volume number (e.g. "10" for 10GB product)
+  if (!product && /^\d+$/.test(cleanId)) {
+    const numGb = parseInt(cleanId);
+    product = state.products.find((p: any) => p && !p.disabled && Number(p.volumeGb) === numGb);
+  }
+
   if (!product) {
-    throw new Error('محصول مورد نظر یافت نشد.');
+    throw new Error(`محصول مورد نظر با شناسه یا عنوان «${productId}» یافت نشد.`);
   }
 
   const isPAYG = !!product.isPayAsYouGo;
@@ -267,12 +286,20 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
     user.totalSales = (user.totalSales || 0) + finalPrice;
   }
 
+  const finalSubUrl = clientResult.subUrl || clientResult.panel4SubUrl || clientResult.mroceanSubUrl || clientResult.sanaeiSubUrl || clientResult.rebeccaSubUrl || '';
+
   const newPurchase: any = {
     id: clientEmail,
+    email: clientEmail,
+    username: clientEmail,
+    clientEmail: clientEmail,
+    customName: cleanCustomName || clientEmail,
+    productId: product.id,
+    productName: product.name,
     name: product.name,
     price: isPAYG ? 0 : finalPrice,
     subId: clientResult.subId,
-    subUrl: clientResult.subUrl,
+    subUrl: finalSubUrl,
     sanaeiSubUrl: clientResult.sanaeiSubUrl,
     rebeccaSubUrl: clientResult.rebeccaSubUrl,
     mroceanSubUrl: clientResult.mroceanSubUrl,
