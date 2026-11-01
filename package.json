@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "node -e \"if (!require('fs').existsSync('dist/index.html')) process.exit(1)\" 2>/dev/null && npm run build:server || (NODE_OPTIONS='--max-old-space-size=400' vite build && npm run build:server)",
+    "build": "npm run build:all",
     "build:server": "esbuild ./server.ts --bundle --platform=node --format=cjs --external:pdfkit --external:vite --outfile=dist/server.cjs",
     "build:all": "NODE_OPTIONS='--max-old-space-size=400' vite build && npm run build:server",
     "start": "node dist/server.cjs",
