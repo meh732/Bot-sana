@@ -4985,9 +4985,24 @@ export async function initBot() {
       if (!user || !user.isSeller) return;
       
       const stateObj = db.getState();
-      const activeProducts = (stateObj.products || []).filter(p => p && !p.disabled);
+      const allCategories = stateObj.categories || [];
+      const activeCategories = allCategories.filter(c => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        activeCategories.flatMap(c => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+      const activeProducts = (stateObj.products || []).filter(p => {
+        if (!p || p.disabled) return false;
+        if (p.categoryId) {
+          return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+        }
+        return !hasCategories;
+      });
       if (activeProducts.length === 0) {
-        bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
+        bot!.sendMessage(chatId, '❌ هیچ محصول فعالی موجود نیست.');
         return;
       }
 
@@ -5001,15 +5016,18 @@ export async function initBot() {
         }
       }
 
-      const activeCategories = (stateObj.categories || []).filter(c => c && !c.disabled);
+      const nonEmptyCategories = activeCategories.filter(c =>
+        activeProducts.some(
+          p =>
+            String(p.categoryId || '').trim().toLowerCase() === String(c.id).trim().toLowerCase() ||
+            String(p.categoryId || '').trim().toLowerCase() === String(c.name).trim().toLowerCase()
+        )
+      );
 
-      if (activeCategories.length > 0) {
-        const inlineKeyboard = activeCategories.map(c => ([
+      if (nonEmptyCategories.length > 0) {
+        const inlineKeyboard = nonEmptyCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: `show_category_seller_${c.id}` }
         ]));
-        if (activeProducts.some(p => p && !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_seller_uncategorized` }]);
-        }
         inlineKeyboard.unshift([{ text: '⚡ سفارش با حجم دلخواه (نرخ هر گیگ)', callback_data: 'seller_open_cvol' }]);
         bot!.sendMessage(chatId, '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول مورد نظر را انتخاب کنید یا حجم دلخواه سفارش دهید:', {
            parse_mode: 'HTML',
@@ -5169,21 +5187,39 @@ export async function initBot() {
 
     if (cleanText === 'خرید سرویس' || cleanText === 'خرید اکانت' || text.includes('خرید سرویس')) {
       const stateObj = db.getState();
-      const activeProducts = (stateObj.products || []).filter(p => p && !p.disabled);
+      const allCategories = stateObj.categories || [];
+      const activeCategories = allCategories.filter(c => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        activeCategories.flatMap(c => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+      const activeProducts = (stateObj.products || []).filter(p => {
+        if (!p || p.disabled) return false;
+        if (p.categoryId) {
+          return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+        }
+        return !hasCategories;
+      });
       if (activeProducts.length === 0) {
-        bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
+        bot!.sendMessage(chatId, '❌ هیچ محصول فعالی موجود نیست.');
         return;
       }
 
-      const activeCategories = (stateObj.categories || []).filter(c => c && !c.disabled);
+      const nonEmptyCategories = activeCategories.filter(c =>
+        activeProducts.some(
+          p =>
+            String(p.categoryId || '').trim().toLowerCase() === String(c.id).trim().toLowerCase() ||
+            String(p.categoryId || '').trim().toLowerCase() === String(c.name).trim().toLowerCase()
+        )
+      );
 
-      if (activeCategories.length > 0) {
-        const inlineKeyboard = activeCategories.map(c => ([
+      if (nonEmptyCategories.length > 0) {
+        const inlineKeyboard = nonEmptyCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
         ]));
-        if (activeProducts.some(p => p && !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
-        }
         bot!.sendMessage(chatId, '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
            parse_mode: 'HTML',
            reply_markup: {
@@ -7670,22 +7706,40 @@ export async function initBot() {
     }
 
     if (data === 'buy_service_now') {
-      const activeProducts = (state.products || []).filter(p => p && !p.disabled);
+      const allCategories = state.categories || [];
+      const activeCategories = allCategories.filter(c => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        activeCategories.flatMap(c => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+      const activeProducts = (state.products || []).filter(p => {
+        if (!p || p.disabled) return false;
+        if (p.categoryId) {
+          return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+        }
+        return !hasCategories;
+      });
       if (activeProducts.length === 0) {
-        bot!.sendMessage(chatId, '❌ هیچ محصولی موجود نیست.');
+        bot!.sendMessage(chatId, '❌ هیچ محصول فعالی موجود نیست.');
         answerQuery();
         return;
       }
 
-      const activeCategories = (state.categories || []).filter(c => c && !c.disabled);
+      const nonEmptyCategories = activeCategories.filter(c =>
+        activeProducts.some(
+          p =>
+            String(p.categoryId || '').trim().toLowerCase() === String(c.id).trim().toLowerCase() ||
+            String(p.categoryId || '').trim().toLowerCase() === String(c.name).trim().toLowerCase()
+        )
+      );
 
-      if (activeCategories.length > 0) {
-        const inlineKeyboard = activeCategories.map(c => ([
+      if (nonEmptyCategories.length > 0) {
+        const inlineKeyboard = nonEmptyCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: `show_category_${c.id}` }
         ]));
-        if (activeProducts.some(p => p && !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: `show_category_uncategorized` }]);
-        }
         bot!.sendMessage(chatId, '🛍 لطفا دسته‌بندی محصول را انتخاب کنید:', {
            parse_mode: 'Markdown',
            reply_markup: {
@@ -7710,16 +7764,35 @@ export async function initBot() {
     if (data && (data === 'back_to_categories' || data === 'back_to_categories_seller')) {
       try { await answerQuery(); } catch (e) {}
       const isSeller = data === 'back_to_categories_seller';
-      const activeProducts = (state.products || []).filter(p => p && !p.disabled);
-      const activeCategories = (state.categories || []).filter(c => c && !c.disabled);
+      const allCategories = state.categories || [];
+      const activeCategories = allCategories.filter(c => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        activeCategories.flatMap(c => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+      const activeProducts = (state.products || []).filter(p => {
+        if (!p || p.disabled) return false;
+        if (p.categoryId) {
+          return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+        }
+        return !hasCategories;
+      });
 
-      if (activeCategories.length > 0) {
-        const inlineKeyboard = activeCategories.map(c => ([
+      const nonEmptyCategories = activeCategories.filter(c =>
+        activeProducts.some(
+          p =>
+            String(p.categoryId || '').trim().toLowerCase() === String(c.id).trim().toLowerCase() ||
+            String(p.categoryId || '').trim().toLowerCase() === String(c.name).trim().toLowerCase()
+        )
+      );
+
+      if (nonEmptyCategories.length > 0) {
+        const inlineKeyboard = nonEmptyCategories.map(c => ([
           { text: `📁 ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}` }
         ]));
-        if (activeProducts.some(p => p && !p.categoryId)) {
-          inlineKeyboard.push([{ text: `📁 سایر محصولات`, callback_data: isSeller ? `show_category_seller_uncategorized` : `show_category_uncategorized` }]);
-        }
         bot!.sendMessage(chatId, isSeller ? '🛒 <b>خرید سرویس ویژه همکاران</b>\nلطفا دسته‌بندی محصول را انتخاب کنید:' : '🛍 <b>لطفا دسته‌بندی محصول را انتخاب کنید:</b>', {
            parse_mode: 'HTML',
            reply_markup: {
@@ -7747,15 +7820,22 @@ export async function initBot() {
       const isSeller = data.startsWith('show_category_seller_');
       const categoryId = data.replace(isSeller ? 'show_category_seller_' : 'show_category_', '');
       
-      const catObj = (state.categories || []).find(c => c && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
-      const targetCatId = catObj ? String(catObj.id) : String(categoryId);
-      const targetCatName = catObj ? String(catObj.name) : String(categoryId);
+      const catObj = (state.categories || []).find(c => c && !c.disabled && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
+      if (!catObj) {
+        bot!.sendMessage(chatId, '❌ این دسته‌بندی غیرفعال یا حذف شده است.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 بازگشت به لیست دسته‌ها', callback_data: isSeller ? 'back_to_categories_seller' : 'back_to_categories' }]
+            ]
+          }
+        });
+        return;
+      }
+      const targetCatId = String(catObj.id);
+      const targetCatName = String(catObj.name);
 
       const filteredProducts = (state.products || []).filter(p => {
-        if (!p) return false;
-        if (p.disabled) return false;
-        if (categoryId === 'uncategorized') return !p.categoryId;
-        if (!p.categoryId) return false;
+        if (!p || p.disabled || !p.categoryId) return false;
         const pCatStr = String(p.categoryId).trim().toLowerCase();
         return pCatStr === targetCatId.trim().toLowerCase() || 
                pCatStr === targetCatName.trim().toLowerCase() || 

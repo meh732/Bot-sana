@@ -1269,13 +1269,24 @@ async function startServer() {
       }
       const state = db.getState();
 
-      const categories = (state.categories || []).filter((c: any) => !c.disabled);
-      const activeCategoryIds = new Set(categories.map((c: any) => String(c.id)));
-      
+      const allCategories = state.categories || [];
+      const categories = allCategories.filter((c: any) => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        categories.flatMap((c: any) => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+
       const products = (state.products || [])
         .filter((p: any) => {
           if (!p || p.disabled === true || p.enabled === false) return false;
-          if (p.categoryId && !activeCategoryIds.has(String(p.categoryId))) return false;
+          if (p.categoryId) {
+            if (!activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase())) return false;
+          } else if (hasCategories) {
+            return false;
+          }
           const isReady = !!p.isPayAsYouGo || (Number(p.volumeGb || 0) > 0 && Number(p.durationDays || 0) > 0) || Number(p.price || 0) > 0;
           return isReady;
         })
@@ -1941,41 +1952,78 @@ async function startServer() {
 
       const status = resellerBotManager.getBotStatus(chatId);
       const state = db.getState();
-      const products = (state.products || []).filter(p => !p.disabled).map(p => {
-        const wholesalePrice = Math.max(0, Math.round(p.price * (1 - getSellerDiscountForProduct(user, p) / 100)));
-        const retailPrice = user.sellerBot?.customRetailPrices?.[p.id] !== undefined
-          ? user.sellerBot.customRetailPrices[p.id]
-          : (user.customDisplayPrices?.[p.id] !== undefined ? user.customDisplayPrices[p.id] : p.price);
-        return {
-          id: p.id,
-          name: p.name,
-          volumeGb: p.volumeGb,
-          durationDays: p.durationDays,
-          wholesalePrice,
-          retailPrice,
-          profit: Math.max(0, retailPrice - wholesalePrice)
-        };
-      });
+      const allCategories = state.categories || [];
+      const activeCategories = allCategories.filter((c: any) => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        activeCategories.flatMap((c: any) => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+      const products = (state.products || [])
+        .filter(p => {
+          if (!p || p.disabled) return false;
+          if (p.categoryId) {
+            return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+          }
+          return !hasCategories;
+        })
+        .map(p => {
+          const wholesalePrice = Math.max(0, Math.round(p.price * (1 - getSellerDiscountForProduct(user, p) / 100)));
+          const retailPrice = user.sellerBot?.customRetailPrices?.[p.id] !== undefined
+            ? user.sellerBot.customRetailPrices[p.id]
+            : (user.customDisplayPrices?.[p.id] !== undefined ? user.customDisplayPrices[p.id] : p.price);
+          return {
+            id: p.id,
+            name: p.name,
+            volumeGb: p.volumeGb,
+            durationDays: p.durationDays,
+            wholesalePrice,
+            retailPrice,
+            profit: Math.max(0, retailPrice - wholesalePrice)
+          };
+        });
 
       const wholesaleVolGbPrice = Math.max(0, Math.round((user.customVolumePricePerGb || state.customVolumePricePerGb || 3000) * (1 - (user.sellerDiscount || 0) / 100)));
       const retailVolGbPrice = user.sellerBot?.customVolumeRetailPricePerGb !== undefined
         ? user.sellerBot.customVolumeRetailPricePerGb
         : Math.round(wholesaleVolGbPrice * 1.3);
 
+      const rawSavedBotName = (user.sellerBot?.botName || '').trim();
+      const isSellerIdentityName =
+        !rawSavedBotName ||
+        rawSavedBotName === user.username ||
+        rawSavedBotName === `@${user.username}` ||
+        rawSavedBotName === user.name ||
+        rawSavedBotName === user.portalUsername ||
+        rawSavedBotName === String(chatId) ||
+        rawSavedBotName === `Seller_${chatId}` ||
+        rawSavedBotName === `فروشگاه ${chatId}`;
+      const cleanBotName = isSellerIdentityName ? (user.sellerBot?.botFirstName || '') : rawSavedBotName;
+
       res.json({
         success: true,
-        sellerBot: user.sellerBot || {
-          enabled: false,
-          botToken: '',
-          botName: user.name || user.username || `فروشگاه ${chatId}`,
-          adminChatId: chatId,
-          welcomeMessage: '',
-          supportUsername: user.username || '',
-          cardNumber: '',
-          cardHolder: '',
-          autoDeliverAfterPayment: false,
-          freeTestEnabled: true
-        },
+        sellerBot: user.sellerBot
+          ? {
+              ...user.sellerBot,
+              botName: cleanBotName
+            }
+          : {
+              enabled: false,
+              botToken: '',
+              botName: '',
+              adminChatId: chatId,
+              welcomeMessage: '',
+              supportUsername: user.username || '',
+              channelUsername: '',
+              forceJoinEnabled: false,
+              forceJoinChannels: [],
+              cardNumber: '',
+              cardHolder: '',
+              autoDeliverAfterPayment: false,
+              freeTestEnabled: true
+            },
         status,
         products,
         customVolume: {
@@ -2006,6 +2054,8 @@ async function startServer() {
         welcomeMessage,
         supportUsername,
         channelUsername,
+        forceJoinEnabled,
+        forceJoinChannels,
         cardNumber,
         cardHolder,
         autoDeliverAfterPayment,
@@ -2017,17 +2067,27 @@ async function startServer() {
       } = req.body;
 
       const currentBot = user.sellerBot || ({} as any);
+      const incomingBotName = botName !== undefined ? String(botName).trim() : (currentBot.botName || '');
+      const isIncomingSellerIdentity =
+        incomingBotName === user.username ||
+        incomingBotName === `@${user.username}` ||
+        incomingBotName === user.portalUsername ||
+        incomingBotName === String(chatId) ||
+        incomingBotName === `Seller_${chatId}` ||
+        incomingBotName === `فروشگاه ${chatId}`;
 
       user.sellerBot = {
         ...currentBot,
         enabled: enabled !== undefined ? !!enabled : !!currentBot.enabled,
         botToken: botToken !== undefined ? String(botToken).trim() : (currentBot.botToken || ''),
-        botName: botName !== undefined ? String(botName).trim() : (currentBot.botName || 'فروشگاه اختصاصی'),
+        botName: isIncomingSellerIdentity ? (currentBot.botFirstName || '') : incomingBotName,
         adminChatId: adminChatId !== undefined ? (String(adminChatId).trim() ? (isNaN(Number(adminChatId)) ? String(adminChatId).trim() : Number(adminChatId)) : user.chatId) : (currentBot.adminChatId || user.chatId),
         logoUrl: logoUrl !== undefined ? String(logoUrl).trim() : currentBot.logoUrl,
         welcomeMessage: welcomeMessage !== undefined ? String(welcomeMessage) : currentBot.welcomeMessage,
         supportUsername: supportUsername !== undefined ? String(supportUsername).trim() : currentBot.supportUsername,
         channelUsername: channelUsername !== undefined ? String(channelUsername).trim() : currentBot.channelUsername,
+        forceJoinEnabled: forceJoinEnabled !== undefined ? !!forceJoinEnabled : !!currentBot.forceJoinEnabled,
+        forceJoinChannels: Array.isArray(forceJoinChannels) ? forceJoinChannels : (currentBot.forceJoinChannels || []),
         cardNumber: cardNumber !== undefined ? String(cardNumber).trim() : currentBot.cardNumber,
         cardHolder: cardHolder !== undefined ? String(cardHolder).trim() : currentBot.cardHolder,
         autoDeliverAfterPayment: autoDeliverAfterPayment !== undefined ? !!autoDeliverAfterPayment : !!currentBot.autoDeliverAfterPayment,

@@ -2481,12 +2481,12 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-200">نام تجاری / فروشگاه شما (عنوان بالای ربات):</label>
+                    <label className="text-xs font-bold text-slate-200">نام نمایشی ربات / فروشگاه شما (در پیام خوش‌آمدگویی):</label>
                     <input
                       type="text"
                       value={botConfig.botName || ''}
                       onChange={(e) => setBotConfig({ ...botConfig, botName: e.target.value })}
-                      placeholder="مثال: کانفیگ شاپ حیدر / وی‌پی‌ان پارس"
+                      placeholder="خالی بگذارید تا خودکار نام اصلی بات تلگرام شما قرار گیرد"
                       className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
                     />
                   </div>
@@ -2504,12 +2504,12 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-200">کانال اطلاع‌رسانی یا آموزش تلگرام (اختیاری):</label>
+                    <label className="text-xs font-bold text-slate-200">کانال تلگرام شما (اطلاع‌رسانی و عضویت اجباری):</label>
                     <input
                       type="text"
                       value={botConfig.channelUsername || ''}
                       onChange={(e) => setBotConfig({ ...botConfig, channelUsername: e.target.value })}
-                      placeholder="مثال: MyVpnChannel@"
+                      placeholder="مثال: @MyVpnChannel"
                       dir="ltr"
                       className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
                     />
@@ -2527,13 +2527,28 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                     />
                   </div>
 
+                  <div className="md:col-span-2 flex items-center justify-between bg-slate-950 p-4 rounded-2xl border border-cyan-500/30">
+                    <div>
+                      <h5 className="text-xs font-bold text-cyan-300">🔐 فعال‌سازی عضویت اجباری (ادد اجباری) در کانال تلگرام شما</h5>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        در صورت فعال بودن، مشتریان قبل از خرید یا استفاده از ربات باید در کانال شما عضو شوند (حتماً ربات را در کانال خود Admin کنید). همچنین می‌توانید کانال‌های بیشتر را از داخل دکمه «🔐 عضویت اجباری کانال» در پنل ادمین تلگرام ربات مدیریت کنید.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={!!botConfig.forceJoinEnabled}
+                      onChange={(e) => setBotConfig({ ...botConfig, forceJoinEnabled: e.target.checked })}
+                      className="w-5 h-5 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
+
                   <div className="space-y-1.5 md:col-span-2">
-                    <label className="text-xs font-bold text-slate-200">متن خوش‌آمدگویی استارت ربات (Welcome Message):</label>
+                    <label className="text-xs font-bold text-slate-200">متن خوش‌آمدگویی استارت ربات (Welcome Message - اختیاری):</label>
                     <textarea
                       rows={3}
                       value={botConfig.welcomeMessage || ''}
                       onChange={(e) => setBotConfig({ ...botConfig, welcomeMessage: e.target.value })}
-                      placeholder="سلام! به ربات رسمی فروش کانفیگ‌های اختصاصی و پرسرعت خوش آمدید..."
+                      placeholder="خالی بگذارید تا به صورت خودکار با نام اصلی ربات تلگرام شما به کاربر خوش‌آمدگویی شود..."
                       className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-2xl p-3 text-xs text-slate-100 outline-none transition"
                     />
                   </div>

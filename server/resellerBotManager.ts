@@ -20,6 +20,7 @@ import { xui } from './xui.js';
 interface ActiveBotRecord {
   bot: TelegramBot;
   username: string;
+  botFirstName?: string;
   sellerChatId: number;
   startedAt: number;
 }
@@ -105,6 +106,37 @@ async function extractDirectConfigsFromSubUrl(subUrl: string): Promise<string[]>
 class ResellerBotManager {
   private activeBots: Map<number, ActiveBotRecord> = new Map();
   private userSessionStates: Map<string, { action: string; data?: any }> = new Map();
+  private forceJoinCache: Map<string, number> = new Map();
+
+  public getEffectiveBotName(seller: User): string {
+    const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+    const rec = this.activeBots.get(seller.chatId);
+    const rawName = (botCfg.botName || '').trim();
+    const isSellerIdentity =
+      !rawName ||
+      rawName === seller.username ||
+      rawName === `@${seller.username}` ||
+      rawName === seller.name ||
+      rawName === seller.portalUsername ||
+      rawName === String(seller.chatId) ||
+      rawName === `Seller_${seller.chatId}` ||
+      rawName === `فروشگاه ${seller.chatId}` ||
+      rawName === 'فروشگاه اختصاصی';
+
+    if (!isSellerIdentity) {
+      return rawName;
+    }
+    if (botCfg.botFirstName && botCfg.botFirstName.trim()) {
+      return botCfg.botFirstName.trim();
+    }
+    if (rec?.botFirstName && rec.botFirstName.trim()) {
+      return rec.botFirstName.trim();
+    }
+    if (botCfg.botUsername && botCfg.botUsername.trim()) {
+      return `@${botCfg.botUsername.replace(/^@/, '').trim()}`;
+    }
+    return 'ربات فروشگاهی';
+  }
 
   /**
    * Initialize all active reseller bots from database
@@ -186,15 +218,41 @@ class ResellerBotManager {
       ]).catch(() => {});
 
       let botUsername = (user.sellerBot?.botUsername || '').trim();
+      let botFirstName = (user.sellerBot?.botFirstName || '').trim();
+
+      const applyBotIdentityFromMe = (u: User, me: TelegramBot.User) => {
+        if (!u.sellerBot) return;
+        if (me.username) {
+          u.sellerBot.botUsername = me.username;
+        }
+        if (me.first_name) {
+          u.sellerBot.botFirstName = me.first_name;
+          const curName = (u.sellerBot.botName || '').trim();
+          const isSellerIdentity =
+            !curName ||
+            curName === u.username ||
+            curName === `@${u.username}` ||
+            curName === u.name ||
+            curName === u.portalUsername ||
+            curName === String(u.chatId) ||
+            curName === `Seller_${u.chatId}` ||
+            curName === `فروشگاه ${u.chatId}` ||
+            curName === 'فروشگاه اختصاصی';
+          if (isSellerIdentity) {
+            u.sellerBot.botName = me.first_name;
+          }
+        }
+      };
 
       try {
         const me = await Promise.race([
           bot.getMe(),
           new Promise<null>(resolve => setTimeout(() => resolve(null), 3000))
         ]);
-        if (me && me.username) {
-          botUsername = me.username;
-          user.sellerBot.botUsername = botUsername;
+        if (me) {
+          if (me.username) botUsername = me.username;
+          if (me.first_name) botFirstName = me.first_name;
+          applyBotIdentityFromMe(user, me);
           db.saveUser(user);
           db.saveImmediate();
         }
@@ -202,16 +260,19 @@ class ResellerBotManager {
         console.warn(`[ResellerBot @${sellerChatId}] Quick getMe warning:`, quickErr?.message || quickErr);
       }
 
-      if (!botUsername) {
+      if (!botUsername || !botFirstName) {
         bot.getMe().then(me => {
-          if (me && me.username) {
+          if (me) {
             const u = db.getUser(sellerChatId);
             if (u && u.sellerBot) {
-              u.sellerBot.botUsername = me.username;
+              applyBotIdentityFromMe(u, me);
               db.saveUser(u);
               db.saveImmediate();
               const rec = this.activeBots.get(sellerChatId);
-              if (rec) rec.username = me.username;
+              if (rec) {
+                if (me.username) rec.username = me.username;
+                if (me.first_name) rec.botFirstName = me.first_name;
+              }
             }
           }
         }).catch(() => {});
@@ -220,6 +281,7 @@ class ResellerBotManager {
       this.activeBots.set(sellerChatId, {
         bot,
         username: botUsername,
+        botFirstName,
         sellerChatId,
         startedAt: Date.now()
       });
@@ -279,7 +341,7 @@ class ResellerBotManager {
     return {
       isOnline,
       botUsername: config?.botUsername || '',
-      botName: config?.botName || 'فروشگاه اختصاصی',
+      botName: user ? this.getEffectiveBotName(user) : 'ربات فروشگاهی',
       buyersCount: (config?.buyers || []).length,
       ordersCount: (config?.orders || []).length,
       pendingOrdersCount: (config?.orders || []).filter(o => o.status === 'pending').length,
@@ -733,7 +795,24 @@ class ResellerBotManager {
 
     const getAvailableProductsForReseller = (seller: User) => {
       const state = db.getState();
-      const activeProducts = (state.products || []).filter(p => !p.disabled);
+      const allCategories = state.categories || [];
+      const activeCategories = allCategories.filter(c => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+
+      const activeProducts = (state.products || []).filter(p => {
+        if (!p || p.disabled) return false;
+        if (p.categoryId) {
+          const cat = activeCategories.find(
+            c =>
+              String(c.id).trim().toLowerCase() === String(p.categoryId).trim().toLowerCase() ||
+              String(c.name).trim().toLowerCase() === String(p.categoryId).trim().toLowerCase()
+          );
+          return !!cat;
+        }
+        // If categories exist in the main bot, uncategorized ("سایر محصولات") products are hidden
+        if (hasCategories) return false;
+        return true;
+      });
       if (seller.showCustomPricesOnly) {
         return activeProducts.filter(
           p =>
@@ -759,9 +838,14 @@ class ResellerBotManager {
         return;
       }
 
-      const categories = (state.categories || []).filter(c => !c.disabled);
-      const activeCatList = categories.filter(c => activeProducts.some(p => p.categoryId === c.id));
-      const uncategorized = activeProducts.filter(p => !p.categoryId || !categories.some(c => c.id === p.categoryId));
+      const categories = (state.categories || []).filter(c => c && !c.disabled);
+      const activeCatList = categories.filter(c =>
+        activeProducts.some(
+          p =>
+            String(p.categoryId || '').trim().toLowerCase() === String(c.id).trim().toLowerCase() ||
+            String(p.categoryId || '').trim().toLowerCase() === String(c.name).trim().toLowerCase()
+        )
+      );
 
       if (activeCatList.length > 0) {
         const inline_keyboard: any[][] = activeCatList.map(c => [
@@ -771,16 +855,6 @@ class ResellerBotManager {
             style: 'primary'
           }
         ]);
-
-        if (uncategorized.length > 0) {
-          inline_keyboard.push([
-            {
-              text: '📁 سایر محصولات',
-              callback_data: 'cat_uncategorized',
-              style: 'primary'
-            }
-          ]);
-        }
 
         if (state.customVolumeEnabled !== false) {
           inline_keyboard.push([
@@ -792,7 +866,7 @@ class ResellerBotManager {
           ]);
         }
 
-        const menuText = `🛍 <b>منوی خرید اشتراک ${escapeHtml(botCfg.botName || 'فروشگاه')}</b>\n\nلطفاً دسته‌بندی سرور یا سرویس مورد نظر خود را انتخاب کنید:`;
+        const menuText = `🛍 <b>منوی خرید اشتراک ${escapeHtml(this.getEffectiveBotName(seller))}</b>\n\nلطفاً دسته‌بندی سرور یا سرویس مورد نظر خود را انتخاب کنید:`;
         if (editMsgId) {
           await bot
             .editMessageText(menuText, {
@@ -829,7 +903,7 @@ class ResellerBotManager {
           ]);
         }
 
-        const menuText = `🛍 <b>لیست سرویس‌های فعال ${escapeHtml(botCfg.botName || 'فروشگاه')}:</b>\n\nلطفاً سرویس مورد نظر خود را جهت خرید انتخاب کنید:`;
+        const menuText = `🛍 <b>لیست سرویس‌های فعال ${escapeHtml(this.getEffectiveBotName(seller))}:</b>\n\nلطفاً سرویس مورد نظر خود را جهت خرید انتخاب کنید:`;
         if (editMsgId) {
           await bot
             .editMessageText(menuText, {
@@ -847,6 +921,164 @@ class ResellerBotManager {
             reply_markup: { inline_keyboard }
           });
         }
+      }
+    };
+
+    const getEffectiveForceJoinChannels = (seller: User): { id: string; name: string; url: string }[] => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const list = [...(botCfg.forceJoinChannels || [])];
+      if (list.length === 0 && botCfg.channelUsername) {
+        const cleanCh = botCfg.channelUsername
+          .replace(/^https?:\/\/t\.me\//i, '')
+          .replace(/^@/, '')
+          .trim();
+        if (cleanCh) {
+          list.push({
+            id: `@${cleanCh}`,
+            name: `📢 عضویت در کانال ${this.getEffectiveBotName(seller)}`,
+            url: `https://t.me/${cleanCh}`
+          });
+        }
+      }
+      return list;
+    };
+
+    const checkBuyerForceJoin = async (buyerChatId: number, seller: User): Promise<boolean> => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      if (!botCfg.forceJoinEnabled) return true;
+      const channels = getEffectiveForceJoinChannels(seller);
+      if (channels.length === 0) return true;
+
+      const cacheKey = `${sellerChatId}_${buyerChatId}`;
+      const cachedAt = this.forceJoinCache.get(cacheKey);
+      if (cachedAt && Date.now() - cachedAt < 2 * 60 * 1000) {
+        return true;
+      }
+
+      const notJoined: { id: string; name: string; url: string }[] = [];
+      for (const ch of channels) {
+        let chId = (ch.id || '').trim();
+        if (!chId) continue;
+        if (!chId.startsWith('@') && !chId.startsWith('-100') && isNaN(Number(chId))) {
+          chId = '@' + chId;
+        }
+        try {
+          const member = await bot.getChatMember(chId, buyerChatId);
+          if (['left', 'kicked'].includes(member.status)) {
+            notJoined.push(ch);
+          }
+        } catch (err: any) {
+          console.warn(`[ResellerBot @${sellerChatId}] ForceJoin check error on channel ${chId}:`, err?.message || err);
+        }
+      }
+
+      if (notJoined.length > 0) {
+        const inline_keyboard: any[][] = notJoined.map(c => [
+          {
+            text: `📢 ${c.name || 'عضویت در کانال'}`,
+            url: c.url,
+            style: 'primary'
+          }
+        ]);
+        inline_keyboard.push([
+          {
+            text: '✅ عضو شدم (بررسی عضویت)',
+            callback_data: 'check_reseller_fj',
+            style: 'success'
+          }
+        ]);
+
+        await bot
+          .sendMessage(
+            buyerChatId,
+            `⚠️ <b>کاربر گرامی، برای استفاده از خدمات ربات «${escapeHtml(this.getEffectiveBotName(seller))}»، ابتدا در کانال زیر عضو شوید:</b>\n\n` +
+              `پس از عضویت در کانال، روی دکمه شیشه‌ای <b>«✅ عضو شدم (بررسی عضویت)»</b> کلیک نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard }
+            }
+          )
+          .catch(() => {});
+        return false;
+      }
+
+      this.forceJoinCache.set(cacheKey, Date.now());
+      return true;
+    };
+
+    const sendForceJoinMenu = async (adminChatId: number, seller: User, editMsgId?: number) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const channels = getEffectiveForceJoinChannels(seller);
+      const isEnabled = !!botCfg.forceJoinEnabled;
+      const botUserDisplay = botCfg.botUsername ? `@${botCfg.botUsername}` : 'ربات خودتان';
+
+      let msg =
+        `🔐 <b>تنظیمات عضویت اجباری کانال (ادد اجباری) در ربات شما</b>\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `📌 <b>وضعیت فعلی قفل کانال:</b> ${isEnabled ? '🟢 <b>فعال</b>' : '🔴 <b>غیرفعال</b>'}\n` +
+        `📢 <b>تعداد کانال‌های ثبت‌شده:</b> <b>${channels.length} کانال</b>\n\n`;
+
+      if (channels.length > 0) {
+        msg += `📋 <b>لیست کانال‌های عضویت اجباری شما:</b>\n`;
+        channels.forEach((ch, idx) => {
+          msg += `${idx + 1}. <b>${escapeHtml(ch.name)}</b> (<code>${escapeHtml(ch.id)}</code>)\n🔗 ${escapeHtml(ch.url)}\n`;
+        });
+        msg += `\n`;
+      } else {
+        msg += `ℹ️ <i>هنوز کانالی برای عضویت اجباری ثبت نکرده‌اید.</i>\n\n`;
+      }
+
+      msg +=
+        `⚠️ <b>نکته بسیار مهم:</b>\n` +
+        `برای اینکه ربات بتواند عضو بودن مشتریان در کانال شما را بررسی کند، حتماً باید <b>${escapeHtml(botUserDisplay)}</b> را در کانال تلگرام خودتان <b>Admin (مدیر)</b> کنید.`;
+
+      const inline_keyboard: any[][] = [
+        [
+          {
+            text: isEnabled ? '🔴 غیرفعال کردن عضویت اجباری' : '🟢 فعال کردن عضویت اجباری',
+            callback_data: 'admin_toggle_fj',
+            style: isEnabled ? 'danger' : 'success'
+          }
+        ],
+        [
+          {
+            text: '➕ افزودن کانال جدید به عضویت اجباری',
+            callback_data: 'admin_add_fj_start',
+            style: 'primary'
+          }
+        ]
+      ];
+
+      channels.forEach((ch, idx) => {
+        inline_keyboard.push([
+          {
+            text: `🗑 حذف کانال: ${ch.name} (${ch.id})`,
+            callback_data: `admin_del_fj_${idx}`,
+            style: 'danger'
+          }
+        ]);
+      });
+
+      inline_keyboard.push([
+        { text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'primary' }
+      ]);
+
+      if (editMsgId) {
+        await bot
+          .editMessageText(msg, {
+            chat_id: adminChatId,
+            message_id: editMsgId,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard }
+          })
+          .catch(async () => {
+            await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          });
+      } else {
+        await bot.sendMessage(adminChatId, msg, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard }
+        });
       }
     };
 
@@ -910,13 +1142,17 @@ class ResellerBotManager {
         ? `<code>${escapeHtml(botCfg.cardNumber)}</code> (${escapeHtml(botCfg.cardHolder || 'بدون نام')})`
         : '❌ ثبت نشده (الزامی)';
 
+      const effectiveBotName = this.getEffectiveBotName(seller);
+      const fjChannelsCount = getEffectiveForceJoinChannels(seller).length;
       const adminMsg =
-        `👑 <b>پنل مدیریت ربات دوم شما و پنل همکار (${escapeHtml(botCfg.botName || 'فروشگاه شما')})</b>\n\n` +
+        `👑 <b>پنل مدیریت ربات دوم شما و پنل همکار (${escapeHtml(effectiveBotName)})</b>\n\n` +
+        `🤖 <b>نام نمایشی ربات:</b> <b>${escapeHtml(effectiveBotName)}</b> ${botCfg.botUsername ? `(@${escapeHtml(botCfg.botUsername)})` : ''}\n` +
         `👤 <b>شناسه همکار (شما):</b> <code>${adminChatId}</code>\n` +
         `👥 <b>کل مشتریان ربات شما:</b> <b>${totalBuyers.toLocaleString()} نفر</b>\n` +
         `📦 <b>سرویس‌های تحویل‌شده در این ربات:</b> <b>${totalOrders.toLocaleString()} عدد</b>\n` +
         `⏳ <b>فیش‌های منتظر تایید شما:</b> <b>${pendingOrders.length} مورد</b>\n` +
         `💳 <b>کارت بانکی شما در ربات دوم:</b> ${cardInfo}\n` +
+        `🔐 <b>عضویت اجباری کانال شما:</b> <b>${botCfg.forceJoinEnabled ? `🟢 فعال (${fjChannelsCount} کانال)` : '🔴 غیرفعال'}</b>\n` +
         `⚡ <b>تحویل آنی خودکار:</b> <b>${botCfg.autoDeliverAfterPayment ? '✅ فعال' : '❌ غیرفعال (تایید دستی فیش)'}</b>\n\n` +
         `💰 <b>تراز مالی شما با مشتریان ربات دوم:</b>\n` +
         `• کل دریافتی از مشتریان: <b>${(botCfg.totalRevenueToman || 0).toLocaleString()} تومان</b>\n` +
@@ -925,7 +1161,7 @@ class ResellerBotManager {
         `🏦 <b>وضعیت حساب همکار شما:</b>\n` +
         `• 📉 <b>بدهی فعلی همکار: ${debtVal.toLocaleString()} تومان</b>\n` +
         `• 🔋 <b>اعتبار خرید باقیمانده: ${creditDisplay}</b>\n\n` +
-        `از دکمه‌های شیشه‌ای زیر جهت مدیریت مشتریان ربات دوم، قیمت‌گذاری، شماره کارت، و امکانات کامل پنل همکار خود استفاده کنید:`;
+        `از دکمه‌های شیشه‌ای زیر جهت مدیریت مشتریان ربات دوم، ارسال پیام همگانی، قفل کانال، قیمت‌گذاری و امکانات کامل پنل همکار خود استفاده کنید:`;
 
       const inline_keyboard: any[][] = [];
       if (pendingOrders.length > 0) {
@@ -938,10 +1174,15 @@ class ResellerBotManager {
         ]);
       }
 
-      // Section 1: Bot 2 Storefront & Customers Management
+      // Section 1: Bot 2 Storefront, Customers, Broadcast & Force Join Management
       inline_keyboard.push([
         { text: '👥 مدیریت مشتریان و شارژ دستی', callback_data: 'admin_buyers_menu', style: 'primary' },
         { text: '📋 استعلام، تمدید و ابطال کانفیگ‌ها', callback_data: 'admin_all_configs', style: 'primary' }
+      ]);
+
+      inline_keyboard.push([
+        { text: '📢 ارسال پیام همگانی به کاربران ربات', callback_data: 'admin_broadcast_start', style: 'primary' },
+        { text: '🔐 عضویت اجباری کانال (ادد اجباری)', callback_data: 'admin_force_join_menu', style: 'primary' }
       ]);
 
       inline_keyboard.push([
@@ -964,7 +1205,7 @@ class ResellerBotManager {
       ]);
 
       inline_keyboard.push([
-        { text: '⚙️ تنظیمات برند، پشتیبانی و تست', callback_data: 'admin_brand_settings', style: 'primary' },
+        { text: '⚙️ تنظیمات نام بات، خوش‌آمدگویی و تست', callback_data: 'admin_brand_settings', style: 'primary' },
         { text: '🔄 بروزرسانی آمار پنل', callback_data: 'admin_refresh_stats', style: 'primary' }
       ]);
 
@@ -1140,9 +1381,21 @@ class ResellerBotManager {
           }
         }
 
+        // Enforce Force Join for non-admin buyers
+        if (!isUserAdmin) {
+          if (text === '✅ عضو شدم' || text === 'بررسی عضویت') {
+            this.forceJoinCache.delete(`${sellerChatId}_${buyerChatId}`);
+          }
+          const isJoined = await checkBuyerForceJoin(buyerChatId, seller);
+          if (!isJoined) return;
+        }
+
+        const effectiveBotName = this.getEffectiveBotName(seller);
+
         // Handle /start or Main Menu return
         if (
           text.startsWith('/start') ||
+          text === '✅ عضو شدم' ||
           text === 'بازگشت به منوی اصلی' ||
           text === '🔙 بازگشت به منوی اصلی' ||
           text === 'منوی اصلی' ||
@@ -1150,12 +1403,13 @@ class ResellerBotManager {
           text === '/cancel'
         ) {
           this.userSessionStates.delete(sessionKey);
-          let welcome =
-            botCfg.welcomeMessage ||
-            `👋 سلام <b>${escapeHtml(msg.from.first_name || 'کاربر گرامی')}</b> عزیز،\nبه ربات رسمی فروش اشتراک‌های پرسرعت <b>${escapeHtml(botCfg.botName || 'فروشگاه اختصاصی')}</b> خوش آمدید! 🚀\n\n🆔 شناسه کاربری شما: <code>${buyerChatId}</code>\n💰 موجودی کیف پول: <b>${(buyerRecord.balance || 0).toLocaleString()} تومان</b>\n\nلطفاً یکی از گزینه‌های منوی زیر را انتخاب نمایید:`;
+          const customWelcome = (botCfg.welcomeMessage || '').trim();
+          let welcome = customWelcome
+            ? `${customWelcome}\n\n🆔 شناسه کاربری شما: <code>${buyerChatId}</code>\n💰 موجودی کیف پول: <b>${(buyerRecord.balance || 0).toLocaleString()} تومان</b>`
+            : `👋 سلام <b>${escapeHtml(msg.from.first_name || 'کاربر گرامی')}</b> عزیز،\nبه ربات رسمی فروش اشتراک‌های پرسرعت <b>${escapeHtml(effectiveBotName)}</b> خوش آمدید! 🚀\n\n🆔 شناسه کاربری شما: <code>${buyerChatId}</code>\n💰 موجودی کیف پول: <b>${(buyerRecord.balance || 0).toLocaleString()} تومان</b>\n\nلطفاً یکی از گزینه‌های منوی زیر را انتخاب نمایید:`;
 
           if (isUserAdmin) {
-            welcome += `\n\n👑 <i>(شما مدیر این ربات هستید. دکمه «👑 پنل مدیریت ربات» برای مدیریت کامل مشتریان، قیمت‌ها و شماره کارت فعال است.)</i>`;
+            welcome += `\n\n👑 <i>(شما مدیر این ربات هستید. دکمه «👑 پنل مدیریت ربات» برای مدیریت کامل مشتریان، پیام همگانی، عضویت اجباری، قیمت‌ها و پنل همکار فعال است.)</i>`;
           }
 
           if (botCfg.logoUrl && /^https?:\/\//i.test(botCfg.logoUrl)) {
@@ -1340,7 +1594,7 @@ class ResellerBotManager {
             o => o.buyerChatId === buyerChatId && o.status === 'approved' && o.type !== 'deposit'
           );
           const profileMsg =
-            `👤 <b>پروفایل کاربری شما در ${escapeHtml(botCfg.botName || 'فروشگاه')}:</b>\n\n` +
+            `👤 <b>پروفایل کاربری شما در ${escapeHtml(effectiveBotName)}:</b>\n\n` +
             `🆔 <b>شناسه عددی شما:</b> <code>${buyerChatId}</code>\n` +
             `👤 <b>نام:</b> ${escapeHtml(buyerRecord.name || 'کاربر')}\n` +
             `💰 <b>موجودی کیف پول:</b> <b>${(buyerRecord.balance || 0).toLocaleString()} تومان</b>\n` +
@@ -1388,7 +1642,7 @@ class ResellerBotManager {
 
           await bot.sendMessage(
             buyerChatId,
-            `📞 <b>ارتباط با پشتیبانی ${escapeHtml(botCfg.botName || 'فروشگاه')}:</b>\n\n` +
+            `📞 <b>ارتباط با پشتیبانی ${escapeHtml(effectiveBotName)}:</b>\n\n` +
               `👤 <b>پشتیبانی تلگرام:</b> ${supDisplay}\n` +
               (chRaw ? `📢 <b>کانال اطلاع‌رسانی:</b> @${chRaw}\n` : '') +
               `\nدر صورت داشتن هرگونه سوال در خصوص خرید، تمدید یا اتصال سرویس‌ها با پشتیبانی در ارتباط باشید.`,
@@ -1486,9 +1740,129 @@ class ResellerBotManager {
             this.userSessionStates.delete(sessionKey);
             await bot.sendMessage(
               buyerChatId,
-              `✅ نام فروشگاه ربات شما به <b>${escapeHtml(botCfg.botName)}</b> تغییر یافت.`,
+              `✅ نام نمایشی ربات و فروشگاه شما به <b>${escapeHtml(this.getEffectiveBotName(seller))}</b> تغییر یافت.`,
               { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
             );
+            return;
+          }
+
+          if (session.action === 'admin_set_welcome_msg') {
+            botCfg.welcomeMessage = text === '/clear' || text === 'حذف' || text === 'پیشفرض' ? '' : text.trim();
+            db.saveUser(seller);
+            this.userSessionStates.delete(sessionKey);
+            await bot.sendMessage(
+              buyerChatId,
+              botCfg.welcomeMessage
+                ? `✅ متن خوش‌آمدگویی سفارشی استارت ربات شما با موفقیت ذخیره شد.`
+                : `✅ متن خوش‌آمدگویی به حالت پیش‌فرض (با نام ربات <b>${escapeHtml(this.getEffectiveBotName(seller))}</b>) بازگردانده شد.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+            await sendAdminPanelMenu(buyerChatId, seller);
+            return;
+          }
+
+          if (session.action === 'admin_add_fj_channel') {
+            const rawInput = text.trim();
+            if (!rawInput) {
+              await bot.sendMessage(buyerChatId, '❌ لطفاً آیدی کانال (مثلاً <code>@MyChannel</code>) را ارسال کنید:', { parse_mode: 'HTML' });
+              return;
+            }
+            const parts = rawInput.split(/[,\n|]/).map(s => s.trim()).filter(Boolean);
+            let chId = parts[0];
+            let chName = parts[1] || `کانال رسمی ${this.getEffectiveBotName(seller)}`;
+            let chUrl = parts[2] || '';
+
+            if (chId.startsWith('https://t.me/') || chId.startsWith('http://t.me/')) {
+              const slug = chId.replace(/^https?:\/\/t\.me\//i, '').replace(/\/.*$/, '').trim();
+              if (!slug.startsWith('+')) {
+                chId = `@${slug}`;
+                if (!chUrl) chUrl = `https://t.me/${slug}`;
+              } else {
+                if (!chUrl) chUrl = parts[0];
+              }
+            } else if (!chId.startsWith('@') && !chId.startsWith('-100') && isNaN(Number(chId))) {
+              chId = `@${chId}`;
+            }
+
+            if (!chUrl) {
+              const cleanUsername = chId.replace(/^@/, '');
+              chUrl = `https://t.me/${cleanUsername}`;
+            }
+
+            if (!botCfg.forceJoinChannels) botCfg.forceJoinChannels = [];
+            botCfg.forceJoinChannels.push({ id: chId, name: chName, url: chUrl });
+            botCfg.forceJoinEnabled = true;
+            this.forceJoinCache.clear();
+            db.saveUser(seller);
+            this.userSessionStates.delete(sessionKey);
+
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ <b>کانال <code>${escapeHtml(chId)}</code> با موفقیت به عضویت اجباری ربات شما اضافه و فعال شد!</b>\n\n` +
+                `⚠️ <b>یادآوری مهم:</b> حتماً ربات خودتان (${botCfg.botUsername ? `@${escapeHtml(botCfg.botUsername)}` : 'ربات'}) را در کانال <code>${escapeHtml(chId)}</code> <b>Admin (مدیر)</b> کنید تا ربات بتواند عضویت کاربران را تشخیص دهد.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+            await sendForceJoinMenu(buyerChatId, seller);
+            return;
+          }
+
+          if (session.action === 'admin_broadcast_msg') {
+            this.userSessionStates.delete(sessionKey);
+            const buyerIds = new Set<number>();
+            for (const b of botCfg.buyers || []) {
+              if (b.chatId) buyerIds.add(Number(b.chatId));
+            }
+            for (const o of botCfg.orders || []) {
+              if (o.buyerChatId) buyerIds.add(Number(o.buyerChatId));
+            }
+            const targets = Array.from(buyerIds);
+            if (targets.length === 0) {
+              await bot.sendMessage(buyerChatId, 'ℹ️ هنوز هیچ کاربری در ربات شما ثبت نشده است.', {
+                reply_markup: getMainKeyboard(seller, true)
+              });
+              return;
+            }
+
+            await bot.sendMessage(
+              buyerChatId,
+              `⏳ در حال ارسال پیام همگانی به <b>${targets.length} کاربر</b> ربات شما... لطفاً چند لحظه صبر کنید.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+
+            let successCount = 0;
+            let failCount = 0;
+            const hasPhoto = !!(msg.photo && msg.photo.length > 0);
+            const largestPhoto = hasPhoto ? msg.photo![msg.photo!.length - 1] : null;
+            const broadcastHeader = `📢 <b>اطلاعیه ${escapeHtml(this.getEffectiveBotName(seller))}:</b>\n\n`;
+
+            for (const targetId of targets) {
+              try {
+                if (hasPhoto && largestPhoto) {
+                  const captionText = msg.caption ? `${broadcastHeader}${escapeHtml(msg.caption)}` : `📢 <b>${escapeHtml(this.getEffectiveBotName(seller))}</b>`;
+                  await bot.sendPhoto(targetId, largestPhoto.file_id, {
+                    caption: captionText.slice(0, 1024),
+                    parse_mode: 'HTML'
+                  });
+                } else {
+                  await bot.sendMessage(targetId, `${broadcastHeader}${escapeHtml(text)}`, {
+                    parse_mode: 'HTML'
+                  });
+                }
+                successCount++;
+              } catch (e) {
+                failCount++;
+              }
+              await new Promise(r => setTimeout(r, 35));
+            }
+
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ <b>ارسال پیام همگانی به پایان رسید!</b>\n\n` +
+                `🟢 ارسال موفق: <b>${successCount} نفر</b>\n` +
+                `🔴 ناموفق (بلاک یا حذف ربات): <b>${failCount} نفر</b>`,
+              { parse_mode: 'HTML' }
+            );
+            await sendAdminPanelMenu(buyerChatId, seller);
             return;
           }
 
@@ -1959,6 +2333,38 @@ class ResellerBotManager {
           Number(query.from.id) === targetAdminChatId ||
           Number(query.from.id) === sellerChatId;
 
+        if (data === 'check_reseller_fj') {
+          this.forceJoinCache.delete(`${sellerChatId}_${buyerChatId}`);
+          const joined = await checkBuyerForceJoin(buyerChatId, seller);
+          if (joined) {
+            await bot.answerCallbackQuery(query.id, { text: '✅ عضویت شما در کانال تایید شد! خوش آمدید.', show_alert: true }).catch(() => {});
+            await bot.deleteMessage(buyerChatId, msgId).catch(() => {});
+            const effectiveBotName = this.getEffectiveBotName(seller);
+            const buyerRec = (botCfg.buyers || []).find(b => b.chatId === buyerChatId);
+            const customWelcome = (botCfg.welcomeMessage || '').trim();
+            const welcome = customWelcome
+              ? `${customWelcome}\n\n🆔 شناسه کاربری شما: <code>${buyerChatId}</code>\n💰 موجودی کیف پول: <b>${(buyerRec?.balance || 0).toLocaleString()} تومان</b>`
+              : `👋 سلام <b>${escapeHtml(query.from.first_name || 'کاربر گرامی')}</b> عزیز،\nبه ربات رسمی فروش اشتراک‌های پرسرعت <b>${escapeHtml(effectiveBotName)}</b> خوش آمدید! 🚀\n\n🆔 شناسه کاربری شما: <code>${buyerChatId}</code>\n💰 موجودی کیف پول: <b>${(buyerRec?.balance || 0).toLocaleString()} تومان</b>\n\nلطفاً یکی از گزینه‌های منوی زیر را انتخاب نمایید:`;
+
+            await bot.sendMessage(buyerChatId, welcome, {
+              parse_mode: 'HTML',
+              reply_markup: getMainKeyboard(seller, isFromAdmin)
+            });
+          } else {
+            await bot.answerCallbackQuery(query.id, { text: '❌ شما هنوز در کانال عضو نشده‌اید! ابتدا عضو شوید و سپس این دکمه را بزنید.', show_alert: true }).catch(() => {});
+          }
+          return;
+        }
+
+        // Enforce Force Join on all buyer callback actions
+        if (!isFromAdmin) {
+          const isJoined = await checkBuyerForceJoin(buyerChatId, seller);
+          if (!isJoined) {
+            await bot.answerCallbackQuery(query.id, { text: '⚠️ لطفاً ابتدا در کانال فروشگاه عضو شوید.', show_alert: true }).catch(() => {});
+            return;
+          }
+        }
+
         // --------------------------------------------------------------------
         // 1. BUYER CATEGORY & PRODUCT NAVIGATION (Identical to Main Bot)
         // --------------------------------------------------------------------
@@ -1971,23 +2377,24 @@ class ResellerBotManager {
         if (data.startsWith('cat_')) {
           const catId = data.replace('cat_', '');
           const state = db.getState();
-          const categories = (state.categories || []).filter(c => !c.disabled);
+          const categories = (state.categories || []).filter(c => c && !c.disabled);
           const activeProducts = getAvailableProductsForReseller(seller);
 
-          let prods: any[] = [];
-          let catName = 'سایر محصولات';
-
-          if (catId === 'uncategorized') {
-            prods = activeProducts.filter(p => !p.categoryId || !categories.some(c => c.id === p.categoryId));
-          } else {
-            const cat = categories.find(c => c.id === catId);
-            if (!cat) {
-              await bot.answerCallbackQuery(query.id, { text: '❌ دسته‌بندی یافت نشد.' });
-              return;
-            }
-            catName = cat.name;
-            prods = activeProducts.filter(p => p.categoryId === catId);
+          const cat = categories.find(
+            c =>
+              String(c.id).trim().toLowerCase() === String(catId).trim().toLowerCase() ||
+              String(c.name).trim().toLowerCase() === String(catId).trim().toLowerCase()
+          );
+          if (!cat) {
+            await bot.answerCallbackQuery(query.id, { text: '❌ این دسته‌بندی غیرفعال یا حذف شده است.' });
+            return;
           }
+          const catName = cat.name;
+          const prods = activeProducts.filter(
+            p =>
+              String(p.categoryId || '').trim().toLowerCase() === String(cat.id).trim().toLowerCase() ||
+              String(p.categoryId || '').trim().toLowerCase() === String(cat.name).trim().toLowerCase()
+          );
 
           if (prods.length === 0) {
             await bot.answerCallbackQuery(query.id, { text: '❌ محصول فعالی در این دسته وجود ندارد.' });
@@ -2047,10 +2454,9 @@ class ResellerBotManager {
 
         if (data.startsWith('select_prod_') || data.startsWith('buy_prod_')) {
           const prodId = data.replace(/^select_prod_|^buy_prod_/, '');
-          const state = db.getState();
-          const product = (state.products || []).find(p => p.id === prodId && !p.disabled);
+          const product = getAvailableProductsForReseller(seller).find(p => p.id === prodId);
           if (!product) {
-            await bot.answerCallbackQuery(query.id, { text: '❌ محصول یافت نشد.' });
+            await bot.answerCallbackQuery(query.id, { text: '❌ این محصول یا دسته‌بندی آن غیرفعال است.' });
             return;
           }
 
@@ -2133,10 +2539,9 @@ class ResellerBotManager {
 
         if (data.startsWith('confirm_buy_')) {
           const prodId = data.replace('confirm_buy_', '');
-          const state = db.getState();
-          const product = (state.products || []).find(p => p.id === prodId && !p.disabled);
+          const product = getAvailableProductsForReseller(seller).find(p => p.id === prodId);
           if (!product) {
-            await bot.answerCallbackQuery(query.id, { text: '❌ محصول یافت نشد.' });
+            await bot.answerCallbackQuery(query.id, { text: '❌ این محصول یا دسته‌بندی آن غیرفعال است.' });
             return;
           }
           await bot.answerCallbackQuery(query.id).catch(() => {});
@@ -2432,13 +2837,103 @@ class ResellerBotManager {
         // --------------------------------------------------------------------
         // 3. RESELLER ADMIN CALLBACKS (Order Approval, Buyers, Prices, Card)
         // --------------------------------------------------------------------
-        if (data === 'admin_refresh_stats' || data === 'admin_main') {
+        if (data === 'admin_refresh_stats' || data === 'admin_main' || data === 'admin_panel_main') {
           if (!isFromAdmin) {
             await bot.answerCallbackQuery(query.id, { text: '⛔ عدم دسترسی.' });
             return;
           }
           await bot.answerCallbackQuery(query.id, { text: '✅ بروزرسانی شد.' }).catch(() => {});
           await sendAdminPanelMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_broadcast_start') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          const totalBuyers = (botCfg.buyers || []).length;
+          this.userSessionStates.set(sessionKey, { action: 'admin_broadcast_msg' });
+          await bot.sendMessage(
+            buyerChatId,
+            `📢 <b>ارسال پیام همگانی به تمامی کاربران ربات شما (${totalBuyers} نفر):</b>\n\n` +
+              `لطفاً <b>متن پیام</b> یا <b>عکس (به همراه کپشن)</b> مورد نظر خود را همینجا ارسال نمایید تا بلافاصله برای تمام کاربران ربات شما ارسال شود:\n\n` +
+              `💡 <i>برای انصراف، روی دکمه «بازگشت به منوی اصلی» بزنید.</i>`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
+        if (data === 'admin_force_join_menu') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          await sendForceJoinMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_toggle_fj') {
+          if (!isFromAdmin) return;
+          const channels = getEffectiveForceJoinChannels(seller);
+          if (!botCfg.forceJoinEnabled && channels.length === 0) {
+            await bot.answerCallbackQuery(query.id, {
+              text: '⚠️ ابتدا حداقل یک کانال اضافه کنید تا قفل عضویت اجباری فعال شود.',
+              show_alert: true
+            }).catch(() => {});
+            return;
+          }
+          botCfg.forceJoinEnabled = !botCfg.forceJoinEnabled;
+          this.forceJoinCache.clear();
+          db.saveUser(seller);
+          await bot.answerCallbackQuery(query.id, {
+            text: botCfg.forceJoinEnabled ? '🟢 عضویت اجباری کانال فعال شد.' : '🔴 عضویت اجباری کانال غیرفعال شد.'
+          }).catch(() => {});
+          await sendForceJoinMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_add_fj_start') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'admin_add_fj_channel' });
+          await bot.sendMessage(
+            buyerChatId,
+            `➕ <b>افزودن کانال به عضویت اجباری (ادد اجباری) ربات شما:</b>\n\n` +
+              `لطفاً آیدی کانال عمومی خود را با <code>@</code> ارسال نمایید:\n` +
+              `مثال ساده: <code>@MyVpnChannel</code>\n\n` +
+              `یا اگر می‌خواهید نام دکمه شیشه‌ای را هم خودتان تعیین کنید با ویرگول جدا کنید:\n` +
+              `مثال: <code>@MyVpnChannel, کانال اطلاع‌رسانی ما</code>\n\n` +
+              `⚠️ <b>فراموش نکنید:</b> حتماً ربات خودتان (${botCfg.botUsername ? `@${escapeHtml(botCfg.botUsername)}` : 'ربات'}) را در آن کانال <b>Admin (مدیر)</b> کنید.`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
+        if (data.startsWith('admin_del_fj_')) {
+          if (!isFromAdmin) return;
+          const idx = parseInt(data.replace('admin_del_fj_', ''), 10);
+          const list = getEffectiveForceJoinChannels(seller);
+          if (!isNaN(idx) && idx >= 0 && idx < list.length) {
+            list.splice(idx, 1);
+            botCfg.forceJoinChannels = list;
+            if (list.length === 0) {
+              botCfg.channelUsername = '';
+              botCfg.forceJoinEnabled = false;
+            }
+            this.forceJoinCache.clear();
+            db.saveUser(seller);
+            await bot.answerCallbackQuery(query.id, { text: '🗑 کانال حذف شد.' }).catch(() => {});
+          }
+          await sendForceJoinMenu(buyerChatId, seller, msgId);
           return;
         }
 
@@ -2678,7 +3173,7 @@ class ResellerBotManager {
           if (!isFromAdmin) return;
           await bot.answerCallbackQuery(query.id).catch(() => {});
           const state = db.getState();
-          const products = state.products || [];
+          const products = getAvailableProductsForReseller(seller);
           const inline_keyboard: any[][] = [];
 
           for (const prod of products) {
@@ -2959,8 +3454,7 @@ class ResellerBotManager {
         if (data === 'admin_price_settings') {
           if (!isFromAdmin) return;
           await bot.answerCallbackQuery(query.id).catch(() => {});
-          const state = db.getState();
-          const products = (state.products || []).filter(p => !p.disabled);
+          const products = getAvailableProductsForReseller(seller);
           const { wholesalePricePerGb, retailPricePerGb } = this.getCustomVolumePricesForSeller(seller);
 
           let msg =
@@ -3034,16 +3528,22 @@ class ResellerBotManager {
         if (data === 'admin_brand_settings') {
           if (!isFromAdmin) return;
           await bot.answerCallbackQuery(query.id).catch(() => {});
+          const effectiveBotName = this.getEffectiveBotName(seller);
           const msg =
-            `⚙️ <b>تنظیمات برند، پشتیبانی و تحویل خودکار ربات:</b>\n\n` +
-            `🏷 <b>نام فروشگاه:</b> ${escapeHtml(botCfg.botName || 'تنظیم نشده')}\n` +
+            `⚙️ <b>تنظیمات نام ربات، متن خوش‌آمدگویی، پشتیبانی و تست:</b>\n\n` +
+            `🤖 <b>نام نمایشی در پیام خوش‌آمدگویی:</b> <b>${escapeHtml(effectiveBotName)}</b>\n` +
+            `📝 <b>متن خوش‌آمدگویی استارت:</b> ${botCfg.welcomeMessage ? `سفارشی (${escapeHtml(botCfg.welcomeMessage.slice(0, 60))}...)` : `پیش‌فرض (خوش‌آمدگویی با نام بات «${escapeHtml(effectiveBotName)}»)`}\n` +
             `📞 <b>آیدی پشتیبانی:</b> @${escapeHtml((botCfg.supportUsername || seller.username || '').replace(/^@/, ''))}\n` +
             `⚡ <b>تحویل آنی پس از ارسال فیش:</b> ${botCfg.autoDeliverAfterPayment ? '✅ فعال' : '❌ غیرفعال'}\n` +
             `🎁 <b>تست رایگان برای مشتریان:</b> ${botCfg.freeTestEnabled !== false ? '✅ فعال' : '❌ غیرفعال'}`;
 
           const inline_keyboard: any[][] = [
             [
-              { text: '🏷 تغییر نام فروشگاه', callback_data: 'admin_set_name_btn', style: 'primary' },
+              { text: '🏷 تغییر نام نمایشی ربات', callback_data: 'admin_set_name_btn', style: 'primary' },
+              { text: '🔄 استفاده از نام اصلی بات تلگرام', callback_data: 'admin_reset_bot_name', style: 'primary' }
+            ],
+            [
+              { text: '📝 ویرایش متن خوش‌آمدگویی استارت', callback_data: 'admin_set_welcome_btn', style: 'primary' },
               { text: '📞 تغییر آیدی پشتیبانی', callback_data: 'admin_set_sup_btn', style: 'primary' }
             ],
             [
@@ -3064,6 +3564,38 @@ class ResellerBotManager {
           ];
 
           await bot.sendMessage(buyerChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          return;
+        }
+
+        if (data === 'admin_reset_bot_name') {
+          if (!isFromAdmin) return;
+          botCfg.botName = botCfg.botFirstName || '';
+          db.saveUser(seller);
+          await bot.answerCallbackQuery(query.id, {
+            text: `✅ نام ربات روی «${this.getEffectiveBotName(seller)}» تنظیم شد.`,
+            show_alert: true
+          }).catch(() => {});
+          await sendAdminPanelMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_set_welcome_btn') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'admin_set_welcome_msg' });
+          await bot.sendMessage(
+            buyerChatId,
+            `📝 <b>تنظیم متن خوش‌آمدگویی استارت ربات:</b>\n\n` +
+              `لطفاً متن خوش‌آمدگویی دلخواه خود را ارسال کنید.\n` +
+              `💡 <i>اگر می‌خواهید از متن استاندارد پیش‌فرض با نام ربات (<b>${escapeHtml(this.getEffectiveBotName(seller))}</b>) استفاده شود، کلمه <code>پیشفرض</code> را ارسال نمایید:</i>`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
           return;
         }
 
@@ -3099,7 +3631,7 @@ class ResellerBotManager {
           if (!isFromAdmin) return;
           await bot.answerCallbackQuery(query.id).catch(() => {});
           this.userSessionStates.set(sessionKey, { action: 'admin_set_bot_name' });
-          await bot.sendMessage(buyerChatId, '🏷 لطفاً نام جدید فروشگاه خود را ارسال نمایید:');
+          await bot.sendMessage(buyerChatId, '🏷 لطفاً نام جدید ربات / فروشگاه خود را ارسال نمایید:');
           return;
         }
 
@@ -3108,7 +3640,7 @@ class ResellerBotManager {
           await bot.deleteMessage(buyerChatId, msgId).catch(() => {});
           await bot.sendMessage(
             buyerChatId,
-            `به منوی اصلی ${escapeHtml(botCfg.botName || 'فروشگاه')} بازگشتید. لطفاً گزینه مورد نظر را انتخاب نمایید:`,
+            `به منوی اصلی ${escapeHtml(this.getEffectiveBotName(seller))} بازگشتید. لطفاً گزینه مورد نظر را انتخاب نمایید:`,
             { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, isFromAdmin) }
           );
           return;

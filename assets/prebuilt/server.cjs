@@ -32701,9 +32701,9 @@ var require_telegramPolling = __commonJS({
   }
 });
 
-// node_modules/node-telegram-bot-api/node_modules/eventemitter3/index.js
+// node_modules/eventemitter3/index.js
 var require_eventemitter3 = __commonJS({
-  "node_modules/node-telegram-bot-api/node_modules/eventemitter3/index.js"(exports2, module2) {
+  "node_modules/eventemitter3/index.js"(exports2, module2) {
     "use strict";
     var has = Object.prototype.hasOwnProperty;
     var prefix = "~";
@@ -84805,6 +84805,26 @@ var init_resellerBotManager = __esm({
       constructor() {
         this.activeBots = /* @__PURE__ */ new Map();
         this.userSessionStates = /* @__PURE__ */ new Map();
+        this.forceJoinCache = /* @__PURE__ */ new Map();
+      }
+      getEffectiveBotName(seller) {
+        const botCfg = seller.sellerBot || {};
+        const rec = this.activeBots.get(seller.chatId);
+        const rawName = (botCfg.botName || "").trim();
+        const isSellerIdentity = !rawName || rawName === seller.username || rawName === `@${seller.username}` || rawName === seller.name || rawName === seller.portalUsername || rawName === String(seller.chatId) || rawName === `Seller_${seller.chatId}` || rawName === `\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 ${seller.chatId}` || rawName === "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC";
+        if (!isSellerIdentity) {
+          return rawName;
+        }
+        if (botCfg.botFirstName && botCfg.botFirstName.trim()) {
+          return botCfg.botFirstName.trim();
+        }
+        if (rec?.botFirstName && rec.botFirstName.trim()) {
+          return rec.botFirstName.trim();
+        }
+        if (botCfg.botUsername && botCfg.botUsername.trim()) {
+          return `@${botCfg.botUsername.replace(/^@/, "").trim()}`;
+        }
+        return "\u0631\u0628\u0627\u062A \u0641\u0631\u0648\u0634\u06AF\u0627\u0647\u06CC";
       }
       /**
        * Initialize all active reseller bots from database
@@ -84876,30 +84896,49 @@ var init_resellerBotManager = __esm({
           ]).catch(() => {
           });
           let botUsername = (user.sellerBot?.botUsername || "").trim();
+          let botFirstName = (user.sellerBot?.botFirstName || "").trim();
+          const applyBotIdentityFromMe = (u, me) => {
+            if (!u.sellerBot) return;
+            if (me.username) {
+              u.sellerBot.botUsername = me.username;
+            }
+            if (me.first_name) {
+              u.sellerBot.botFirstName = me.first_name;
+              const curName = (u.sellerBot.botName || "").trim();
+              const isSellerIdentity = !curName || curName === u.username || curName === `@${u.username}` || curName === u.name || curName === u.portalUsername || curName === String(u.chatId) || curName === `Seller_${u.chatId}` || curName === `\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 ${u.chatId}` || curName === "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC";
+              if (isSellerIdentity) {
+                u.sellerBot.botName = me.first_name;
+              }
+            }
+          };
           try {
             const me = await Promise.race([
               bot2.getMe(),
               new Promise((resolve) => setTimeout(() => resolve(null), 3e3))
             ]);
-            if (me && me.username) {
-              botUsername = me.username;
-              user.sellerBot.botUsername = botUsername;
+            if (me) {
+              if (me.username) botUsername = me.username;
+              if (me.first_name) botFirstName = me.first_name;
+              applyBotIdentityFromMe(user, me);
               db.saveUser(user);
               db.saveImmediate();
             }
           } catch (quickErr) {
             console.warn(`[ResellerBot @${sellerChatId}] Quick getMe warning:`, quickErr?.message || quickErr);
           }
-          if (!botUsername) {
+          if (!botUsername || !botFirstName) {
             bot2.getMe().then((me) => {
-              if (me && me.username) {
+              if (me) {
                 const u = db.getUser(sellerChatId);
                 if (u && u.sellerBot) {
-                  u.sellerBot.botUsername = me.username;
+                  applyBotIdentityFromMe(u, me);
                   db.saveUser(u);
                   db.saveImmediate();
                   const rec = this.activeBots.get(sellerChatId);
-                  if (rec) rec.username = me.username;
+                  if (rec) {
+                    if (me.username) rec.username = me.username;
+                    if (me.first_name) rec.botFirstName = me.first_name;
+                  }
                 }
               }
             }).catch(() => {
@@ -84908,6 +84947,7 @@ var init_resellerBotManager = __esm({
           this.activeBots.set(sellerChatId, {
             bot: bot2,
             username: botUsername,
+            botFirstName,
             sellerChatId,
             startedAt: Date.now()
           });
@@ -84966,7 +85006,7 @@ var init_resellerBotManager = __esm({
         return {
           isOnline,
           botUsername: config?.botUsername || "",
-          botName: config?.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC",
+          botName: user ? this.getEffectiveBotName(user) : "\u0631\u0628\u0627\u062A \u0641\u0631\u0648\u0634\u06AF\u0627\u0647\u06CC",
           buyersCount: (config?.buyers || []).length,
           ordersCount: (config?.orders || []).length,
           pendingOrdersCount: (config?.orders || []).filter((o) => o.status === "pending").length,
@@ -85350,7 +85390,20 @@ var init_resellerBotManager = __esm({
         };
         const getAvailableProductsForReseller = (seller) => {
           const state = db.getState();
-          const activeProducts = (state.products || []).filter((p) => !p.disabled);
+          const allCategories = state.categories || [];
+          const activeCategories = allCategories.filter((c) => c && !c.disabled);
+          const hasCategories = allCategories.length > 0;
+          const activeProducts = (state.products || []).filter((p) => {
+            if (!p || p.disabled) return false;
+            if (p.categoryId) {
+              const cat = activeCategories.find(
+                (c) => String(c.id).trim().toLowerCase() === String(p.categoryId).trim().toLowerCase() || String(c.name).trim().toLowerCase() === String(p.categoryId).trim().toLowerCase()
+              );
+              return !!cat;
+            }
+            if (hasCategories) return false;
+            return true;
+          });
           if (seller.showCustomPricesOnly) {
             return activeProducts.filter(
               (p) => seller.sellerBot?.customRetailPrices && seller.sellerBot.customRetailPrices[p.id] !== void 0 || seller.customDisplayPrices && seller.customDisplayPrices[p.id] !== void 0
@@ -85372,9 +85425,12 @@ var init_resellerBotManager = __esm({
             }
             return;
           }
-          const categories = (state.categories || []).filter((c) => !c.disabled);
-          const activeCatList = categories.filter((c) => activeProducts.some((p) => p.categoryId === c.id));
-          const uncategorized = activeProducts.filter((p) => !p.categoryId || !categories.some((c) => c.id === p.categoryId));
+          const categories = (state.categories || []).filter((c) => c && !c.disabled);
+          const activeCatList = categories.filter(
+            (c) => activeProducts.some(
+              (p) => String(p.categoryId || "").trim().toLowerCase() === String(c.id).trim().toLowerCase() || String(p.categoryId || "").trim().toLowerCase() === String(c.name).trim().toLowerCase()
+            )
+          );
           if (activeCatList.length > 0) {
             const inline_keyboard = activeCatList.map((c) => [
               {
@@ -85383,15 +85439,6 @@ var init_resellerBotManager = __esm({
                 style: "primary"
               }
             ]);
-            if (uncategorized.length > 0) {
-              inline_keyboard.push([
-                {
-                  text: "\u{1F4C1} \u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A",
-                  callback_data: "cat_uncategorized",
-                  style: "primary"
-                }
-              ]);
-            }
             if (state.customVolumeEnabled !== false) {
               inline_keyboard.push([
                 {
@@ -85401,7 +85448,7 @@ var init_resellerBotManager = __esm({
                 }
               ]);
             }
-            const menuText = `\u{1F6CD} <b>\u0645\u0646\u0648\u06CC \u062E\u0631\u06CC\u062F \u0627\u0634\u062A\u0631\u0627\u06A9 ${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647")}</b>
+            const menuText = `\u{1F6CD} <b>\u0645\u0646\u0648\u06CC \u062E\u0631\u06CC\u062F \u0627\u0634\u062A\u0631\u0627\u06A9 ${escapeHtml(this.getEffectiveBotName(seller))}</b>
 
 \u0644\u0637\u0641\u0627\u064B \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0633\u0631\u0648\u0631 \u06CC\u0627 \u0633\u0631\u0648\u06CC\u0633 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u062E\u0648\u062F \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:`;
             if (editMsgId) {
@@ -85436,7 +85483,7 @@ var init_resellerBotManager = __esm({
                 }
               ]);
             }
-            const menuText = `\u{1F6CD} <b>\u0644\u06CC\u0633\u062A \u0633\u0631\u0648\u06CC\u0633\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644 ${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647")}:</b>
+            const menuText = `\u{1F6CD} <b>\u0644\u06CC\u0633\u062A \u0633\u0631\u0648\u06CC\u0633\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644 ${escapeHtml(this.getEffectiveBotName(seller))}:</b>
 
 \u0644\u0637\u0641\u0627\u064B \u0633\u0631\u0648\u06CC\u0633 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u062E\u0648\u062F \u0631\u0627 \u062C\u0647\u062A \u062E\u0631\u06CC\u062F \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:`;
             if (editMsgId) {
@@ -85454,6 +85501,150 @@ var init_resellerBotManager = __esm({
                 reply_markup: { inline_keyboard }
               });
             }
+          }
+        };
+        const getEffectiveForceJoinChannels = (seller) => {
+          const botCfg = seller.sellerBot || {};
+          const list = [...botCfg.forceJoinChannels || []];
+          if (list.length === 0 && botCfg.channelUsername) {
+            const cleanCh = botCfg.channelUsername.replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "").trim();
+            if (cleanCh) {
+              list.push({
+                id: `@${cleanCh}`,
+                name: `\u{1F4E2} \u0639\u0636\u0648\u06CC\u062A \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 ${this.getEffectiveBotName(seller)}`,
+                url: `https://t.me/${cleanCh}`
+              });
+            }
+          }
+          return list;
+        };
+        const checkBuyerForceJoin = async (buyerChatId, seller) => {
+          const botCfg = seller.sellerBot || {};
+          if (!botCfg.forceJoinEnabled) return true;
+          const channels = getEffectiveForceJoinChannels(seller);
+          if (channels.length === 0) return true;
+          const cacheKey = `${sellerChatId}_${buyerChatId}`;
+          const cachedAt = this.forceJoinCache.get(cacheKey);
+          if (cachedAt && Date.now() - cachedAt < 2 * 60 * 1e3) {
+            return true;
+          }
+          const notJoined = [];
+          for (const ch of channels) {
+            let chId = (ch.id || "").trim();
+            if (!chId) continue;
+            if (!chId.startsWith("@") && !chId.startsWith("-100") && isNaN(Number(chId))) {
+              chId = "@" + chId;
+            }
+            try {
+              const member = await bot2.getChatMember(chId, buyerChatId);
+              if (["left", "kicked"].includes(member.status)) {
+                notJoined.push(ch);
+              }
+            } catch (err) {
+              console.warn(`[ResellerBot @${sellerChatId}] ForceJoin check error on channel ${chId}:`, err?.message || err);
+            }
+          }
+          if (notJoined.length > 0) {
+            const inline_keyboard = notJoined.map((c) => [
+              {
+                text: `\u{1F4E2} ${c.name || "\u0639\u0636\u0648\u06CC\u062A \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644"}`,
+                url: c.url,
+                style: "primary"
+              }
+            ]);
+            inline_keyboard.push([
+              {
+                text: "\u2705 \u0639\u0636\u0648 \u0634\u062F\u0645 (\u0628\u0631\u0631\u0633\u06CC \u0639\u0636\u0648\u06CC\u062A)",
+                callback_data: "check_reseller_fj",
+                style: "success"
+              }
+            ]);
+            await bot2.sendMessage(
+              buyerChatId,
+              `\u26A0\uFE0F <b>\u06A9\u0627\u0631\u0628\u0631 \u06AF\u0631\u0627\u0645\u06CC\u060C \u0628\u0631\u0627\u06CC \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u0627\u0632 \u062E\u062F\u0645\u0627\u062A \u0631\u0628\u0627\u062A \xAB${escapeHtml(this.getEffectiveBotName(seller))}\xBB\u060C \u0627\u0628\u062A\u062F\u0627 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 \u0632\u06CC\u0631 \u0639\u0636\u0648 \u0634\u0648\u06CC\u062F:</b>
+
+\u067E\u0633 \u0627\u0632 \u0639\u0636\u0648\u06CC\u062A \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644\u060C \u0631\u0648\u06CC \u062F\u06A9\u0645\u0647 \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC <b>\xAB\u2705 \u0639\u0636\u0648 \u0634\u062F\u0645 (\u0628\u0631\u0631\u0633\u06CC \u0639\u0636\u0648\u06CC\u062A)\xBB</b> \u06A9\u0644\u06CC\u06A9 \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
+              {
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard }
+              }
+            ).catch(() => {
+            });
+            return false;
+          }
+          this.forceJoinCache.set(cacheKey, Date.now());
+          return true;
+        };
+        const sendForceJoinMenu = async (adminChatId, seller, editMsgId) => {
+          const botCfg = seller.sellerBot || {};
+          const channels = getEffectiveForceJoinChannels(seller);
+          const isEnabled = !!botCfg.forceJoinEnabled;
+          const botUserDisplay = botCfg.botUsername ? `@${botCfg.botUsername}` : "\u0631\u0628\u0627\u062A \u062E\u0648\u062F\u062A\u0627\u0646";
+          let msg = `\u{1F510} <b>\u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u06A9\u0627\u0646\u0627\u0644 (\u0627\u062F\u062F \u0627\u062C\u0628\u0627\u0631\u06CC) \u062F\u0631 \u0631\u0628\u0627\u062A \u0634\u0645\u0627</b>
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u{1F4CC} <b>\u0648\u0636\u0639\u06CC\u062A \u0641\u0639\u0644\u06CC \u0642\u0641\u0644 \u06A9\u0627\u0646\u0627\u0644:</b> ${isEnabled ? "\u{1F7E2} <b>\u0641\u0639\u0627\u0644</b>" : "\u{1F534} <b>\u063A\u06CC\u0631\u0641\u0639\u0627\u0644</b>"}
+\u{1F4E2} <b>\u062A\u0639\u062F\u0627\u062F \u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u062B\u0628\u062A\u200C\u0634\u062F\u0647:</b> <b>${channels.length} \u06A9\u0627\u0646\u0627\u0644</b>
+
+`;
+          if (channels.length > 0) {
+            msg += `\u{1F4CB} <b>\u0644\u06CC\u0633\u062A \u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u0634\u0645\u0627:</b>
+`;
+            channels.forEach((ch, idx) => {
+              msg += `${idx + 1}. <b>${escapeHtml(ch.name)}</b> (<code>${escapeHtml(ch.id)}</code>)
+\u{1F517} ${escapeHtml(ch.url)}
+`;
+            });
+            msg += `
+`;
+          } else {
+            msg += `\u2139\uFE0F <i>\u0647\u0646\u0648\u0632 \u06A9\u0627\u0646\u0627\u0644\u06CC \u0628\u0631\u0627\u06CC \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u062B\u0628\u062A \u0646\u06A9\u0631\u062F\u0647\u200C\u0627\u06CC\u062F.</i>
+
+`;
+          }
+          msg += `\u26A0\uFE0F <b>\u0646\u06A9\u062A\u0647 \u0628\u0633\u06CC\u0627\u0631 \u0645\u0647\u0645:</b>
+\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0647 \u0631\u0628\u0627\u062A \u0628\u062A\u0648\u0627\u0646\u062F \u0639\u0636\u0648 \u0628\u0648\u062F\u0646 \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 \u0634\u0645\u0627 \u0631\u0627 \u0628\u0631\u0631\u0633\u06CC \u06A9\u0646\u062F\u060C \u062D\u062A\u0645\u0627\u064B \u0628\u0627\u06CC\u062F <b>${escapeHtml(botUserDisplay)}</b> \u0631\u0627 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 \u062A\u0644\u06AF\u0631\u0627\u0645 \u062E\u0648\u062F\u062A\u0627\u0646 <b>Admin (\u0645\u062F\u06CC\u0631)</b> \u06A9\u0646\u06CC\u062F.`;
+          const inline_keyboard = [
+            [
+              {
+                text: isEnabled ? "\u{1F534} \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u06A9\u0631\u062F\u0646 \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC" : "\u{1F7E2} \u0641\u0639\u0627\u0644 \u06A9\u0631\u062F\u0646 \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC",
+                callback_data: "admin_toggle_fj",
+                style: isEnabled ? "danger" : "success"
+              }
+            ],
+            [
+              {
+                text: "\u2795 \u0627\u0641\u0632\u0648\u062F\u0646 \u06A9\u0627\u0646\u0627\u0644 \u062C\u062F\u06CC\u062F \u0628\u0647 \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC",
+                callback_data: "admin_add_fj_start",
+                style: "primary"
+              }
+            ]
+          ];
+          channels.forEach((ch, idx) => {
+            inline_keyboard.push([
+              {
+                text: `\u{1F5D1} \u062D\u0630\u0641 \u06A9\u0627\u0646\u0627\u0644: ${ch.name} (${ch.id})`,
+                callback_data: `admin_del_fj_${idx}`,
+                style: "danger"
+              }
+            ]);
+          });
+          inline_keyboard.push([
+            { text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "primary" }
+          ]);
+          if (editMsgId) {
+            await bot2.editMessageText(msg, {
+              chat_id: adminChatId,
+              message_id: editMsgId,
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard }
+            }).catch(async () => {
+              await bot2.sendMessage(adminChatId, msg, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+            });
+          } else {
+            await bot2.sendMessage(adminChatId, msg, {
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard }
+            });
           }
         };
         const sendMyServicesList = async (buyerChatId, seller) => {
@@ -85504,13 +85695,17 @@ var init_resellerBotManager = __esm({
           const remainingCredit = isUnlimited ? null : Math.max(0, limitVal - debtVal);
           const creditDisplay = isUnlimited ? "\u0633\u0642\u0641 \u0622\u0632\u0627\u062F (\u0646\u0627\u0645\u062D\u062F\u0648\u062F)" : `${(remainingCredit || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646 (\u0627\u0632 \u0633\u0642\u0641 ${limitVal.toLocaleString()})`;
           const cardInfo = botCfg.cardNumber ? `<code>${escapeHtml(botCfg.cardNumber)}</code> (${escapeHtml(botCfg.cardHolder || "\u0628\u062F\u0648\u0646 \u0646\u0627\u0645")})` : "\u274C \u062B\u0628\u062A \u0646\u0634\u062F\u0647 (\u0627\u0644\u0632\u0627\u0645\u06CC)";
-          const adminMsg = `\u{1F451} <b>\u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A \u0631\u0628\u0627\u062A \u062F\u0648\u0645 \u0634\u0645\u0627 \u0648 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 (${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0634\u0645\u0627")})</b>
+          const effectiveBotName = this.getEffectiveBotName(seller);
+          const fjChannelsCount = getEffectiveForceJoinChannels(seller).length;
+          const adminMsg = `\u{1F451} <b>\u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A \u0631\u0628\u0627\u062A \u062F\u0648\u0645 \u0634\u0645\u0627 \u0648 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 (${escapeHtml(effectiveBotName)})</b>
 
+\u{1F916} <b>\u0646\u0627\u0645 \u0646\u0645\u0627\u06CC\u0634\u06CC \u0631\u0628\u0627\u062A:</b> <b>${escapeHtml(effectiveBotName)}</b> ${botCfg.botUsername ? `(@${escapeHtml(botCfg.botUsername)})` : ""}
 \u{1F464} <b>\u0634\u0646\u0627\u0633\u0647 \u0647\u0645\u06A9\u0627\u0631 (\u0634\u0645\u0627):</b> <code>${adminChatId}</code>
 \u{1F465} <b>\u06A9\u0644 \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u0634\u0645\u0627:</b> <b>${totalBuyers.toLocaleString()} \u0646\u0641\u0631</b>
 \u{1F4E6} <b>\u0633\u0631\u0648\u06CC\u0633\u200C\u0647\u0627\u06CC \u062A\u062D\u0648\u06CC\u0644\u200C\u0634\u062F\u0647 \u062F\u0631 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A:</b> <b>${totalOrders.toLocaleString()} \u0639\u062F\u062F</b>
 \u23F3 <b>\u0641\u06CC\u0634\u200C\u0647\u0627\u06CC \u0645\u0646\u062A\u0638\u0631 \u062A\u0627\u06CC\u06CC\u062F \u0634\u0645\u0627:</b> <b>${pendingOrders.length} \u0645\u0648\u0631\u062F</b>
 \u{1F4B3} <b>\u06A9\u0627\u0631\u062A \u0628\u0627\u0646\u06A9\u06CC \u0634\u0645\u0627 \u062F\u0631 \u0631\u0628\u0627\u062A \u062F\u0648\u0645:</b> ${cardInfo}
+\u{1F510} <b>\u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u06A9\u0627\u0646\u0627\u0644 \u0634\u0645\u0627:</b> <b>${botCfg.forceJoinEnabled ? `\u{1F7E2} \u0641\u0639\u0627\u0644 (${fjChannelsCount} \u06A9\u0627\u0646\u0627\u0644)` : "\u{1F534} \u063A\u06CC\u0631\u0641\u0639\u0627\u0644"}</b>
 \u26A1 <b>\u062A\u062D\u0648\u06CC\u0644 \u0622\u0646\u06CC \u062E\u0648\u062F\u06A9\u0627\u0631:</b> <b>${botCfg.autoDeliverAfterPayment ? "\u2705 \u0641\u0639\u0627\u0644" : "\u274C \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 (\u062A\u0627\u06CC\u06CC\u062F \u062F\u0633\u062A\u06CC \u0641\u06CC\u0634)"}</b>
 
 \u{1F4B0} <b>\u062A\u0631\u0627\u0632 \u0645\u0627\u0644\u06CC \u0634\u0645\u0627 \u0628\u0627 \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u062F\u0648\u0645:</b>
@@ -85522,7 +85717,7 @@ var init_resellerBotManager = __esm({
 \u2022 \u{1F4C9} <b>\u0628\u062F\u0647\u06CC \u0641\u0639\u0644\u06CC \u0647\u0645\u06A9\u0627\u0631: ${debtVal.toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
 \u2022 \u{1F50B} <b>\u0627\u0639\u062A\u0628\u0627\u0631 \u062E\u0631\u06CC\u062F \u0628\u0627\u0642\u06CC\u0645\u0627\u0646\u062F\u0647: ${creditDisplay}</b>
 
-\u0627\u0632 \u062F\u06A9\u0645\u0647\u200C\u0647\u0627\u06CC \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0632\u06CC\u0631 \u062C\u0647\u062A \u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u062F\u0648\u0645\u060C \u0642\u06CC\u0645\u062A\u200C\u06AF\u0630\u0627\u0631\u06CC\u060C \u0634\u0645\u0627\u0631\u0647 \u06A9\u0627\u0631\u062A\u060C \u0648 \u0627\u0645\u06A9\u0627\u0646\u0627\u062A \u06A9\u0627\u0645\u0644 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 \u062E\u0648\u062F \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u06A9\u0646\u06CC\u062F:`;
+\u0627\u0632 \u062F\u06A9\u0645\u0647\u200C\u0647\u0627\u06CC \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0632\u06CC\u0631 \u062C\u0647\u062A \u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u062F\u0648\u0645\u060C \u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC\u060C \u0642\u0641\u0644 \u06A9\u0627\u0646\u0627\u0644\u060C \u0642\u06CC\u0645\u062A\u200C\u06AF\u0630\u0627\u0631\u06CC \u0648 \u0627\u0645\u06A9\u0627\u0646\u0627\u062A \u06A9\u0627\u0645\u0644 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 \u062E\u0648\u062F \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u06A9\u0646\u06CC\u062F:`;
           const inline_keyboard = [];
           if (pendingOrders.length > 0) {
             inline_keyboard.push([
@@ -85536,6 +85731,10 @@ var init_resellerBotManager = __esm({
           inline_keyboard.push([
             { text: "\u{1F465} \u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0648 \u0634\u0627\u0631\u0698 \u062F\u0633\u062A\u06CC", callback_data: "admin_buyers_menu", style: "primary" },
             { text: "\u{1F4CB} \u0627\u0633\u062A\u0639\u0644\u0627\u0645\u060C \u062A\u0645\u062F\u06CC\u062F \u0648 \u0627\u0628\u0637\u0627\u0644 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u200C\u0647\u0627", callback_data: "admin_all_configs", style: "primary" }
+          ]);
+          inline_keyboard.push([
+            { text: "\u{1F4E2} \u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u0628\u0647 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u0631\u0628\u0627\u062A", callback_data: "admin_broadcast_start", style: "primary" },
+            { text: "\u{1F510} \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u06A9\u0627\u0646\u0627\u0644 (\u0627\u062F\u062F \u0627\u062C\u0628\u0627\u0631\u06CC)", callback_data: "admin_force_join_menu", style: "primary" }
           ]);
           inline_keyboard.push([
             { text: "\u{1F4B0} \u062A\u0639\u06CC\u06CC\u0646 \u0642\u06CC\u0645\u062A \u0641\u0631\u0648\u0634 \u0645\u062D\u0635\u0648\u0644\u0627\u062A", callback_data: "admin_price_settings", style: "success" },
@@ -85552,7 +85751,7 @@ var init_resellerBotManager = __esm({
             { text: "\u{1F4CA} \u06AF\u0632\u0627\u0631\u0634 \u0641\u0631\u0648\u0634 \u0627\u0645\u0631\u0648\u0632\u060C \u0645\u0627\u0647\u0627\u0646\u0647 \u0648 \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 \u0645\u0646", callback_data: "seller_sales_report", style: "primary" }
           ]);
           inline_keyboard.push([
-            { text: "\u2699\uFE0F \u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0628\u0631\u0646\u062F\u060C \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC \u0648 \u062A\u0633\u062A", callback_data: "admin_brand_settings", style: "primary" },
+            { text: "\u2699\uFE0F \u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0646\u0627\u0645 \u0628\u0627\u062A\u060C \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0648 \u062A\u0633\u062A", callback_data: "admin_brand_settings", style: "primary" },
             { text: "\u{1F504} \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0622\u0645\u0627\u0631 \u067E\u0646\u0644", callback_data: "admin_refresh_stats", style: "primary" }
           ]);
           if (editMsgId) {
@@ -85706,10 +85905,22 @@ var init_resellerBotManager = __esm({
                 db.saveUser(seller);
               }
             }
-            if (text.startsWith("/start") || text === "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" || text === "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" || text === "\u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" || text === "/menu" || text === "/cancel") {
+            if (!isUserAdmin2) {
+              if (text === "\u2705 \u0639\u0636\u0648 \u0634\u062F\u0645" || text === "\u0628\u0631\u0631\u0633\u06CC \u0639\u0636\u0648\u06CC\u062A") {
+                this.forceJoinCache.delete(`${sellerChatId}_${buyerChatId}`);
+              }
+              const isJoined = await checkBuyerForceJoin(buyerChatId, seller);
+              if (!isJoined) return;
+            }
+            const effectiveBotName = this.getEffectiveBotName(seller);
+            if (text.startsWith("/start") || text === "\u2705 \u0639\u0636\u0648 \u0634\u062F\u0645" || text === "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" || text === "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" || text === "\u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" || text === "/menu" || text === "/cancel") {
               this.userSessionStates.delete(sessionKey);
-              let welcome = botCfg.welcomeMessage || `\u{1F44B} \u0633\u0644\u0627\u0645 <b>${escapeHtml(msg.from.first_name || "\u06A9\u0627\u0631\u0628\u0631 \u06AF\u0631\u0627\u0645\u06CC")}</b> \u0639\u0632\u06CC\u0632\u060C
-\u0628\u0647 \u0631\u0628\u0627\u062A \u0631\u0633\u0645\u06CC \u0641\u0631\u0648\u0634 \u0627\u0634\u062A\u0631\u0627\u06A9\u200C\u0647\u0627\u06CC \u067E\u0631\u0633\u0631\u0639\u062A <b>${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC")}</b> \u062E\u0648\u0634 \u0622\u0645\u062F\u06CC\u062F! \u{1F680}
+              const customWelcome = (botCfg.welcomeMessage || "").trim();
+              let welcome = customWelcome ? `${customWelcome}
+
+\u{1F194} \u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0634\u0645\u0627: <code>${buyerChatId}</code>
+\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644: <b>${(buyerRecord.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>` : `\u{1F44B} \u0633\u0644\u0627\u0645 <b>${escapeHtml(msg.from.first_name || "\u06A9\u0627\u0631\u0628\u0631 \u06AF\u0631\u0627\u0645\u06CC")}</b> \u0639\u0632\u06CC\u0632\u060C
+\u0628\u0647 \u0631\u0628\u0627\u062A \u0631\u0633\u0645\u06CC \u0641\u0631\u0648\u0634 \u0627\u0634\u062A\u0631\u0627\u06A9\u200C\u0647\u0627\u06CC \u067E\u0631\u0633\u0631\u0639\u062A <b>${escapeHtml(effectiveBotName)}</b> \u062E\u0648\u0634 \u0622\u0645\u062F\u06CC\u062F! \u{1F680}
 
 \u{1F194} \u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0634\u0645\u0627: <code>${buyerChatId}</code>
 \u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644: <b>${(buyerRecord.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
@@ -85718,7 +85929,7 @@ var init_resellerBotManager = __esm({
               if (isUserAdmin2) {
                 welcome += `
 
-\u{1F451} <i>(\u0634\u0645\u0627 \u0645\u062F\u06CC\u0631 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0647\u0633\u062A\u06CC\u062F. \u062F\u06A9\u0645\u0647 \xAB\u{1F451} \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A \u0631\u0628\u0627\u062A\xBB \u0628\u0631\u0627\u06CC \u0645\u062F\u06CC\u0631\u06CC\u062A \u06A9\u0627\u0645\u0644 \u0645\u0634\u062A\u0631\u06CC\u0627\u0646\u060C \u0642\u06CC\u0645\u062A\u200C\u0647\u0627 \u0648 \u0634\u0645\u0627\u0631\u0647 \u06A9\u0627\u0631\u062A \u0641\u0639\u0627\u0644 \u0627\u0633\u062A.)</i>`;
+\u{1F451} <i>(\u0634\u0645\u0627 \u0645\u062F\u06CC\u0631 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0647\u0633\u062A\u06CC\u062F. \u062F\u06A9\u0645\u0647 \xAB\u{1F451} \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A \u0631\u0628\u0627\u062A\xBB \u0628\u0631\u0627\u06CC \u0645\u062F\u06CC\u0631\u06CC\u062A \u06A9\u0627\u0645\u0644 \u0645\u0634\u062A\u0631\u06CC\u0627\u0646\u060C \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC\u060C \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC\u060C \u0642\u06CC\u0645\u062A\u200C\u0647\u0627 \u0648 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 \u0641\u0639\u0627\u0644 \u0627\u0633\u062A.)</i>`;
               }
               if (botCfg.logoUrl && /^https?:\/\//i.test(botCfg.logoUrl)) {
                 try {
@@ -85860,7 +86071,7 @@ var init_resellerBotManager = __esm({
               const myApprovedOrders = (botCfg.orders || []).filter(
                 (o) => o.buyerChatId === buyerChatId && o.status === "approved" && o.type !== "deposit"
               );
-              const profileMsg = `\u{1F464} <b>\u067E\u0631\u0648\u0641\u0627\u06CC\u0644 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0634\u0645\u0627 \u062F\u0631 ${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647")}:</b>
+              const profileMsg = `\u{1F464} <b>\u067E\u0631\u0648\u0641\u0627\u06CC\u0644 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0634\u0645\u0627 \u062F\u0631 ${escapeHtml(effectiveBotName)}:</b>
 
 \u{1F194} <b>\u0634\u0646\u0627\u0633\u0647 \u0639\u062F\u062F\u06CC \u0634\u0645\u0627:</b> <code>${buyerChatId}</code>
 \u{1F464} <b>\u0646\u0627\u0645:</b> ${escapeHtml(buyerRecord.name || "\u06A9\u0627\u0631\u0628\u0631")}
@@ -85906,7 +86117,7 @@ var init_resellerBotManager = __esm({
               const chRaw = (botCfg.channelUsername || "").replace(/^@/, "").trim();
               await bot2.sendMessage(
                 buyerChatId,
-                `\u{1F4DE} <b>\u0627\u0631\u062A\u0628\u0627\u0637 \u0628\u0627 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC ${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647")}:</b>
+                `\u{1F4DE} <b>\u0627\u0631\u062A\u0628\u0627\u0637 \u0628\u0627 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC ${escapeHtml(effectiveBotName)}:</b>
 
 \u{1F464} <b>\u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645:</b> ${supDisplay}
 ` + (chRaw ? `\u{1F4E2} <b>\u06A9\u0627\u0646\u0627\u0644 \u0627\u0637\u0644\u0627\u0639\u200C\u0631\u0633\u0627\u0646\u06CC:</b> @${chRaw}
@@ -85998,9 +86209,120 @@ var init_resellerBotManager = __esm({
                 this.userSessionStates.delete(sessionKey);
                 await bot2.sendMessage(
                   buyerChatId,
-                  `\u2705 \u0646\u0627\u0645 \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0631\u0628\u0627\u062A \u0634\u0645\u0627 \u0628\u0647 <b>${escapeHtml(botCfg.botName)}</b> \u062A\u063A\u06CC\u06CC\u0631 \u06CC\u0627\u0641\u062A.`,
+                  `\u2705 \u0646\u0627\u0645 \u0646\u0645\u0627\u06CC\u0634\u06CC \u0631\u0628\u0627\u062A \u0648 \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0634\u0645\u0627 \u0628\u0647 <b>${escapeHtml(this.getEffectiveBotName(seller))}</b> \u062A\u063A\u06CC\u06CC\u0631 \u06CC\u0627\u0641\u062A.`,
                   { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
                 );
+                return;
+              }
+              if (session.action === "admin_set_welcome_msg") {
+                botCfg.welcomeMessage = text === "/clear" || text === "\u062D\u0630\u0641" || text === "\u067E\u06CC\u0634\u0641\u0631\u0636" ? "" : text.trim();
+                db.saveUser(seller);
+                this.userSessionStates.delete(sessionKey);
+                await bot2.sendMessage(
+                  buyerChatId,
+                  botCfg.welcomeMessage ? `\u2705 \u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0633\u0641\u0627\u0631\u0634\u06CC \u0627\u0633\u062A\u0627\u0631\u062A \u0631\u0628\u0627\u062A \u0634\u0645\u0627 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F.` : `\u2705 \u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0628\u0647 \u062D\u0627\u0644\u062A \u067E\u06CC\u0634\u200C\u0641\u0631\u0636 (\u0628\u0627 \u0646\u0627\u0645 \u0631\u0628\u0627\u062A <b>${escapeHtml(this.getEffectiveBotName(seller))}</b>) \u0628\u0627\u0632\u06AF\u0631\u062F\u0627\u0646\u062F\u0647 \u0634\u062F.`,
+                  { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
+                );
+                await sendAdminPanelMenu(buyerChatId, seller);
+                return;
+              }
+              if (session.action === "admin_add_fj_channel") {
+                const rawInput = text.trim();
+                if (!rawInput) {
+                  await bot2.sendMessage(buyerChatId, "\u274C \u0644\u0637\u0641\u0627\u064B \u0622\u06CC\u062F\u06CC \u06A9\u0627\u0646\u0627\u0644 (\u0645\u062B\u0644\u0627\u064B <code>@MyChannel</code>) \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u06A9\u0646\u06CC\u062F:", { parse_mode: "HTML" });
+                  return;
+                }
+                const parts = rawInput.split(/[,\n|]/).map((s) => s.trim()).filter(Boolean);
+                let chId = parts[0];
+                let chName = parts[1] || `\u06A9\u0627\u0646\u0627\u0644 \u0631\u0633\u0645\u06CC ${this.getEffectiveBotName(seller)}`;
+                let chUrl = parts[2] || "";
+                if (chId.startsWith("https://t.me/") || chId.startsWith("http://t.me/")) {
+                  const slug = chId.replace(/^https?:\/\/t\.me\//i, "").replace(/\/.*$/, "").trim();
+                  if (!slug.startsWith("+")) {
+                    chId = `@${slug}`;
+                    if (!chUrl) chUrl = `https://t.me/${slug}`;
+                  } else {
+                    if (!chUrl) chUrl = parts[0];
+                  }
+                } else if (!chId.startsWith("@") && !chId.startsWith("-100") && isNaN(Number(chId))) {
+                  chId = `@${chId}`;
+                }
+                if (!chUrl) {
+                  const cleanUsername = chId.replace(/^@/, "");
+                  chUrl = `https://t.me/${cleanUsername}`;
+                }
+                if (!botCfg.forceJoinChannels) botCfg.forceJoinChannels = [];
+                botCfg.forceJoinChannels.push({ id: chId, name: chName, url: chUrl });
+                botCfg.forceJoinEnabled = true;
+                this.forceJoinCache.clear();
+                db.saveUser(seller);
+                this.userSessionStates.delete(sessionKey);
+                await bot2.sendMessage(
+                  buyerChatId,
+                  `\u2705 <b>\u06A9\u0627\u0646\u0627\u0644 <code>${escapeHtml(chId)}</code> \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0628\u0647 \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u0631\u0628\u0627\u062A \u0634\u0645\u0627 \u0627\u0636\u0627\u0641\u0647 \u0648 \u0641\u0639\u0627\u0644 \u0634\u062F!</b>
+
+\u26A0\uFE0F <b>\u06CC\u0627\u062F\u0622\u0648\u0631\u06CC \u0645\u0647\u0645:</b> \u062D\u062A\u0645\u0627\u064B \u0631\u0628\u0627\u062A \u062E\u0648\u062F\u062A\u0627\u0646 (${botCfg.botUsername ? `@${escapeHtml(botCfg.botUsername)}` : "\u0631\u0628\u0627\u062A"}) \u0631\u0627 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 <code>${escapeHtml(chId)}</code> <b>Admin (\u0645\u062F\u06CC\u0631)</b> \u06A9\u0646\u06CC\u062F \u062A\u0627 \u0631\u0628\u0627\u062A \u0628\u062A\u0648\u0627\u0646\u062F \u0639\u0636\u0648\u06CC\u062A \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u0631\u0627 \u062A\u0634\u062E\u06CC\u0635 \u062F\u0647\u062F.`,
+                  { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
+                );
+                await sendForceJoinMenu(buyerChatId, seller);
+                return;
+              }
+              if (session.action === "admin_broadcast_msg") {
+                this.userSessionStates.delete(sessionKey);
+                const buyerIds = /* @__PURE__ */ new Set();
+                for (const b of botCfg.buyers || []) {
+                  if (b.chatId) buyerIds.add(Number(b.chatId));
+                }
+                for (const o of botCfg.orders || []) {
+                  if (o.buyerChatId) buyerIds.add(Number(o.buyerChatId));
+                }
+                const targets = Array.from(buyerIds);
+                if (targets.length === 0) {
+                  await bot2.sendMessage(buyerChatId, "\u2139\uFE0F \u0647\u0646\u0648\u0632 \u0647\u06CC\u0686 \u06A9\u0627\u0631\u0628\u0631\u06CC \u062F\u0631 \u0631\u0628\u0627\u062A \u0634\u0645\u0627 \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.", {
+                    reply_markup: getMainKeyboard(seller, true)
+                  });
+                  return;
+                }
+                await bot2.sendMessage(
+                  buyerChatId,
+                  `\u23F3 \u062F\u0631 \u062D\u0627\u0644 \u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u0628\u0647 <b>${targets.length} \u06A9\u0627\u0631\u0628\u0631</b> \u0631\u0628\u0627\u062A \u0634\u0645\u0627... \u0644\u0637\u0641\u0627\u064B \u0686\u0646\u062F \u0644\u062D\u0638\u0647 \u0635\u0628\u0631 \u06A9\u0646\u06CC\u062F.`,
+                  { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
+                );
+                let successCount = 0;
+                let failCount = 0;
+                const hasPhoto = !!(msg.photo && msg.photo.length > 0);
+                const largestPhoto = hasPhoto ? msg.photo[msg.photo.length - 1] : null;
+                const broadcastHeader = `\u{1F4E2} <b>\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 ${escapeHtml(this.getEffectiveBotName(seller))}:</b>
+
+`;
+                for (const targetId of targets) {
+                  try {
+                    if (hasPhoto && largestPhoto) {
+                      const captionText = msg.caption ? `${broadcastHeader}${escapeHtml(msg.caption)}` : `\u{1F4E2} <b>${escapeHtml(this.getEffectiveBotName(seller))}</b>`;
+                      await bot2.sendPhoto(targetId, largestPhoto.file_id, {
+                        caption: captionText.slice(0, 1024),
+                        parse_mode: "HTML"
+                      });
+                    } else {
+                      await bot2.sendMessage(targetId, `${broadcastHeader}${escapeHtml(text)}`, {
+                        parse_mode: "HTML"
+                      });
+                    }
+                    successCount++;
+                  } catch (e) {
+                    failCount++;
+                  }
+                  await new Promise((r) => setTimeout(r, 35));
+                }
+                await bot2.sendMessage(
+                  buyerChatId,
+                  `\u2705 <b>\u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u0628\u0647 \u067E\u0627\u06CC\u0627\u0646 \u0631\u0633\u06CC\u062F!</b>
+
+\u{1F7E2} \u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642: <b>${successCount} \u0646\u0641\u0631</b>
+\u{1F534} \u0646\u0627\u0645\u0648\u0641\u0642 (\u0628\u0644\u0627\u06A9 \u06CC\u0627 \u062D\u0630\u0641 \u0631\u0628\u0627\u062A): <b>${failCount} \u0646\u0641\u0631</b>`,
+                  { parse_mode: "HTML" }
+                );
+                await sendAdminPanelMenu(buyerChatId, seller);
                 return;
               }
               if (session.action === "admin_charge_buyer_amount" && session.data?.targetBuyerChatId) {
@@ -86418,6 +86740,45 @@ var init_resellerBotManager = __esm({
             const botCfg = seller.sellerBot;
             const targetAdminChatId = botCfg.adminChatId ? Number(botCfg.adminChatId) : sellerChatId;
             const isFromAdmin = buyerChatId === targetAdminChatId || buyerChatId === sellerChatId || Number(query.from.id) === targetAdminChatId || Number(query.from.id) === sellerChatId;
+            if (data === "check_reseller_fj") {
+              this.forceJoinCache.delete(`${sellerChatId}_${buyerChatId}`);
+              const joined = await checkBuyerForceJoin(buyerChatId, seller);
+              if (joined) {
+                await bot2.answerCallbackQuery(query.id, { text: "\u2705 \u0639\u0636\u0648\u06CC\u062A \u0634\u0645\u0627 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 \u062A\u0627\u06CC\u06CC\u062F \u0634\u062F! \u062E\u0648\u0634 \u0622\u0645\u062F\u06CC\u062F.", show_alert: true }).catch(() => {
+                });
+                await bot2.deleteMessage(buyerChatId, msgId).catch(() => {
+                });
+                const effectiveBotName = this.getEffectiveBotName(seller);
+                const buyerRec = (botCfg.buyers || []).find((b) => b.chatId === buyerChatId);
+                const customWelcome = (botCfg.welcomeMessage || "").trim();
+                const welcome = customWelcome ? `${customWelcome}
+
+\u{1F194} \u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0634\u0645\u0627: <code>${buyerChatId}</code>
+\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644: <b>${(buyerRec?.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>` : `\u{1F44B} \u0633\u0644\u0627\u0645 <b>${escapeHtml(query.from.first_name || "\u06A9\u0627\u0631\u0628\u0631 \u06AF\u0631\u0627\u0645\u06CC")}</b> \u0639\u0632\u06CC\u0632\u060C
+\u0628\u0647 \u0631\u0628\u0627\u062A \u0631\u0633\u0645\u06CC \u0641\u0631\u0648\u0634 \u0627\u0634\u062A\u0631\u0627\u06A9\u200C\u0647\u0627\u06CC \u067E\u0631\u0633\u0631\u0639\u062A <b>${escapeHtml(effectiveBotName)}</b> \u062E\u0648\u0634 \u0622\u0645\u062F\u06CC\u062F! \u{1F680}
+
+\u{1F194} \u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0634\u0645\u0627: <code>${buyerChatId}</code>
+\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644: <b>${(buyerRec?.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
+
+\u0644\u0637\u0641\u0627\u064B \u06CC\u06A9\u06CC \u0627\u0632 \u06AF\u0632\u06CC\u0646\u0647\u200C\u0647\u0627\u06CC \u0645\u0646\u0648\u06CC \u0632\u06CC\u0631 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u0646\u0645\u0627\u06CC\u06CC\u062F:`;
+                await bot2.sendMessage(buyerChatId, welcome, {
+                  parse_mode: "HTML",
+                  reply_markup: getMainKeyboard(seller, isFromAdmin)
+                });
+              } else {
+                await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0634\u0645\u0627 \u0647\u0646\u0648\u0632 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 \u0639\u0636\u0648 \u0646\u0634\u062F\u0647\u200C\u0627\u06CC\u062F! \u0627\u0628\u062A\u062F\u0627 \u0639\u0636\u0648 \u0634\u0648\u06CC\u062F \u0648 \u0633\u067E\u0633 \u0627\u06CC\u0646 \u062F\u06A9\u0645\u0647 \u0631\u0627 \u0628\u0632\u0646\u06CC\u062F.", show_alert: true }).catch(() => {
+                });
+              }
+              return;
+            }
+            if (!isFromAdmin) {
+              const isJoined = await checkBuyerForceJoin(buyerChatId, seller);
+              if (!isJoined) {
+                await bot2.answerCallbackQuery(query.id, { text: "\u26A0\uFE0F \u0644\u0637\u0641\u0627\u064B \u0627\u0628\u062A\u062F\u0627 \u062F\u0631 \u06A9\u0627\u0646\u0627\u0644 \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0639\u0636\u0648 \u0634\u0648\u06CC\u062F.", show_alert: true }).catch(() => {
+                });
+                return;
+              }
+            }
             if (data === "back_to_categories") {
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
@@ -86427,21 +86788,19 @@ var init_resellerBotManager = __esm({
             if (data.startsWith("cat_")) {
               const catId = data.replace("cat_", "");
               const state = db.getState();
-              const categories = (state.categories || []).filter((c) => !c.disabled);
+              const categories = (state.categories || []).filter((c) => c && !c.disabled);
               const activeProducts = getAvailableProductsForReseller(seller);
-              let prods = [];
-              let catName = "\u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A";
-              if (catId === "uncategorized") {
-                prods = activeProducts.filter((p) => !p.categoryId || !categories.some((c) => c.id === p.categoryId));
-              } else {
-                const cat = categories.find((c) => c.id === catId);
-                if (!cat) {
-                  await bot2.answerCallbackQuery(query.id, { text: "\u274C \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u06CC\u0627\u0641\u062A \u0646\u0634\u062F." });
-                  return;
-                }
-                catName = cat.name;
-                prods = activeProducts.filter((p) => p.categoryId === catId);
+              const cat = categories.find(
+                (c) => String(c.id).trim().toLowerCase() === String(catId).trim().toLowerCase() || String(c.name).trim().toLowerCase() === String(catId).trim().toLowerCase()
+              );
+              if (!cat) {
+                await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0627\u06CC\u0646 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u06CC\u0627 \u062D\u0630\u0641 \u0634\u062F\u0647 \u0627\u0633\u062A." });
+                return;
               }
+              const catName = cat.name;
+              const prods = activeProducts.filter(
+                (p) => String(p.categoryId || "").trim().toLowerCase() === String(cat.id).trim().toLowerCase() || String(p.categoryId || "").trim().toLowerCase() === String(cat.name).trim().toLowerCase()
+              );
               if (prods.length === 0) {
                 await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0645\u062D\u0635\u0648\u0644 \u0641\u0639\u0627\u0644\u06CC \u062F\u0631 \u0627\u06CC\u0646 \u062F\u0633\u062A\u0647 \u0648\u062C\u0648\u062F \u0646\u062F\u0627\u0631\u062F." });
                 return;
@@ -86499,10 +86858,9 @@ var init_resellerBotManager = __esm({
             }
             if (data.startsWith("select_prod_") || data.startsWith("buy_prod_")) {
               const prodId = data.replace(/^select_prod_|^buy_prod_/, "");
-              const state = db.getState();
-              const product = (state.products || []).find((p) => p.id === prodId && !p.disabled);
+              const product = getAvailableProductsForReseller(seller).find((p) => p.id === prodId);
               if (!product) {
-                await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0645\u062D\u0635\u0648\u0644 \u06CC\u0627\u0641\u062A \u0646\u0634\u062F." });
+                await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0627\u06CC\u0646 \u0645\u062D\u0635\u0648\u0644 \u06CC\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0622\u0646 \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u0627\u0633\u062A." });
                 return;
               }
               const { retailPrice } = this.getProductPricesForSeller(seller, product);
@@ -86576,10 +86934,9 @@ var init_resellerBotManager = __esm({
             }
             if (data.startsWith("confirm_buy_")) {
               const prodId = data.replace("confirm_buy_", "");
-              const state = db.getState();
-              const product = (state.products || []).find((p) => p.id === prodId && !p.disabled);
+              const product = getAvailableProductsForReseller(seller).find((p) => p.id === prodId);
               if (!product) {
-                await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0645\u062D\u0635\u0648\u0644 \u06CC\u0627\u0641\u062A \u0646\u0634\u062F." });
+                await bot2.answerCallbackQuery(query.id, { text: "\u274C \u0627\u06CC\u0646 \u0645\u062D\u0635\u0648\u0644 \u06CC\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0622\u0646 \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u0627\u0633\u062A." });
                 return;
               }
               await bot2.answerCallbackQuery(query.id).catch(() => {
@@ -86843,7 +87200,7 @@ var init_resellerBotManager = __esm({
               );
               return;
             }
-            if (data === "admin_refresh_stats" || data === "admin_main") {
+            if (data === "admin_refresh_stats" || data === "admin_main" || data === "admin_panel_main") {
               if (!isFromAdmin) {
                 await bot2.answerCallbackQuery(query.id, { text: "\u26D4 \u0639\u062F\u0645 \u062F\u0633\u062A\u0631\u0633\u06CC." });
                 return;
@@ -86851,6 +87208,102 @@ var init_resellerBotManager = __esm({
               await bot2.answerCallbackQuery(query.id, { text: "\u2705 \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0634\u062F." }).catch(() => {
               });
               await sendAdminPanelMenu(buyerChatId, seller, msgId);
+              return;
+            }
+            if (data === "admin_broadcast_start") {
+              if (!isFromAdmin) return;
+              await bot2.answerCallbackQuery(query.id).catch(() => {
+              });
+              const totalBuyers = (botCfg.buyers || []).length;
+              this.userSessionStates.set(sessionKey, { action: "admin_broadcast_msg" });
+              await bot2.sendMessage(
+                buyerChatId,
+                `\u{1F4E2} <b>\u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u0628\u0647 \u062A\u0645\u0627\u0645\u06CC \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u0631\u0628\u0627\u062A \u0634\u0645\u0627 (${totalBuyers} \u0646\u0641\u0631):</b>
+
+\u0644\u0637\u0641\u0627\u064B <b>\u0645\u062A\u0646 \u067E\u06CC\u0627\u0645</b> \u06CC\u0627 <b>\u0639\u06A9\u0633 (\u0628\u0647 \u0647\u0645\u0631\u0627\u0647 \u06A9\u067E\u0634\u0646)</b> \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u062E\u0648\u062F \u0631\u0627 \u0647\u0645\u06CC\u0646\u062C\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F \u062A\u0627 \u0628\u0644\u0627\u0641\u0627\u0635\u0644\u0647 \u0628\u0631\u0627\u06CC \u062A\u0645\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u0631\u0628\u0627\u062A \u0634\u0645\u0627 \u0627\u0631\u0633\u0627\u0644 \u0634\u0648\u062F:
+
+\u{1F4A1} <i>\u0628\u0631\u0627\u06CC \u0627\u0646\u0635\u0631\u0627\u0641\u060C \u0631\u0648\u06CC \u062F\u06A9\u0645\u0647 \xAB\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC\xBB \u0628\u0632\u0646\u06CC\u062F.</i>`,
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", style: "danger" }]],
+                    resize_keyboard: true
+                  }
+                }
+              );
+              return;
+            }
+            if (data === "admin_force_join_menu") {
+              if (!isFromAdmin) return;
+              await bot2.answerCallbackQuery(query.id).catch(() => {
+              });
+              await sendForceJoinMenu(buyerChatId, seller, msgId);
+              return;
+            }
+            if (data === "admin_toggle_fj") {
+              if (!isFromAdmin) return;
+              const channels = getEffectiveForceJoinChannels(seller);
+              if (!botCfg.forceJoinEnabled && channels.length === 0) {
+                await bot2.answerCallbackQuery(query.id, {
+                  text: "\u26A0\uFE0F \u0627\u0628\u062A\u062F\u0627 \u062D\u062F\u0627\u0642\u0644 \u06CC\u06A9 \u06A9\u0627\u0646\u0627\u0644 \u0627\u0636\u0627\u0641\u0647 \u06A9\u0646\u06CC\u062F \u062A\u0627 \u0642\u0641\u0644 \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u0641\u0639\u0627\u0644 \u0634\u0648\u062F.",
+                  show_alert: true
+                }).catch(() => {
+                });
+                return;
+              }
+              botCfg.forceJoinEnabled = !botCfg.forceJoinEnabled;
+              this.forceJoinCache.clear();
+              db.saveUser(seller);
+              await bot2.answerCallbackQuery(query.id, {
+                text: botCfg.forceJoinEnabled ? "\u{1F7E2} \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u06A9\u0627\u0646\u0627\u0644 \u0641\u0639\u0627\u0644 \u0634\u062F." : "\u{1F534} \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC \u06A9\u0627\u0646\u0627\u0644 \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u0634\u062F."
+              }).catch(() => {
+              });
+              await sendForceJoinMenu(buyerChatId, seller, msgId);
+              return;
+            }
+            if (data === "admin_add_fj_start") {
+              if (!isFromAdmin) return;
+              await bot2.answerCallbackQuery(query.id).catch(() => {
+              });
+              this.userSessionStates.set(sessionKey, { action: "admin_add_fj_channel" });
+              await bot2.sendMessage(
+                buyerChatId,
+                `\u2795 <b>\u0627\u0641\u0632\u0648\u062F\u0646 \u06A9\u0627\u0646\u0627\u0644 \u0628\u0647 \u0639\u0636\u0648\u06CC\u062A \u0627\u062C\u0628\u0627\u0631\u06CC (\u0627\u062F\u062F \u0627\u062C\u0628\u0627\u0631\u06CC) \u0631\u0628\u0627\u062A \u0634\u0645\u0627:</b>
+
+\u0644\u0637\u0641\u0627\u064B \u0622\u06CC\u062F\u06CC \u06A9\u0627\u0646\u0627\u0644 \u0639\u0645\u0648\u0645\u06CC \u062E\u0648\u062F \u0631\u0627 \u0628\u0627 <code>@</code> \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F:
+\u0645\u062B\u0627\u0644 \u0633\u0627\u062F\u0647: <code>@MyVpnChannel</code>
+
+\u06CC\u0627 \u0627\u06AF\u0631 \u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u06CC\u062F \u0646\u0627\u0645 \u062F\u06A9\u0645\u0647 \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0631\u0627 \u0647\u0645 \u062E\u0648\u062F\u062A\u0627\u0646 \u062A\u0639\u06CC\u06CC\u0646 \u06A9\u0646\u06CC\u062F \u0628\u0627 \u0648\u06CC\u0631\u06AF\u0648\u0644 \u062C\u062F\u0627 \u06A9\u0646\u06CC\u062F:
+\u0645\u062B\u0627\u0644: <code>@MyVpnChannel, \u06A9\u0627\u0646\u0627\u0644 \u0627\u0637\u0644\u0627\u0639\u200C\u0631\u0633\u0627\u0646\u06CC \u0645\u0627</code>
+
+\u26A0\uFE0F <b>\u0641\u0631\u0627\u0645\u0648\u0634 \u0646\u06A9\u0646\u06CC\u062F:</b> \u062D\u062A\u0645\u0627\u064B \u0631\u0628\u0627\u062A \u062E\u0648\u062F\u062A\u0627\u0646 (${botCfg.botUsername ? `@${escapeHtml(botCfg.botUsername)}` : "\u0631\u0628\u0627\u062A"}) \u0631\u0627 \u062F\u0631 \u0622\u0646 \u06A9\u0627\u0646\u0627\u0644 <b>Admin (\u0645\u062F\u06CC\u0631)</b> \u06A9\u0646\u06CC\u062F.`,
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", style: "danger" }]],
+                    resize_keyboard: true
+                  }
+                }
+              );
+              return;
+            }
+            if (data.startsWith("admin_del_fj_")) {
+              if (!isFromAdmin) return;
+              const idx = parseInt(data.replace("admin_del_fj_", ""), 10);
+              const list = getEffectiveForceJoinChannels(seller);
+              if (!isNaN(idx) && idx >= 0 && idx < list.length) {
+                list.splice(idx, 1);
+                botCfg.forceJoinChannels = list;
+                if (list.length === 0) {
+                  botCfg.channelUsername = "";
+                  botCfg.forceJoinEnabled = false;
+                }
+                this.forceJoinCache.clear();
+                db.saveUser(seller);
+                await bot2.answerCallbackQuery(query.id, { text: "\u{1F5D1} \u06A9\u0627\u0646\u0627\u0644 \u062D\u0630\u0641 \u0634\u062F." }).catch(() => {
+                });
+              }
+              await sendForceJoinMenu(buyerChatId, seller, msgId);
               return;
             }
             if (data.startsWith("admin_direct_renew_")) {
@@ -87069,7 +87522,7 @@ var init_resellerBotManager = __esm({
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
               const state = db.getState();
-              const products = state.products || [];
+              const products = getAvailableProductsForReseller(seller);
               const inline_keyboard = [];
               for (const prod of products) {
                 const { wholesalePrice } = this.getProductPricesForSeller(seller, prod);
@@ -87345,8 +87798,7 @@ ${fulfillRes.message}`,
               if (!isFromAdmin) return;
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
-              const state = db.getState();
-              const products = (state.products || []).filter((p) => !p.disabled);
+              const products = getAvailableProductsForReseller(seller);
               const { wholesalePricePerGb, retailPricePerGb } = this.getCustomVolumePricesForSeller(seller);
               let msg = `\u{1F4B0} <b>\u062A\u0639\u06CC\u06CC\u0646 \u0642\u06CC\u0645\u062A \u0641\u0631\u0648\u0634 \u0645\u062D\u0635\u0648\u0644\u0627\u062A \u062F\u0631 \u0631\u0628\u0627\u062A \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0634\u0645\u0627:</b>
 
@@ -87419,15 +87871,21 @@ ${fulfillRes.message}`,
               if (!isFromAdmin) return;
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
-              const msg = `\u2699\uFE0F <b>\u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0628\u0631\u0646\u062F\u060C \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC \u0648 \u062A\u062D\u0648\u06CC\u0644 \u062E\u0648\u062F\u06A9\u0627\u0631 \u0631\u0628\u0627\u062A:</b>
+              const effectiveBotName = this.getEffectiveBotName(seller);
+              const msg = `\u2699\uFE0F <b>\u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0646\u0627\u0645 \u0631\u0628\u0627\u062A\u060C \u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC\u060C \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC \u0648 \u062A\u0633\u062A:</b>
 
-\u{1F3F7} <b>\u0646\u0627\u0645 \u0641\u0631\u0648\u0634\u06AF\u0627\u0647:</b> ${escapeHtml(botCfg.botName || "\u062A\u0646\u0638\u06CC\u0645 \u0646\u0634\u062F\u0647")}
+\u{1F916} <b>\u0646\u0627\u0645 \u0646\u0645\u0627\u06CC\u0634\u06CC \u062F\u0631 \u067E\u06CC\u0627\u0645 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC:</b> <b>${escapeHtml(effectiveBotName)}</b>
+\u{1F4DD} <b>\u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0627\u0633\u062A\u0627\u0631\u062A:</b> ${botCfg.welcomeMessage ? `\u0633\u0641\u0627\u0631\u0634\u06CC (${escapeHtml(botCfg.welcomeMessage.slice(0, 60))}...)` : `\u067E\u06CC\u0634\u200C\u0641\u0631\u0636 (\u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0628\u0627 \u0646\u0627\u0645 \u0628\u0627\u062A \xAB${escapeHtml(effectiveBotName)}\xBB)`}
 \u{1F4DE} <b>\u0622\u06CC\u062F\u06CC \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC:</b> @${escapeHtml((botCfg.supportUsername || seller.username || "").replace(/^@/, ""))}
 \u26A1 <b>\u062A\u062D\u0648\u06CC\u0644 \u0622\u0646\u06CC \u067E\u0633 \u0627\u0632 \u0627\u0631\u0633\u0627\u0644 \u0641\u06CC\u0634:</b> ${botCfg.autoDeliverAfterPayment ? "\u2705 \u0641\u0639\u0627\u0644" : "\u274C \u063A\u06CC\u0631\u0641\u0639\u0627\u0644"}
 \u{1F381} <b>\u062A\u0633\u062A \u0631\u0627\u06CC\u06AF\u0627\u0646 \u0628\u0631\u0627\u06CC \u0645\u0634\u062A\u0631\u06CC\u0627\u0646:</b> ${botCfg.freeTestEnabled !== false ? "\u2705 \u0641\u0639\u0627\u0644" : "\u274C \u063A\u06CC\u0631\u0641\u0639\u0627\u0644"}`;
               const inline_keyboard = [
                 [
-                  { text: "\u{1F3F7} \u062A\u063A\u06CC\u06CC\u0631 \u0646\u0627\u0645 \u0641\u0631\u0648\u0634\u06AF\u0627\u0647", callback_data: "admin_set_name_btn", style: "primary" },
+                  { text: "\u{1F3F7} \u062A\u063A\u06CC\u06CC\u0631 \u0646\u0627\u0645 \u0646\u0645\u0627\u06CC\u0634\u06CC \u0631\u0628\u0627\u062A", callback_data: "admin_set_name_btn", style: "primary" },
+                  { text: "\u{1F504} \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u0627\u0632 \u0646\u0627\u0645 \u0627\u0635\u0644\u06CC \u0628\u0627\u062A \u062A\u0644\u06AF\u0631\u0627\u0645", callback_data: "admin_reset_bot_name", style: "primary" }
+                ],
+                [
+                  { text: "\u{1F4DD} \u0648\u06CC\u0631\u0627\u06CC\u0634 \u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0627\u0633\u062A\u0627\u0631\u062A", callback_data: "admin_set_welcome_btn", style: "primary" },
                   { text: "\u{1F4DE} \u062A\u063A\u06CC\u06CC\u0631 \u0622\u06CC\u062F\u06CC \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC", callback_data: "admin_set_sup_btn", style: "primary" }
                 ],
                 [
@@ -87447,6 +87905,39 @@ ${fulfillRes.message}`,
                 [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "danger" }]
               ];
               await bot2.sendMessage(buyerChatId, msg, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+              return;
+            }
+            if (data === "admin_reset_bot_name") {
+              if (!isFromAdmin) return;
+              botCfg.botName = botCfg.botFirstName || "";
+              db.saveUser(seller);
+              await bot2.answerCallbackQuery(query.id, {
+                text: `\u2705 \u0646\u0627\u0645 \u0631\u0628\u0627\u062A \u0631\u0648\u06CC \xAB${this.getEffectiveBotName(seller)}\xBB \u062A\u0646\u0638\u06CC\u0645 \u0634\u062F.`,
+                show_alert: true
+              }).catch(() => {
+              });
+              await sendAdminPanelMenu(buyerChatId, seller, msgId);
+              return;
+            }
+            if (data === "admin_set_welcome_btn") {
+              if (!isFromAdmin) return;
+              await bot2.answerCallbackQuery(query.id).catch(() => {
+              });
+              this.userSessionStates.set(sessionKey, { action: "admin_set_welcome_msg" });
+              await bot2.sendMessage(
+                buyerChatId,
+                `\u{1F4DD} <b>\u062A\u0646\u0638\u06CC\u0645 \u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u0627\u0633\u062A\u0627\u0631\u062A \u0631\u0628\u0627\u062A:</b>
+
+\u0644\u0637\u0641\u0627\u064B \u0645\u062A\u0646 \u062E\u0648\u0634\u200C\u0622\u0645\u062F\u06AF\u0648\u06CC\u06CC \u062F\u0644\u062E\u0648\u0627\u0647 \u062E\u0648\u062F \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u06A9\u0646\u06CC\u062F.
+\u{1F4A1} <i>\u0627\u06AF\u0631 \u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u06CC\u062F \u0627\u0632 \u0645\u062A\u0646 \u0627\u0633\u062A\u0627\u0646\u062F\u0627\u0631\u062F \u067E\u06CC\u0634\u200C\u0641\u0631\u0636 \u0628\u0627 \u0646\u0627\u0645 \u0631\u0628\u0627\u062A (<b>${escapeHtml(this.getEffectiveBotName(seller))}</b>) \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u0634\u0648\u062F\u060C \u06A9\u0644\u0645\u0647 <code>\u067E\u06CC\u0634\u0641\u0631\u0636</code> \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F:</i>`,
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", style: "danger" }]],
+                    resize_keyboard: true
+                  }
+                }
+              );
               return;
             }
             if (data === "admin_toggle_autodeliver") {
@@ -87480,7 +87971,7 @@ ${fulfillRes.message}`,
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
               this.userSessionStates.set(sessionKey, { action: "admin_set_bot_name" });
-              await bot2.sendMessage(buyerChatId, "\u{1F3F7} \u0644\u0637\u0641\u0627\u064B \u0646\u0627\u0645 \u062C\u062F\u06CC\u062F \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u062E\u0648\u062F \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F:");
+              await bot2.sendMessage(buyerChatId, "\u{1F3F7} \u0644\u0637\u0641\u0627\u064B \u0646\u0627\u0645 \u062C\u062F\u06CC\u062F \u0631\u0628\u0627\u062A / \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u062E\u0648\u062F \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F:");
               return;
             }
             if (data === "back_main") {
@@ -87489,7 +87980,7 @@ ${fulfillRes.message}`,
               });
               await bot2.sendMessage(
                 buyerChatId,
-                `\u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC ${escapeHtml(botCfg.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647")} \u0628\u0627\u0632\u06AF\u0634\u062A\u06CC\u062F. \u0644\u0637\u0641\u0627\u064B \u06AF\u0632\u06CC\u0646\u0647 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
+                `\u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC ${escapeHtml(this.getEffectiveBotName(seller))} \u0628\u0627\u0632\u06AF\u0634\u062A\u06CC\u062F. \u0644\u0637\u0641\u0627\u064B \u06AF\u0632\u06CC\u0646\u0647 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
                 { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, isFromAdmin) }
               );
               return;
@@ -92313,9 +92804,24 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
         const user = db.getUser(chatId);
         if (!user || !user.isSeller) return;
         const stateObj = db.getState();
-        const activeProducts = (stateObj.products || []).filter((p) => p && !p.disabled);
+        const allCategories = stateObj.categories || [];
+        const activeCategories = allCategories.filter((c) => c && !c.disabled);
+        const hasCategories = allCategories.length > 0;
+        const activeCategoryKeys = new Set(
+          activeCategories.flatMap((c) => [
+            String(c.id).trim().toLowerCase(),
+            String(c.name).trim().toLowerCase()
+          ])
+        );
+        const activeProducts = (stateObj.products || []).filter((p) => {
+          if (!p || p.disabled) return false;
+          if (p.categoryId) {
+            return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+          }
+          return !hasCategories;
+        });
         if (activeProducts.length === 0) {
-          bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.");
+          bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644 \u0641\u0639\u0627\u0644\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.");
           return;
         }
         if (!isSellerUnlimitedLimit(user)) {
@@ -92331,14 +92837,15 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
             return;
           }
         }
-        const activeCategories = (stateObj.categories || []).filter((c) => c && !c.disabled);
-        if (activeCategories.length > 0) {
-          const inlineKeyboard2 = activeCategories.map((c) => [
+        const nonEmptyCategories = activeCategories.filter(
+          (c) => activeProducts.some(
+            (p) => String(p.categoryId || "").trim().toLowerCase() === String(c.id).trim().toLowerCase() || String(p.categoryId || "").trim().toLowerCase() === String(c.name).trim().toLowerCase()
+          )
+        );
+        if (nonEmptyCategories.length > 0) {
+          const inlineKeyboard2 = nonEmptyCategories.map((c) => [
             { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_seller_${c.id}` }
           ]);
-          if (activeProducts.some((p) => p && !p.categoryId)) {
-            inlineKeyboard2.push([{ text: `\u{1F4C1} \u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A`, callback_data: `show_category_seller_uncategorized` }]);
-          }
           inlineKeyboard2.unshift([{ text: "\u26A1 \u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 (\u0646\u0631\u062E \u0647\u0631 \u06AF\u06CC\u06AF)", callback_data: "seller_open_cvol" }]);
           bot.sendMessage(chatId, "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>\n\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F \u06CC\u0627 \u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647 \u0633\u0641\u0627\u0631\u0634 \u062F\u0647\u06CC\u062F:", {
             parse_mode: "HTML",
@@ -92494,19 +93001,35 @@ ${refLink}
       }
       if (cleanText === "\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633" || cleanText === "\u062E\u0631\u06CC\u062F \u0627\u06A9\u0627\u0646\u062A" || text.includes("\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633")) {
         const stateObj = db.getState();
-        const activeProducts = (stateObj.products || []).filter((p) => p && !p.disabled);
+        const allCategories = stateObj.categories || [];
+        const activeCategories = allCategories.filter((c) => c && !c.disabled);
+        const hasCategories = allCategories.length > 0;
+        const activeCategoryKeys = new Set(
+          activeCategories.flatMap((c) => [
+            String(c.id).trim().toLowerCase(),
+            String(c.name).trim().toLowerCase()
+          ])
+        );
+        const activeProducts = (stateObj.products || []).filter((p) => {
+          if (!p || p.disabled) return false;
+          if (p.categoryId) {
+            return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+          }
+          return !hasCategories;
+        });
         if (activeProducts.length === 0) {
-          bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.");
+          bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644 \u0641\u0639\u0627\u0644\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.");
           return;
         }
-        const activeCategories = (stateObj.categories || []).filter((c) => c && !c.disabled);
-        if (activeCategories.length > 0) {
-          const inlineKeyboard2 = activeCategories.map((c) => [
+        const nonEmptyCategories = activeCategories.filter(
+          (c) => activeProducts.some(
+            (p) => String(p.categoryId || "").trim().toLowerCase() === String(c.id).trim().toLowerCase() || String(p.categoryId || "").trim().toLowerCase() === String(c.name).trim().toLowerCase()
+          )
+        );
+        if (nonEmptyCategories.length > 0) {
+          const inlineKeyboard2 = nonEmptyCategories.map((c) => [
             { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_${c.id}` }
           ]);
-          if (activeProducts.some((p) => p && !p.categoryId)) {
-            inlineKeyboard2.push([{ text: `\u{1F4C1} \u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A`, callback_data: `show_category_uncategorized` }]);
-          }
           bot.sendMessage(chatId, "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>", {
             parse_mode: "HTML",
             reply_markup: {
@@ -94854,20 +95377,36 @@ ${result.message}
         return;
       }
       if (data === "buy_service_now") {
-        const activeProducts = (state2.products || []).filter((p) => p && !p.disabled);
+        const allCategories = state2.categories || [];
+        const activeCategories = allCategories.filter((c) => c && !c.disabled);
+        const hasCategories = allCategories.length > 0;
+        const activeCategoryKeys = new Set(
+          activeCategories.flatMap((c) => [
+            String(c.id).trim().toLowerCase(),
+            String(c.name).trim().toLowerCase()
+          ])
+        );
+        const activeProducts = (state2.products || []).filter((p) => {
+          if (!p || p.disabled) return false;
+          if (p.categoryId) {
+            return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+          }
+          return !hasCategories;
+        });
         if (activeProducts.length === 0) {
-          bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.");
+          bot.sendMessage(chatId, "\u274C \u0647\u06CC\u0686 \u0645\u062D\u0635\u0648\u0644 \u0641\u0639\u0627\u0644\u06CC \u0645\u0648\u062C\u0648\u062F \u0646\u06CC\u0633\u062A.");
           answerQuery();
           return;
         }
-        const activeCategories = (state2.categories || []).filter((c) => c && !c.disabled);
-        if (activeCategories.length > 0) {
-          const inlineKeyboard = activeCategories.map((c) => [
+        const nonEmptyCategories = activeCategories.filter(
+          (c) => activeProducts.some(
+            (p) => String(p.categoryId || "").trim().toLowerCase() === String(c.id).trim().toLowerCase() || String(p.categoryId || "").trim().toLowerCase() === String(c.name).trim().toLowerCase()
+          )
+        );
+        if (nonEmptyCategories.length > 0) {
+          const inlineKeyboard = nonEmptyCategories.map((c) => [
             { text: `\u{1F4C1} ${c.name}`, callback_data: `show_category_${c.id}` }
           ]);
-          if (activeProducts.some((p) => p && !p.categoryId)) {
-            inlineKeyboard.push([{ text: `\u{1F4C1} \u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A`, callback_data: `show_category_uncategorized` }]);
-          }
           bot.sendMessage(chatId, "\u{1F6CD} \u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:", {
             parse_mode: "Markdown",
             reply_markup: {
@@ -94893,15 +95432,31 @@ ${result.message}
         } catch (e) {
         }
         const isSeller = data === "back_to_categories_seller";
-        const activeProducts = (state2.products || []).filter((p) => p && !p.disabled);
-        const activeCategories = (state2.categories || []).filter((c) => c && !c.disabled);
-        if (activeCategories.length > 0) {
-          const inlineKeyboard2 = activeCategories.map((c) => [
+        const allCategories = state2.categories || [];
+        const activeCategories = allCategories.filter((c) => c && !c.disabled);
+        const hasCategories = allCategories.length > 0;
+        const activeCategoryKeys = new Set(
+          activeCategories.flatMap((c) => [
+            String(c.id).trim().toLowerCase(),
+            String(c.name).trim().toLowerCase()
+          ])
+        );
+        const activeProducts = (state2.products || []).filter((p) => {
+          if (!p || p.disabled) return false;
+          if (p.categoryId) {
+            return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+          }
+          return !hasCategories;
+        });
+        const nonEmptyCategories = activeCategories.filter(
+          (c) => activeProducts.some(
+            (p) => String(p.categoryId || "").trim().toLowerCase() === String(c.id).trim().toLowerCase() || String(p.categoryId || "").trim().toLowerCase() === String(c.name).trim().toLowerCase()
+          )
+        );
+        if (nonEmptyCategories.length > 0) {
+          const inlineKeyboard2 = nonEmptyCategories.map((c) => [
             { text: `\u{1F4C1} ${c.name}`, callback_data: isSeller ? `show_category_seller_${c.id}` : `show_category_${c.id}` }
           ]);
-          if (activeProducts.some((p) => p && !p.categoryId)) {
-            inlineKeyboard2.push([{ text: `\u{1F4C1} \u0633\u0627\u06CC\u0631 \u0645\u062D\u0635\u0648\u0644\u0627\u062A`, callback_data: isSeller ? `show_category_seller_uncategorized` : `show_category_uncategorized` }]);
-          }
           bot.sendMessage(chatId, isSeller ? "\u{1F6D2} <b>\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633 \u0648\u06CC\u0698\u0647 \u0647\u0645\u06A9\u0627\u0631\u0627\u0646</b>\n\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:" : "\u{1F6CD} <b>\u0644\u0637\u0641\u0627 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u0645\u062D\u0635\u0648\u0644 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:</b>", {
             parse_mode: "HTML",
             reply_markup: {
@@ -94928,14 +95483,21 @@ ${result.message}
         }
         const isSeller = data.startsWith("show_category_seller_");
         const categoryId = data.replace(isSeller ? "show_category_seller_" : "show_category_", "");
-        const catObj = (state2.categories || []).find((c) => c && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
-        const targetCatId = catObj ? String(catObj.id) : String(categoryId);
-        const targetCatName = catObj ? String(catObj.name) : String(categoryId);
+        const catObj = (state2.categories || []).find((c) => c && !c.disabled && (String(c.id) === String(categoryId) || String(c.name) === String(categoryId)));
+        if (!catObj) {
+          bot.sendMessage(chatId, "\u274C \u0627\u06CC\u0646 \u062F\u0633\u062A\u0647\u200C\u0628\u0646\u062F\u06CC \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u06CC\u0627 \u062D\u0630\u0641 \u0634\u062F\u0647 \u0627\u0633\u062A.", {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u062F\u0633\u062A\u0647\u200C\u0647\u0627", callback_data: isSeller ? "back_to_categories_seller" : "back_to_categories" }]
+              ]
+            }
+          });
+          return;
+        }
+        const targetCatId = String(catObj.id);
+        const targetCatName = String(catObj.name);
         const filteredProducts = (state2.products || []).filter((p) => {
-          if (!p) return false;
-          if (p.disabled) return false;
-          if (categoryId === "uncategorized") return !p.categoryId;
-          if (!p.categoryId) return false;
+          if (!p || p.disabled || !p.categoryId) return false;
           const pCatStr = String(p.categoryId).trim().toLowerCase();
           return pCatStr === targetCatId.trim().toLowerCase() || pCatStr === targetCatName.trim().toLowerCase() || pCatStr === String(categoryId).trim().toLowerCase();
         });
@@ -96717,11 +97279,22 @@ async function startServer() {
         return res.status(404).json({ success: false, message: "\u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 \u06CC\u0627\u0641\u062A \u0646\u0634\u062F \u06CC\u0627 \u062F\u0633\u062A\u0631\u0633\u06CC \u063A\u06CC\u0631\u0645\u062C\u0627\u0632 \u0627\u0633\u062A." });
       }
       const state = db.getState();
-      const categories = (state.categories || []).filter((c) => !c.disabled);
-      const activeCategoryIds = new Set(categories.map((c) => String(c.id)));
+      const allCategories = state.categories || [];
+      const categories = allCategories.filter((c) => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        categories.flatMap((c) => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
       const products = (state.products || []).filter((p) => {
         if (!p || p.disabled === true || p.enabled === false) return false;
-        if (p.categoryId && !activeCategoryIds.has(String(p.categoryId))) return false;
+        if (p.categoryId) {
+          if (!activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase())) return false;
+        } else if (hasCategories) {
+          return false;
+        }
         const isReady = !!p.isPayAsYouGo || Number(p.volumeGb || 0) > 0 && Number(p.durationDays || 0) > 0 || Number(p.price || 0) > 0;
         return isReady;
       }).map((p) => {
@@ -97332,7 +97905,22 @@ async function startServer() {
       const chatId = user.chatId;
       const status = resellerBotManager.getBotStatus(chatId);
       const state = db.getState();
-      const products = (state.products || []).filter((p) => !p.disabled).map((p) => {
+      const allCategories = state.categories || [];
+      const activeCategories = allCategories.filter((c) => c && !c.disabled);
+      const hasCategories = allCategories.length > 0;
+      const activeCategoryKeys = new Set(
+        activeCategories.flatMap((c) => [
+          String(c.id).trim().toLowerCase(),
+          String(c.name).trim().toLowerCase()
+        ])
+      );
+      const products = (state.products || []).filter((p) => {
+        if (!p || p.disabled) return false;
+        if (p.categoryId) {
+          return activeCategoryKeys.has(String(p.categoryId).trim().toLowerCase());
+        }
+        return !hasCategories;
+      }).map((p) => {
         const wholesalePrice = Math.max(0, Math.round(p.price * (1 - getSellerDiscountForProduct(user, p) / 100)));
         const retailPrice = user.sellerBot?.customRetailPrices?.[p.id] !== void 0 ? user.sellerBot.customRetailPrices[p.id] : user.customDisplayPrices?.[p.id] !== void 0 ? user.customDisplayPrices[p.id] : p.price;
         return {
@@ -97347,15 +97935,24 @@ async function startServer() {
       });
       const wholesaleVolGbPrice = Math.max(0, Math.round((user.customVolumePricePerGb || state.customVolumePricePerGb || 3e3) * (1 - (user.sellerDiscount || 0) / 100)));
       const retailVolGbPrice = user.sellerBot?.customVolumeRetailPricePerGb !== void 0 ? user.sellerBot.customVolumeRetailPricePerGb : Math.round(wholesaleVolGbPrice * 1.3);
+      const rawSavedBotName = (user.sellerBot?.botName || "").trim();
+      const isSellerIdentityName = !rawSavedBotName || rawSavedBotName === user.username || rawSavedBotName === `@${user.username}` || rawSavedBotName === user.name || rawSavedBotName === user.portalUsername || rawSavedBotName === String(chatId) || rawSavedBotName === `Seller_${chatId}` || rawSavedBotName === `\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 ${chatId}`;
+      const cleanBotName = isSellerIdentityName ? user.sellerBot?.botFirstName || "" : rawSavedBotName;
       res.json({
         success: true,
-        sellerBot: user.sellerBot || {
+        sellerBot: user.sellerBot ? {
+          ...user.sellerBot,
+          botName: cleanBotName
+        } : {
           enabled: false,
           botToken: "",
-          botName: user.name || user.username || `\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 ${chatId}`,
+          botName: "",
           adminChatId: chatId,
           welcomeMessage: "",
           supportUsername: user.username || "",
+          channelUsername: "",
+          forceJoinEnabled: false,
+          forceJoinChannels: [],
           cardNumber: "",
           cardHolder: "",
           autoDeliverAfterPayment: false,
@@ -97389,6 +97986,8 @@ async function startServer() {
         welcomeMessage,
         supportUsername,
         channelUsername,
+        forceJoinEnabled,
+        forceJoinChannels,
         cardNumber,
         cardHolder,
         autoDeliverAfterPayment,
@@ -97399,16 +97998,20 @@ async function startServer() {
         freeTestDurationDays
       } = req.body;
       const currentBot = user.sellerBot || {};
+      const incomingBotName = botName !== void 0 ? String(botName).trim() : currentBot.botName || "";
+      const isIncomingSellerIdentity = incomingBotName === user.username || incomingBotName === `@${user.username}` || incomingBotName === user.portalUsername || incomingBotName === String(chatId) || incomingBotName === `Seller_${chatId}` || incomingBotName === `\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 ${chatId}`;
       user.sellerBot = {
         ...currentBot,
         enabled: enabled !== void 0 ? !!enabled : !!currentBot.enabled,
         botToken: botToken !== void 0 ? String(botToken).trim() : currentBot.botToken || "",
-        botName: botName !== void 0 ? String(botName).trim() : currentBot.botName || "\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC",
+        botName: isIncomingSellerIdentity ? currentBot.botFirstName || "" : incomingBotName,
         adminChatId: adminChatId !== void 0 ? String(adminChatId).trim() ? isNaN(Number(adminChatId)) ? String(adminChatId).trim() : Number(adminChatId) : user.chatId : currentBot.adminChatId || user.chatId,
         logoUrl: logoUrl !== void 0 ? String(logoUrl).trim() : currentBot.logoUrl,
         welcomeMessage: welcomeMessage !== void 0 ? String(welcomeMessage) : currentBot.welcomeMessage,
         supportUsername: supportUsername !== void 0 ? String(supportUsername).trim() : currentBot.supportUsername,
         channelUsername: channelUsername !== void 0 ? String(channelUsername).trim() : currentBot.channelUsername,
+        forceJoinEnabled: forceJoinEnabled !== void 0 ? !!forceJoinEnabled : !!currentBot.forceJoinEnabled,
+        forceJoinChannels: Array.isArray(forceJoinChannels) ? forceJoinChannels : currentBot.forceJoinChannels || [],
         cardNumber: cardNumber !== void 0 ? String(cardNumber).trim() : currentBot.cardNumber,
         cardHolder: cardHolder !== void 0 ? String(cardHolder).trim() : currentBot.cardHolder,
         autoDeliverAfterPayment: autoDeliverAfterPayment !== void 0 ? !!autoDeliverAfterPayment : !!currentBot.autoDeliverAfterPayment,

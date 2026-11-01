@@ -181,12 +181,15 @@ export interface SellerBotConfig {
   enabled: boolean;
   botToken: string;
   botUsername?: string;
+  botFirstName?: string;
   botName: string;
   adminChatId?: number | string;
   logoUrl?: string;
   welcomeMessage?: string;
   supportUsername?: string;
   channelUsername?: string;
+  forceJoinEnabled?: boolean;
+  forceJoinChannels?: { id: string; name: string; url: string }[];
   cardNumber?: string;
   cardHolder?: string;
   autoDeliverAfterPayment?: boolean;
