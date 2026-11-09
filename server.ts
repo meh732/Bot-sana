@@ -7,9 +7,9 @@ import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import { execSync } from "child_process";
 import { db, recordUserTransaction, ensureSellerApiKey, generateSellerApiKey } from "./server/db.js";
-import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, cancelSellerPurchase, getPurchaseLiveUsedBytes } from "./server/bot.js";
-import { getUserAccountingReport, getSystemAccountingReport } from "./server/accounting.js";
-import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions } from "./server/pdfGenerator.js";
+import { initBot, sendBroadcast, checkPaygReactivation, sendDirectMessage, syncAllUsersAndSellersFinancials, applyPaygSettlementToUser, settleSinglePaygPurchase, parseAmountInput, isSellerUnlimitedLimit, executeSellerPortalPurchase, executeSellerCustomVolumePurchase, getSellerDiscountForProduct, cancelSellerPurchase, getPurchaseLiveUsedBytes, isValidTelegramBotToken } from "./server/bot.js";
+import { getUserAccountingReport, getSystemAccountingReport, getPeriodTimeRange, formatShamsiDate } from "./server/accounting.js";
+import { generateUserStatementPdf, parseShamsiDateToTimestamp, extractShamsiDateRange, PdfRangeOptions } from "./server/pdfGenerator.js";
 import { xui } from "./server/xui.js";
 import { rebecca } from "./server/rebecca.js";
 import { mrocean } from "./server/mrocean.js";
@@ -602,15 +602,24 @@ async function startServer() {
         parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
       }
       
+      if (Array.isArray(parsed.users)) {
+        for (const u of parsed.users) {
+          if (u && u.isSeller && u.sellerBot && u.sellerBot.botToken && isValidTelegramBotToken(u.sellerBot.botToken)) {
+            if (u.sellerBot.enabled === undefined) u.sellerBot.enabled = true;
+          }
+        }
+      }
+
       // Write to db.json and update memory state
       const dbPath = path.join(process.cwd(), 'db.json');
       fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
       db.updateState(parsed);
       
-      // Re-initialize the Telegram bot
+      // Re-initialize the Telegram bot and all reseller bots automatically
       initBot();
+      resellerBotManager.initAllResellerBots().catch(console.error);
       
-      res.json({ success: true, message: 'موفقیت‌آمیز: کل دیتابیس و تنظیمات با موفقیت بازیابی شد.' });
+      res.json({ success: true, message: 'موفقیت‌آمیز: کل دیتابیس، تنظیمات و ربات‌های همکاران با موفقیت بازیابی و به صورت خودکار فعال شدند.' });
     } catch (e: any) {
       res.status(400).json({ success: false, message: e.message || 'خطا در رمزگشایی یا بازیابی دیتابیس.' });
     }
@@ -697,6 +706,14 @@ async function startServer() {
         parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
       }
 
+      if (Array.isArray(parsed.users)) {
+        for (const u of parsed.users) {
+          if (u && u.isSeller && u.sellerBot && u.sellerBot.botToken && isValidTelegramBotToken(u.sellerBot.botToken)) {
+            if (u.sellerBot.enabled === undefined) u.sellerBot.enabled = true;
+          }
+        }
+      }
+
       // Overwrite db.json
       const dbPath = path.join(process.cwd(), 'db.json');
       fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
@@ -704,10 +721,11 @@ async function startServer() {
       // Update DB state
       db.updateState(parsed);
 
-      // Re-initialize bot
+      // Re-initialize main bot and all reseller bots automatically
       initBot();
+      resellerBotManager.initAllResellerBots().catch(console.error);
 
-      res.json({ success: true, message: 'موفقیت‌آمیز: کل دیتابیس با موفقیت به این نقطه بازیابی بازگردانده شد.' });
+      res.json({ success: true, message: 'موفقیت‌آمیز: کل دیتابیس و ربات‌های همکاران با موفقیت به این نقطه بازیابی بازگردانده و فعال شدند.' });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message || 'خطا در بازیابی اطلاعات با فایل نقطه‌ای.' });
     }
@@ -949,12 +967,25 @@ async function startServer() {
       const parsedDebt = parseAmountInput(debt);
       const newDebt = parsedDebt !== null ? Math.max(0, parsedDebt) : Math.max(0, Number(debt) || 0);
       const oldDebt = user.debt || 0;
-      if (newDebt < oldDebt) {
-        const diffSettled = oldDebt - newDebt;
-        user.totalPayments = (user.totalPayments || 0) + diffSettled;
-        applyPaygSettlementToUser(user, diffSettled, newDebt === 0);
-      }
       user.debt = newDebt;
+      // Baseline-settle existing PAYG usage up to current lastUsedBytes so sync doesn't re-add old usage on top of manual debt
+      applyPaygSettlementToUser(user, undefined, true);
+      user.totalPayments = Math.max(0, (user.totalSales || 0) - newDebt);
+      if (newDebt < oldDebt) {
+        recordUserTransaction(user, {
+          type: 'settlement',
+          direction: 'credit',
+          amount: oldDebt - newDebt,
+          description: 'کاهش و اصلاح دستی بدهی همکار توسط مدیریت'
+        });
+      } else if (newDebt > oldDebt) {
+        recordUserTransaction(user, {
+          type: 'manual_debit',
+          direction: 'debit',
+          amount: newDebt - oldDebt,
+          description: 'افزایش و اصلاح دستی بدهی همکار توسط مدیریت'
+        });
+      }
     }
     if (sellerDiscount !== undefined) user.sellerDiscount = Number(sellerDiscount) || 0;
     if (sellerDiscounts !== undefined) user.sellerDiscounts = sellerDiscounts;
@@ -1078,10 +1109,18 @@ async function startServer() {
     const user = db.getUser(parseInt(req.params.chatId));
     if (!user) return res.status(404).json({ success: false });
     const settledAmount = user.debt || 0;
-    user.totalPayments = (user.totalPayments || 0) + settledAmount;
+    user.totalPayments = Math.max((user.totalPayments || 0) + settledAmount, user.totalSales || 0);
     user.debt = 0;
     user.debtVolume = 0; // Reset active package volume debt too
     applyPaygSettlementToUser(user, settledAmount, true);
+    if (settledAmount > 0) {
+      recordUserTransaction(user, {
+        type: 'settlement',
+        direction: 'credit',
+        amount: settledAmount,
+        description: 'تسویه کامل حساب بدهی همکار توسط مدیریت'
+      });
+    }
     db.saveUser(user);
 
     const settleMsg = `💵 <b>حساب بدهی شما توسط مدیریت تسویه گردید.</b>\n\n` +
@@ -1390,24 +1429,39 @@ async function startServer() {
         return res.status(404).send("User not found");
       }
 
-      const { startMs, endMs, startDateStr, endDateStr, shamsiStart, shamsiEnd } = req.query;
+      const { startMs, endMs, startDateStr, endDateStr, shamsiStart, shamsiEnd, period } = req.query;
 
       let options: PdfRangeOptions = {};
 
       if (startMs && endMs) {
         options.startMs = Number(startMs);
         options.endMs = Number(endMs);
-        options.startDateStr = startDateStr ? String(startDateStr) : undefined;
-        options.endDateStr = endDateStr ? String(endDateStr) : undefined;
+        options.startDateStr = startDateStr ? String(startDateStr) : formatShamsiDate(new Date(Number(startMs)));
+        options.endDateStr = endDateStr ? String(endDateStr) : formatShamsiDate(new Date(Number(endMs)));
       } else if (shamsiStart || shamsiEnd) {
-        const sMs = shamsiStart ? parseShamsiDateToTimestamp(String(shamsiStart), false) : undefined;
-        const eMs = shamsiEnd ? parseShamsiDateToTimestamp(String(shamsiEnd), true) : undefined;
-        if (sMs || eMs) {
-          options.startMs = sMs || 0;
-          options.endMs = eMs || Date.now();
-          options.startDateStr = String(shamsiStart || '');
-          options.endDateStr = String(shamsiEnd || '');
+        const combinedStr = `${shamsiStart || ''} تا ${shamsiEnd || ''}`.trim();
+        const extracted = extractShamsiDateRange(combinedStr);
+        if (extracted) {
+          options.startMs = shamsiStart ? extracted.startMs : 0;
+          options.endMs = shamsiEnd ? extracted.endMs : (shamsiStart && !shamsiEnd ? extracted.endMs : Date.now());
+          options.startDateStr = extracted.startDateStr;
+          options.endDateStr = extracted.endDateStr;
+        } else {
+          const sMs = shamsiStart ? parseShamsiDateToTimestamp(String(shamsiStart), false) : undefined;
+          const eMs = shamsiEnd ? parseShamsiDateToTimestamp(String(shamsiEnd), true) : undefined;
+          if (sMs || eMs) {
+            options.startMs = sMs || 0;
+            options.endMs = eMs || Date.now();
+            options.startDateStr = sMs ? formatShamsiDate(new Date(sMs)) : 'ابتدا';
+            options.endDateStr = eMs ? formatShamsiDate(new Date(eMs)) : formatShamsiDate(new Date());
+          }
         }
+      } else if (period === 'today' || period === 'monthly') {
+        const pRange = getPeriodTimeRange(period);
+        options.startMs = pRange.startMs;
+        options.endMs = pRange.endMs;
+        options.startDateStr = formatShamsiDate(new Date(pRange.startMs));
+        options.endDateStr = formatShamsiDate(new Date(pRange.endMs));
       }
 
       const pdfBuffer = await generateUserStatementPdf(user, options);
@@ -2063,7 +2117,9 @@ async function startServer() {
         customVolumeRetailPricePerGb,
         freeTestEnabled,
         freeTestVolumeGb,
-        freeTestDurationDays
+        freeTestDurationDays,
+        referralRewardToman,
+        coupons
       } = req.body;
 
       const currentBot = user.sellerBot || ({} as any);
@@ -2096,6 +2152,8 @@ async function startServer() {
         freeTestEnabled: freeTestEnabled !== undefined ? !!freeTestEnabled : currentBot.freeTestEnabled !== false,
         freeTestVolumeGb: freeTestVolumeGb ? Number(freeTestVolumeGb) : currentBot.freeTestVolumeGb,
         freeTestDurationDays: freeTestDurationDays ? Number(freeTestDurationDays) : currentBot.freeTestDurationDays,
+        referralRewardToman: referralRewardToman !== undefined ? Math.max(0, Number(referralRewardToman) || 0) : (currentBot.referralRewardToman || 0),
+        coupons: Array.isArray(coupons) ? coupons : (currentBot.coupons || []),
         orders: currentBot.orders || [],
         buyers: currentBot.buyers || [],
         totalRevenueToman: currentBot.totalRevenueToman || 0,
@@ -3118,10 +3176,12 @@ async function startServer() {
     });
   }
 
+  const isExplicitPort = Boolean(process.env.PORT);
+  let currentPort = PORT;
   let listenRetries = 0;
   function startListening() {
-    const httpServer = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+    const httpServer = app.listen(currentPort, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${currentPort}`);
       initBot();
       syncAllUsersAndSellersFinancials().catch(err => {
         console.error('[Startup Financials Sync Error]', err.message);
@@ -3131,23 +3191,21 @@ async function startServer() {
 
     httpServer.on('error', (err: any) => {
       if (err && err.code === 'EADDRINUSE') {
-        console.error(`[Server] Port ${PORT} is already in use.`);
-        if (listenRetries < 2 && process.platform === 'linux') {
+        if (isExplicitPort) {
+          console.error(`[Server Error] Port ${currentPort} specified in PORT environment variable is already in use by another service on this server.`);
+          process.exit(1);
+        }
+        console.warn(`[Server Warning] Port ${currentPort} is already in use by another service on this server.`);
+        if (listenRetries < 5) {
           listenRetries++;
-          console.warn(`[Server] Port ${PORT} busy. Terminating orphaned process holding the port (attempt ${listenRetries})...`);
-          try {
-            try { execSync(`fuser -k -9 ${PORT}/tcp 2>/dev/null`); } catch (_) {}
-            try { execSync(`lsof -t -i:${PORT} 2>/dev/null | grep -v "^${process.pid}$" | xargs -r kill -9 2>/dev/null`); } catch (_) {}
-          } catch (e: any) {
-            console.error('[Server] Could not clean port:', e?.message || e);
-          }
+          currentPort++;
+          console.log(`[Server] Attempting fallback port ${currentPort}...`);
           setTimeout(() => {
-            console.log(`[Server] Retrying to listen on port ${PORT}...`);
             startListening();
-          }, 1000);
+          }, 300);
           return;
         }
-        console.error(`[Server] Port ${PORT} is still in use by another instance. Exiting cleanly.`);
+        console.error(`[Server Error] Unable to bind to any port between ${PORT} and ${currentPort}.`);
         process.exit(1);
       }
     });

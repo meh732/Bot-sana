@@ -747,6 +747,19 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
 
   const currentReport = accountingData?.[reportPeriod] || { summary: {}, salesItems: [], ledgerRows: [] };
 
+  const displayLedgerRows = React.useMemo(() => {
+    const rows = (currentReport.ledgerRows || []);
+    if (!shamsiStart && !shamsiEnd) return rows;
+    const cleanStart = shamsiStart.trim().replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+    const cleanEnd = shamsiEnd.trim().replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+    return rows.filter((r: any) => {
+      const d = (r.dateStr || '').replace(/[۰-۹]/g, (x: string) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(x)));
+      if (cleanStart && d < cleanStart) return false;
+      if (cleanEnd && d > cleanEnd) return false;
+      return true;
+    });
+  }, [currentReport, shamsiStart, shamsiEnd]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 dir-rtl font-vazir">
@@ -1758,13 +1771,13 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
 
               <div className="flex items-center gap-2 flex-wrap">
                 <a
-                  href={`/api/seller-portal/download-pdf/${sellerData?.chatId || ''}${shamsiStart || shamsiEnd ? `?shamsiStart=${encodeURIComponent(shamsiStart)}&shamsiEnd=${encodeURIComponent(shamsiEnd)}` : ''}`}
+                  href={`/api/seller-portal/download-pdf/${sellerData?.chatId || ''}?period=${reportPeriod}${shamsiStart || shamsiEnd ? `&shamsiStart=${encodeURIComponent(shamsiStart)}&shamsiEnd=${encodeURIComponent(shamsiEnd)}` : ''}`}
                   target="_blank"
                   rel="noreferrer"
                   className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-slate-950 font-bold rounded-xl transition flex items-center gap-1.5 shadow-md shadow-emerald-500/20 text-xs shrink-0"
                 >
                   <Download className="w-4 h-4 text-slate-950" />
-                  <span>دانلود PDF صورتحساب {shamsiStart || shamsiEnd ? 'بازه' : 'کامل'}</span>
+                  <span>دانلود PDF صورتحساب {shamsiStart || shamsiEnd ? 'بازه انتخابی' : reportPeriod === 'today' ? 'امروز' : reportPeriod === 'monthly' ? 'ماهانه' : 'کامل'}</span>
                 </a>
 
                 <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 text-xs">
@@ -1849,14 +1862,14 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {currentReport.ledgerRows.length === 0 ? (
+                    {displayLedgerRows.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="p-8 text-center text-slate-500">
                           هیچ تراکنشی در این بازه زمانی ثبت نشده است.
                         </td>
                       </tr>
                     ) : (
-                      currentReport.ledgerRows.map((row: any) => (
+                      displayLedgerRows.map((row: any) => (
                         <tr key={row.id} className="hover:bg-slate-850/50 transition">
                           <td className="p-3.5 font-mono text-slate-400">{row.dateStr} {row.timeStr}</td>
                           <td className="p-3.5 text-slate-200">{row.description}</td>
@@ -2716,6 +2729,50 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                     onChange={(e) => setBotConfig({ ...botConfig, freeTestEnabled: e.target.checked })}
                     className="w-5 h-5 accent-cyan-500 cursor-pointer"
                   />
+                </div>
+
+                {/* Section: Referral System & Rewards (زیرمجموعه‌گیری و پاداش دعوت) */}
+                <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-400" />
+                    <h5 className="text-xs font-bold text-slate-200">🔗 پاداش سیستم زیرمجموعه‌گیری و بازاریابی مشتریان (به تومان)</h5>
+                  </div>
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-emerald-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] text-slate-300">
+                        مبلغ هدیه شارژ کیف پول به معرف به ازای هر کاربر جدید که از طریق لینک اختصاصی عضو ربات شود:
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        💡 در صورت تنظیم روی صفر، سیستم زیرمجموعه‌گیری بدون پاداش نقدی فقط تعداد دعوت‌ها را ثبت می‌کند.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        placeholder="مثلاً 5000"
+                        value={botConfig?.referralRewardToman || ''}
+                        onChange={(e) => setBotConfig({ ...botConfig, referralRewardToman: Math.max(0, parseInt(e.target.value) || 0) })}
+                        className="w-32 bg-slate-900 border border-slate-700 focus:border-emerald-400 rounded-xl px-3 py-1.5 text-xs text-emerald-400 font-mono font-bold outline-none text-center"
+                      />
+                      <span className="text-xs text-slate-400 font-mono">تومان</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section: Discount Codes & Gift Coupons (کدهای تخفیف و هدیه اختصاصی همکار) */}
+                <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Gift className="w-4 h-4 text-cyan-400" />
+                      <h5 className="text-xs font-bold text-slate-200">🎫 مدیریت کدهای تخفیف درصدی و کدهای هدیه کیف پول</h5>
+                    </div>
+                    <span className="text-[10px] text-slate-400">
+                      {Array.isArray(botConfig?.coupons) ? `${botConfig.coupons.length} کد فعال` : 'بدون کد'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    می‌توانید کدهای تخفیف درصدی برای اعمال هنگام خرید محصول یا کدهای هدیه (Gift Code) جهت شارژ مستقیم کیف پول کاربران خود بسازید. همچنین می‌توانید این کدها را از منوی <b>«🎫 مدیریت کدهای تخفیف و هدیه»</b> در تلگرام مدیریت نمایید.
+                  </p>
                 </div>
               </div>
 

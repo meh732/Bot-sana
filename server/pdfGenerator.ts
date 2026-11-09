@@ -11,11 +11,17 @@ import path from 'path';
 import apr from 'arabic-persian-reshaper';
 import * as jalaali from 'jalaali-js';
 import { User, Purchase } from './db.js';
-import { getUserAccountingReport } from './accounting.js';
+import { getUserAccountingReport, formatShamsiDate } from './accounting.js';
+
+export function normalizeDigitsToEnglish(str: string): string {
+  return (str || '')
+    .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+}
 
 export function fixRTL(str: string | number | null | undefined): string {
   if (str === null || str === undefined) return '';
-  const s = String(str).trim();
+  const s = normalizeDigitsToEnglish(String(str).trim());
   if (!s) return '';
   
   try {
@@ -52,7 +58,7 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
       const doc = new PDFDocument({ margin: 30, size: 'A4' });
       const buffers: Buffer[] = [];
 
-      doc.on('data', (data) => buffers.push(data));
+      doc.on('data', (data: any) => buffers.push(data));
       doc.on('end', () => resolve(Buffer.concat(buffers)));
 
       const fontPathRegular = path.join(process.cwd(), 'Vazirmatn-Regular.ttf');
@@ -72,34 +78,44 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
       const fontReg = hasRegularFont ? 'Vazir' : 'Helvetica';
       const fontBold = hasBoldFont ? 'Vazir-Bold' : 'Helvetica-Bold';
 
-      // Get full accounting data
-      const fullReport = getUserAccountingReport(user, 'all');
+      const hasCustomRange = options.startMs !== undefined || options.endMs !== undefined;
+      const effStartMs = options.startMs !== undefined ? options.startMs : 0;
+      const effEndMs = options.endMs !== undefined ? options.endMs : Date.now();
 
-      // Filter by custom date range if provided
+      // Get accounting data (already deduplicated and filtered if range is provided)
+      const fullReport = hasCustomRange
+        ? getUserAccountingReport(user, 'all', effStartMs, effEndMs)
+        : getUserAccountingReport(user, 'all');
+
       let filteredLedger = fullReport.ledgerRows;
       let rangeTitle = 'کل اسناد مالی و حسابداری - از ابتدا تاکنون';
 
-      if (options.startMs !== undefined && options.endMs !== undefined) {
+      if (hasCustomRange) {
         filteredLedger = fullReport.ledgerRows.filter(row => {
           const t = new Date(row.rawDate).getTime();
-          return t >= options.startMs! && t <= options.endMs!;
+          return t >= effStartMs && t <= effEndMs;
         });
-        if (options.startDateStr && options.endDateStr) {
-          rangeTitle = `بازه زمانی: از ${options.startDateStr} تا ${options.endDateStr}`;
-        } else {
-          rangeTitle = 'بازه زمانی سفارشی انتخاب شده';
-        }
+        const sStr = options.startDateStr
+          ? normalizeDigitsToEnglish(options.startDateStr)
+          : formatShamsiDate(new Date(effStartMs));
+        const eStr = options.endDateStr
+          ? normalizeDigitsToEnglish(options.endDateStr)
+          : formatShamsiDate(new Date(effEndMs));
+        rangeTitle = `بازه زمانی: از ${sStr} تا ${eStr}`;
       }
 
       // Sort chronological ascending (oldest first) for accounting table
       const rowsAsc = [...filteredLedger].sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
 
-      // Calculate totals for range
+      // Calculate totals & running balance strictly for the displayed rows
       let rangeDebit = 0;
       let rangeCredit = 0;
+      let runningInTable = 0;
       rowsAsc.forEach(r => {
         rangeDebit += (r.debit || 0);
         rangeCredit += (r.credit || 0);
+        runningInTable += (r.debit || 0) - (r.credit || 0);
+        r.runningBalance = runningInTable;
       });
 
       // Format current Gregorian/Shamsi date reliably with Latin digits to prevent inverted numerals
@@ -178,7 +194,7 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
 
       doc.text(fixRTL('مانده تراز'), cols.bal.x, y + 6, { width: cols.bal.w, align: 'center' });
       doc.text(fixRTL('بستانکار (تومان)'), cols.credit.x, y + 6, { width: cols.credit.w, align: 'center' });
-      doc.text(fixRTL('بدهکار (تومان)'), cols.date.x ? cols.debit.x : cols.debit.x, y + 6, { width: cols.debit.w, align: 'center' });
+      doc.text(fixRTL('بدهکار (تومان)'), cols.debit.x, y + 6, { width: cols.debit.w, align: 'center' });
       doc.text(fixRTL('شرح سند و تراکنش مالی'), cols.desc.x, y + 6, { width: cols.desc.w, align: 'center' });
       doc.text(fixRTL('تاریخ و زمان'), cols.date.x, y + 6, { width: cols.date.w, align: 'center' });
       doc.text(fixRTL('ردیف'), cols.num.x, y + 6, { width: cols.num.w, align: 'center' });
@@ -274,15 +290,34 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
 
 export function parseShamsiDateToTimestamp(shamsiStr: string, isEndOfDay: boolean = false): number | null {
   if (!shamsiStr) return null;
-  const norm = shamsiStr.replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString()).trim();
-  const match = norm.match(/(\d{4})[\/\.-](\d{1,2})[\/\.-](\d{1,2})/);
-  if (!match) return null;
+  const norm = normalizeDigitsToEnglish(shamsiStr).trim();
 
-  const jy = parseInt(match[1], 10);
-  const jm = parseInt(match[2], 10);
-  const jd = parseInt(match[3], 10);
+  // Match full YYYY/MM/DD or YYYY-MM-DD or YYYY.MM.DD
+  const fullMatch = norm.match(/(\d{4})[\/\.\-](\d{1,2})[\/\.\-](\d{1,2})/);
+  let jy = 0;
+  let jm = 0;
+  let jd = 0;
+
+  if (fullMatch) {
+    jy = parseInt(fullMatch[1], 10);
+    jm = parseInt(fullMatch[2], 10);
+    jd = parseInt(fullMatch[3], 10);
+  } else {
+    // Also support YYYY/MM (entire month)
+    const monthMatch = norm.match(/^(\d{4})[\/\.\-](\d{1,2})$/);
+    if (monthMatch) {
+      jy = parseInt(monthMatch[1], 10);
+      jm = parseInt(monthMatch[2], 10);
+      if (jm < 1 || jm > 12) return null;
+      jd = isEndOfDay ? jalaali.jalaaliMonthLength(jy, jm) : 1;
+    } else {
+      return null;
+    }
+  }
 
   if (jm < 1 || jm > 12 || jd < 1 || jd > 31) return null;
+  const maxDayInMonth = jalaali.jalaaliMonthLength(jy, jm);
+  if (jd > maxDayInMonth) jd = maxDayInMonth;
 
   try {
     const g = jalaali.toGregorian(jy, jm, jd);
@@ -295,4 +330,42 @@ export function parseShamsiDateToTimestamp(shamsiStr: string, isEndOfDay: boolea
   } catch (e) {
     return null;
   }
+}
+
+export function extractShamsiDateRange(rawInput: string): {
+  startMs: number;
+  endMs: number;
+  startDateStr: string;
+  endDateStr: string;
+} | null {
+  if (!rawInput) return null;
+  const norm = normalizeDigitsToEnglish(rawInput).trim();
+  const dateTokens = norm.match(/\d{4}[\/\.\-]\d{1,2}(?:[\/\.\-]\d{1,2})?/g);
+  if (!dateTokens || dateTokens.length === 0) return null;
+
+  const firstToken = dateTokens[0];
+  const lastToken = dateTokens[dateTokens.length - 1];
+
+  let startMs = parseShamsiDateToTimestamp(firstToken, false);
+  let endMs = parseShamsiDateToTimestamp(lastToken, true);
+
+  if (!startMs || !endMs) return null;
+  if (startMs > endMs) {
+    const tmp = startMs;
+    startMs = endMs;
+    endMs = tmp;
+    const s2 = parseShamsiDateToTimestamp(lastToken, false);
+    const e2 = parseShamsiDateToTimestamp(firstToken, true);
+    if (s2 && e2) {
+      startMs = s2;
+      endMs = e2;
+    }
+  }
+
+  return {
+    startMs,
+    endMs,
+    startDateStr: formatShamsiDate(new Date(startMs)),
+    endDateStr: formatShamsiDate(new Date(endMs))
+  };
 }

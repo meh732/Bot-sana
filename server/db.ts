@@ -198,8 +198,28 @@ export interface SellerBotConfig {
   freeTestEnabled?: boolean;
   freeTestVolumeGb?: number;
   freeTestDurationDays?: number;
+  referralRewardToman?: number;
+  coupons?: {
+    code: string;
+    discountPercent?: number;
+    giftAmount?: number;
+    maxUsage?: number;
+    usedCount?: number;
+    usedBy?: Record<string, number>;
+  }[];
   orders?: SellerBotOrder[];
-  buyers?: { chatId: number; username?: string; name?: string; joinedAt: string; testUsed?: boolean; balance?: number }[];
+  buyers?: {
+    chatId: number;
+    username?: string;
+    name?: string;
+    joinedAt: string;
+    testUsed?: boolean;
+    balance?: number;
+    referredBy?: number;
+    referralRewarded?: boolean;
+    referralCount?: number;
+    referralEarnings?: number;
+  }[];
   totalRevenueToman?: number;
   totalWholesaleCostToman?: number;
   totalProfitToman?: number;

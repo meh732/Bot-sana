@@ -202,13 +202,25 @@ export function getPeriodTimeRange(period: 'today' | 'monthly' | 'all'): { start
   };
 }
 
-export function getUserAccountingReport(user: User, period: 'today' | 'monthly' | 'all' = 'today'): UserAccountingReport {
-  const { startMs, endMs, label: periodLabel } = getPeriodTimeRange(period);
+export function getUserAccountingReport(
+  user: User,
+  period: 'today' | 'monthly' | 'all' = 'today',
+  customStartMs?: number,
+  customEndMs?: number
+): UserAccountingReport {
+  const baseRange = getPeriodTimeRange(period);
+  const startMs = customStartMs !== undefined ? customStartMs : baseRange.startMs;
+  const endMs = customEndMs !== undefined ? customEndMs : baseRange.endMs;
+  const periodLabel =
+    customStartMs !== undefined || customEndMs !== undefined
+      ? `بازه انتخابی (${formatShamsiDate(new Date(startMs))} تا ${formatShamsiDate(new Date(endMs))})`
+      : baseRange.label;
+
   const purchases = (user.purchases || []).filter(p => !p.isDeleted || p.isCancelled);
 
   // Filter purchases in period
   const periodPurchases = purchases.filter(p => {
-    if (!p.createdAt) return period === 'all';
+    if (!p.createdAt) return period === 'all' && customStartMs === undefined && customEndMs === undefined;
     const t = new Date(p.createdAt).getTime();
     return t >= startMs && t <= endMs;
   });
@@ -274,33 +286,45 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
   });
 
   // Build Comprehensive Accounting Ledger Rows (دفتر معین دریافت و پرداخت)
-  const ledgerRows: AccountingLedgerRow[] = [];
+  const allLedgerRows: AccountingLedgerRow[] = [];
+  const hasCancelledPurchases = purchases.some(p => p.isCancelled);
   
   // 1. Add all purchases as DEBITS (بدهکار)
   purchases.forEach(p => {
     const dt = new Date(p.createdAt || Date.now());
-    const volPart = p.isPayAsYouGo ? 'مصرف آزاد' : (p.volumeGb ? `${p.volumeGb} گیگ` : '');
-    const durPart = p.durationDays ? `${p.durationDays} روزه` : '';
+    const isCancelled = !!p.isCancelled;
+    const effectiveDebit = isCancelled ? (Number(p.cancellationCost) || 0) : (Number(p.price) || 0);
+    const volPart = p.isPayAsYouGo
+      ? 'مصرف آزاد'
+      : isCancelled
+      ? `ابطال‌شده (${Number(p.cancellationUsedGb) || 0} گیگ مصرف)`
+      : (p.volumeGb ? `${p.volumeGb} گیگ` : '');
+    const durPart = !isCancelled && p.durationDays ? `${p.durationDays} روزه` : '';
     const extraParts = [durPart, volPart].filter(Boolean).join(' - ');
     const extraStr = extraParts ? ` - ${extraParts}` : '';
-    ledgerRows.push({
+    allLedgerRows.push({
       id: `p_${p.id}_${dt.getTime()}`,
       rawDate: p.createdAt || dt.toISOString(),
       dateStr: formatShamsiDate(dt),
       timeStr: formatShamsiTime(dt),
       type: 'purchase',
       description: `خرید کانفیگ: ${p.name || p.id}${extraStr}`,
-      debit: p.price || 0,
+      debit: effectiveDebit,
       credit: 0,
       runningBalance: 0
     });
   });
 
-  // 2. Add recorded transactions or payments as CREDITS (بستانکار)
+  // 2. Add recorded non-purchase transactions or payments as CREDITS/DEBITS
   if (user.transactions && user.transactions.length > 0) {
     user.transactions.forEach(tx => {
+      // Skip 'purchase' transactions because all purchases are already added above from user.purchases
+      if (tx.type === 'purchase') return;
+      // Skip 'refund' transactions if cancelled purchases already use cancellationCost above
+      if (tx.type === 'refund' && hasCancelledPurchases) return;
+
       const dt = new Date(tx.createdAt || Date.now());
-      ledgerRows.push({
+      allLedgerRows.push({
         id: tx.id,
         rawDate: tx.createdAt,
         dateStr: formatShamsiDate(dt),
@@ -315,7 +339,7 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
   } else if ((user.totalPayments || 0) > 0) {
     // If no granular tx log exists yet, record aggregate payments
     const dt = new Date(user.registeredAt || Date.now());
-    ledgerRows.push({
+    allLedgerRows.push({
       id: `agg_pay_${user.chatId}`,
       rawDate: dt.toISOString(),
       dateStr: formatShamsiDate(dt),
@@ -329,18 +353,33 @@ export function getUserAccountingReport(user: User, period: 'today' | 'monthly' 
   }
 
   // Sort chronological (oldest to newest) to calculate running balance
-  ledgerRows.sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
+  allLedgerRows.sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
 
   let currentRunning = 0;
+  allLedgerRows.forEach(row => {
+    currentRunning += (row.debit - row.credit);
+    row.runningBalance = currentRunning;
+  });
+
+  // Filter ledger rows by the requested period / custom date range
+  const isFilteredRange = period !== 'all' || customStartMs !== undefined || customEndMs !== undefined;
+  const ledgerRows = isFilteredRange
+    ? allLedgerRows.filter(row => {
+        const t = new Date(row.rawDate).getTime();
+        return t >= startMs && t <= endMs;
+      })
+    : [...allLedgerRows];
+
   let totalDebits = 0;
   let totalCredits = 0;
-
+  let periodRunning = 0;
   ledgerRows.forEach(row => {
     totalDebits += row.debit;
     totalCredits += row.credit;
-    // For a seller: Debit increases debt, Credit decreases debt
-    currentRunning += (row.debit - row.credit);
-    row.runningBalance = currentRunning;
+    if (isFilteredRange) {
+      periodRunning += (row.debit - row.credit);
+      row.runningBalance = periodRunning;
+    }
   });
 
   // Reverse so newest appears at top for viewing

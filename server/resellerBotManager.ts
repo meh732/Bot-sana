@@ -11,7 +11,8 @@ import {
   sanitizeCustomConfigName,
   parseAmountInput,
   getBot,
-  enhanceBotForSpeedAndColoredButtons
+  enhanceBotForSpeedAndColoredButtons,
+  isValidTelegramBotToken
 } from './bot.js';
 import { getTehranShamsiDayRange } from './accounting.js';
 import { multiPanel } from './multiPanel.js';
@@ -145,7 +146,16 @@ class ResellerBotManager {
   public async initAllResellerBots(): Promise<void> {
     console.log('[ResellerBotManager] Initializing all active reseller bots...');
     const state = db.getState();
-    const sellers = (state.users || []).filter(u => u.isSeller && u.sellerBot?.enabled && u.sellerBot?.botToken);
+    const sellers = (state.users || []).filter(u => {
+      if (!u || !u.isSeller || !u.sellerBot || !u.sellerBot.botToken) return false;
+      if (!isValidTelegramBotToken(u.sellerBot.botToken)) return false;
+      // Auto-enable reseller bot if token is valid and enabled wasn't explicitly set to false
+      if (u.sellerBot.enabled === undefined) {
+        u.sellerBot.enabled = true;
+        db.saveUser(u);
+      }
+      return !!u.sellerBot.enabled;
+    });
 
     for (const seller of sellers) {
       try {
@@ -169,8 +179,8 @@ class ResellerBotManager {
     }
 
     const token = (user.sellerBot.botToken || '').trim();
-    if (!token || !/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) {
-      return { success: false, message: 'فرمت توکن ربات تلگرام نامعتبر است. توکن را از @BotFather دریافت نمایید.' };
+    if (!isValidTelegramBotToken(token)) {
+      return { success: false, message: 'فرمت یا مقدار توکن ربات تلگرام نامعتبر است. لطفاً توکن صحیح را از @BotFather دریافت نمایید.' };
     }
 
     const state = db.getState();
@@ -790,6 +800,7 @@ class ResellerBotManager {
       ]);
 
       keyboard.push([
+        { text: '🔗 زیرمجموعه‌گیری', style: 'success' },
         { text: '📞 پشتیبانی و راهنما', style: 'success' }
       ]);
 
@@ -1196,6 +1207,11 @@ class ResellerBotManager {
       ]);
 
       inline_keyboard.push([
+        { text: '🎫 مدیریت کدهای تخفیف و هدیه', callback_data: 'admin_coupons_menu', style: 'success' },
+        { text: '🔗 پاداش زیرمجموعه‌گیری', callback_data: 'admin_referral_settings', style: 'primary' }
+      ]);
+
+      inline_keyboard.push([
         { text: '💰 تعیین قیمت فروش محصولات', callback_data: 'admin_price_settings', style: 'success' },
         { text: '💳 تنظیم شماره کارت بانکی من', callback_data: 'admin_card_settings', style: 'success' }
       ]);
@@ -1238,6 +1254,180 @@ class ResellerBotManager {
       }
     };
 
+    const sendBuyerReferralMenu = async (buyerChatId: number, seller: User) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const effectiveBotName = this.getEffectiveBotName(seller);
+      const rec = this.activeBots.get(seller.chatId);
+      const botUsername = (botCfg.botUsername || rec?.username || '').replace(/^@/, '').trim();
+      const buyerRec = (botCfg.buyers || []).find(b => b.chatId === buyerChatId);
+      const refCount = buyerRec?.referralCount || 0;
+      const refEarnings = buyerRec?.referralEarnings || 0;
+      const rewardPerUser = Number(botCfg.referralRewardToman) || 0;
+      const refLink = botUsername
+        ? `https://t.me/${botUsername}?start=${buyerChatId}`
+        : `شناسه معرف شما: ${buyerChatId}`;
+
+      const msgText =
+        `🔗 <b>سیستم زیرمجموعه‌گیری و کسب درآمد (${escapeHtml(effectiveBotName)})</b>\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `با دعوت از دوستان خود از طریق لینک اختصاصی زیر، با استارت ربات توسط هر دوست جدید، کیف پول شما به صورت آنی شارژ می‌شود و می‌توانید از آن برای خرید یا تمدید رایگان سرویس استفاده کنید!\n\n` +
+        `🎁 <b>پاداش معرفی هر نفر:</b> <b>${rewardPerUser > 0 ? `${rewardPerUser.toLocaleString()} تومان` : 'توسط مدیر تعیین نشده'}</b>\n` +
+        `👥 <b>تعداد زیرمجموعه‌های شما:</b> <b>${refCount.toLocaleString()} نفر</b>\n` +
+        `💰 <b>کل پاداش دریافتی شما:</b> <b>${refEarnings.toLocaleString()} تومان</b>\n\n` +
+        `🔗 <b>لینک اختصاصی دعوت شما (لمس کنید تا کپی شود):</b>\n` +
+        `<code>${escapeHtml(refLink)}</code>`;
+
+      const shareText = encodeURIComponent(
+        `🚀 فیلترشکن پرسرعت و بدون قطعی ${effectiveBotName} با تست رایگان!\nهمین الان از طریق لینک زیر استارت کن:\n${refLink}`
+      );
+      const inline_keyboard: any[][] = [];
+      if (botUsername) {
+        inline_keyboard.push([
+          {
+            text: '📤 اشتراک‌گذاری و ارسال لینک دعوت به دوستان',
+            url: `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${shareText}`,
+            style: 'success'
+          }
+        ]);
+      }
+
+      await bot.sendMessage(buyerChatId, msgText, {
+        parse_mode: 'HTML',
+        reply_markup: inline_keyboard.length > 0 ? { inline_keyboard } : undefined
+      });
+    };
+
+    const sendAdminReferralSettingsMenu = async (adminChatId: number, seller: User, editMsgId?: number) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const currentReward = Number(botCfg.referralRewardToman) || 0;
+      const totalReferrals = (botCfg.buyers || []).reduce((sum, b) => sum + (b.referralCount || 0), 0);
+      const totalPaidRewards = (botCfg.buyers || []).reduce((sum, b) => sum + (b.referralEarnings || 0), 0);
+
+      const msg =
+        `🔗 <b>تنظیمات پاداش زیرمجموعه‌گیری ربات شما</b>\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `🎁 <b>پاداش فعلی به ازای هر دعوت موفق:</b> <b>${currentReward > 0 ? `${currentReward.toLocaleString()} تومان` : 'غیرفعال (۰ تومان)'}</b>\n` +
+        `👥 <b>کل زیرمجموعه‌های جذب‌شده توسط کاربران:</b> <b>${totalReferrals.toLocaleString()} نفر</b>\n` +
+        `💰 <b>مجموع پاداش واریزشده به کیف پول کاربران:</b> <b>${totalPaidRewards.toLocaleString()} تومان</b>\n\n` +
+        `💡 <i>زمانی که کاربری لینک اختصاصی خود را برای دوستانش بفرستد و کاربر جدید برای اولین بار وارد ربات شود (و در صورت فعال بودن قفل کانال، در کانال عضو شود)، مبلغ پاداش به صورت خودکار به کیف پول معرف در ربات شما اضافه می‌گردد.</i>\n\n` +
+        `لطفاً مبلغ پاداش هر زیرمجموعه را انتخاب یا وارد نمایید:`;
+
+      const inline_keyboard: any[][] = [
+        [
+          { text: '🔴 غیرفعال (۰ تومان)', callback_data: 'admin_ref_preset_0', style: 'danger' },
+          { text: '🎁 ۲,۰۰۰ تومان', callback_data: 'admin_ref_preset_2000', style: 'success' }
+        ],
+        [
+          { text: '🎁 ۵,۰۰۰ تومان', callback_data: 'admin_ref_preset_5000', style: 'success' },
+          { text: '🎁 ۱۰,۰۰۰ تومان', callback_data: 'admin_ref_preset_10000', style: 'success' }
+        ],
+        [
+          { text: '✍️ وارد کردن مبلغ دلخواه پاداش (تومان)', callback_data: 'admin_ref_custom_input', style: 'primary' }
+        ],
+        [
+          { text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'primary' }
+        ]
+      ];
+
+      if (editMsgId) {
+        await bot
+          .editMessageText(msg, { chat_id: adminChatId, message_id: editMsgId, parse_mode: 'HTML', reply_markup: { inline_keyboard } })
+          .catch(async () => {
+            await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          });
+      } else {
+        await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+      }
+    };
+
+    const sendAdminCouponsMenu = async (adminChatId: number, seller: User, editMsgId?: number) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const coupons = botCfg.coupons || [];
+
+      let msg =
+        `🎫 <b>مدیریت کدهای تخفیف و کدهای هدیه در ربات شما</b>\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `شما می‌توانید برای جذب مشتری در ربات خودتان دو نوع کد تعریف کنید:\n` +
+        `1️⃣ <b>کد تخفیف درصدی خرید:</b> مثلاً <code>OFF20</code> با ۲۰٪ تخفیف روی قیمت فروش شما به مشتری.\n` +
+        `2️⃣ <b>کد هدیه شارژ کیف پول:</b> مثلاً <code>GIFT10</code> که کیف پول مشتری را در ربات شما شارژ می‌کند.\n\n`;
+
+      if (coupons.length > 0) {
+        msg += `📋 <b>لیست کدهای فعال فعلی (${coupons.length} مورد):</b>\n`;
+        coupons.forEach((c, i) => {
+          const typeStr = c.giftAmount && c.giftAmount > 0
+            ? `🎁 هدیه ${c.giftAmount.toLocaleString()} تومان`
+            : `🏷 تخفیف ${c.discountPercent || 0}%`;
+          const usageStr = `${c.usedCount || 0}/${c.maxUsage || 100} بار`;
+          msg += `${i + 1}. <code>${escapeHtml(c.code)}</code> ⬅️ ${typeStr} (استفاده: ${usageStr})\n`;
+        });
+      } else {
+        msg += `ℹ️ <i>هنوز هیچ کد تخفیف یا کد هدیه‌ای تعریف نکرده‌اید.</i>\n`;
+      }
+
+      const inline_keyboard: any[][] = [
+        [
+          { text: '➕ ساخت کد تخفیف درصدی (روی خرید)', callback_data: 'admin_add_discount_coupon', style: 'success' }
+        ],
+        [
+          { text: '🎁 ساخت کد هدیه (شارژ کیف پول)', callback_data: 'admin_add_gift_coupon', style: 'primary' }
+        ]
+      ];
+
+      coupons.forEach((c, idx) => {
+        inline_keyboard.push([
+          {
+            text: `🗑 حذف کد ${c.code} (${c.giftAmount ? `${c.giftAmount.toLocaleString()} ت` : `${c.discountPercent}%`})`,
+            callback_data: `admin_del_coupon_${idx}`,
+            style: 'danger'
+          }
+        ]);
+      });
+
+      inline_keyboard.push([
+        { text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'primary' }
+      ]);
+
+      if (editMsgId) {
+        await bot
+          .editMessageText(msg, { chat_id: adminChatId, message_id: editMsgId, parse_mode: 'HTML', reply_markup: { inline_keyboard } })
+          .catch(async () => {
+            await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          });
+      } else {
+        await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+      }
+    };
+
+    const processPendingReferralReward = async (buyerChatId: number, seller: User) => {
+      const botCfg = seller.sellerBot;
+      if (!botCfg || !botCfg.buyers) return;
+      const buyerRec = botCfg.buyers.find(b => b.chatId === buyerChatId);
+      if (!buyerRec || buyerRec.referralRewarded || !buyerRec.referredBy || buyerRec.referredBy === buyerChatId) return;
+
+      const referrer = botCfg.buyers.find(b => b.chatId === buyerRec.referredBy);
+      buyerRec.referralRewarded = true;
+      if (!referrer) {
+        db.saveUser(seller);
+        return;
+      }
+
+      referrer.referralCount = (referrer.referralCount || 0) + 1;
+      const reward = Math.max(0, Number(botCfg.referralRewardToman) || 0);
+      if (reward > 0) {
+        referrer.balance = (referrer.balance || 0) + reward;
+        referrer.referralEarnings = (referrer.referralEarnings || 0) + reward;
+      }
+      db.saveUser(seller);
+
+      const notifyText =
+        `🎉 <b>تبریک! یک کاربر جدید (${escapeHtml(buyerRec.name || 'کاربر')}) با لینک دعوت اختصاصی شما وارد ربات شد!</b>\n\n` +
+        `👥 <b>تعداد کل زیرمجموعه‌های شما:</b> <b>${referrer.referralCount} نفر</b>\n` +
+        (reward > 0
+          ? `🎁 <b>پاداش واریزشده به کیف پول شما:</b> <b>${reward.toLocaleString()} تومان</b>\n💰 <b>موجودی فعلی کیف پول:</b> <b>${(referrer.balance || 0).toLocaleString()} تومان</b>`
+          : '');
+      await bot.sendMessage(referrer.chatId, notifyText, { parse_mode: 'HTML' }).catch(() => {});
+    };
+
     const startProductInvoiceOrWalletFlow = async (
       buyerChatId: number,
       seller: User,
@@ -1245,14 +1435,37 @@ class ResellerBotManager {
       customName?: string
     ) => {
       const botCfg = seller.sellerBot || ({} as SellerBotConfig);
-      const { wholesalePrice, retailPrice } = this.getProductPricesForSeller(seller, product);
+      const { wholesalePrice, retailPrice: baseRetailPrice } = this.getProductPricesForSeller(seller, product);
       const buyerRecord = (botCfg.buyers || []).find(b => b.chatId === buyerChatId);
       const buyerBalance = buyerRecord?.balance || 0;
       const sessionKey = getSessionKey(buyerChatId);
+      const existingSession = this.userSessionStates.get(sessionKey);
+      const appliedCouponCode = existingSession?.data?.appliedCouponCode as string | undefined;
 
-      // If buyer has enough balance in Bot 2 wallet, fulfill immediately!
-      if (buyerBalance >= retailPrice && retailPrice > 0) {
-        if (buyerRecord) {
+      let retailPrice = baseRetailPrice;
+      let appliedDiscountPct = 0;
+
+      if (appliedCouponCode && Array.isArray(botCfg.coupons)) {
+        const matchedCoupon = botCfg.coupons.find(
+          c => c.code.toUpperCase() === appliedCouponCode.toUpperCase() && (c.discountPercent || 0) > 0
+        );
+        if (
+          matchedCoupon &&
+          (matchedCoupon.usedCount || 0) < (matchedCoupon.maxUsage || 100000) &&
+          !(matchedCoupon.usedBy && matchedCoupon.usedBy[String(buyerChatId)])
+        ) {
+          appliedDiscountPct = Math.min(100, Math.max(0, Number(matchedCoupon.discountPercent) || 0));
+          retailPrice = Math.max(0, Math.round(baseRetailPrice * (1 - appliedDiscountPct / 100)));
+          matchedCoupon.usedCount = (matchedCoupon.usedCount || 0) + 1;
+          if (!matchedCoupon.usedBy) matchedCoupon.usedBy = {};
+          matchedCoupon.usedBy[String(buyerChatId)] = 1;
+          db.saveUser(seller);
+        }
+      }
+
+      // If buyer has enough balance in Bot 2 wallet (or 100% coupon makes retailPrice === 0), fulfill immediately!
+      if ((buyerBalance >= retailPrice && retailPrice > 0) || (retailPrice === 0 && appliedDiscountPct === 100)) {
+        if (buyerRecord && retailPrice > 0) {
           buyerRecord.balance = Math.max(0, buyerBalance - retailPrice);
         }
         const orderId = `ord_${Date.now()}_${Math.floor(100 + Math.random() * 899)}`;
@@ -1371,16 +1584,29 @@ class ResellerBotManager {
         const targetAdminChatId = botCfg.adminChatId ? Number(botCfg.adminChatId) : sellerChatId;
         const isUserAdmin = buyerChatId === targetAdminChatId || buyerChatId === sellerChatId;
 
-        // Track buyer in reseller's buyers list
+        // Track buyer in reseller's buyers list & parse /start referral payload
         if (!botCfg.buyers) botCfg.buyers = [];
         let buyerRecord = botCfg.buyers.find(b => b.chatId === buyerChatId);
+        let parsedRefId: number | undefined;
+        if (text.startsWith('/start')) {
+          const rawParam = text.replace(/^\/start\s*/i, '').replace(/^ref_/i, '').trim();
+          const numRef = parseInt(rawParam, 10);
+          if (!isNaN(numRef) && numRef > 0 && numRef !== buyerChatId) {
+            parsedRefId = numRef;
+          }
+        }
+
         if (!buyerRecord) {
           buyerRecord = {
             chatId: buyerChatId,
             username: msg.from.username || '',
             name: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || 'کاربر',
             joinedAt: new Date().toISOString(),
-            balance: 0
+            balance: 0,
+            referredBy: parsedRefId,
+            referralRewarded: false,
+            referralCount: 0,
+            referralEarnings: 0
           };
           botCfg.buyers.push(buyerRecord);
           db.saveUser(seller);
@@ -1398,6 +1624,11 @@ class ResellerBotManager {
           }
           const isJoined = await checkBuyerForceJoin(buyerChatId, seller);
           if (!isJoined) return;
+        }
+
+        // Process referral reward once buyer has passed Force Join
+        if (buyerRecord.referredBy && !buyerRecord.referralRewarded) {
+          await processPendingReferralReward(buyerChatId, seller);
         }
 
         const effectiveBotName = this.getEffectiveBotName(seller);
@@ -1597,6 +1828,13 @@ class ResellerBotManager {
           return;
         }
 
+        // Handle Referral Menu
+        if (text === '🔗 زیرمجموعه‌گیری' || text === '🎁 زیرمجموعه‌گیری') {
+          this.userSessionStates.delete(sessionKey);
+          await sendBuyerReferralMenu(buyerChatId, seller);
+          return;
+        }
+
         // Handle Profile & Balance
         if (text === '👤 پروفایل و موجودی') {
           this.userSessionStates.delete(sessionKey);
@@ -1608,14 +1846,19 @@ class ResellerBotManager {
             `🆔 <b>شناسه عددی شما:</b> <code>${buyerChatId}</code>\n` +
             `👤 <b>نام:</b> ${escapeHtml(buyerRecord.name || 'کاربر')}\n` +
             `💰 <b>موجودی کیف پول:</b> <b>${(buyerRecord.balance || 0).toLocaleString()} تومان</b>\n` +
-            `📦 <b>تعداد سرویس‌های خریداری‌شده:</b> <b>${myApprovedOrders.length} عدد</b>\n\n` +
-            `شما می‌توانید از طریق دکمه زیر موجودی کیف پول خود را شارژ نمایید تا خرید و تمدید سرویس‌های شما به صورت آنی و خودکار انجام شود:`;
+            `📦 <b>تعداد سرویس‌های خریداری‌شده:</b> <b>${myApprovedOrders.length} عدد</b>\n` +
+            `👥 <b>زیرمجموعه‌های دعوت‌شده:</b> <b>${(buyerRecord.referralCount || 0).toLocaleString()} نفر</b>\n\n` +
+            `شما می‌توانید از طریق دکمه‌های زیر موجودی کیف پول خود را شارژ نمایید، کد هدیه ثبت کنید یا لینک دعوت دریافت نمایید:`;
 
           await bot.sendMessage(buyerChatId, profileMsg, {
             parse_mode: 'HTML',
             reply_markup: {
               inline_keyboard: [
                 [{ text: '💳 افزایش موجودی کیف پول (کارت به کارت)', callback_data: 'buyer_deposit_start', style: 'success' }],
+                [
+                  { text: '🎁 ثبت کد هدیه / تخفیف', callback_data: 'buyer_redeem_gift_code', style: 'success' },
+                  { text: '🔗 زیرمجموعه‌گیری', callback_data: 'buyer_referral_menu', style: 'primary' }
+                ],
                 [{ text: '📋 مشاهده سرویس‌های من', callback_data: 'my_services_list', style: 'primary' }]
               ]
             }
@@ -1982,6 +2225,197 @@ class ResellerBotManager {
             }
             return;
           }
+          if (session.action === 'admin_set_referral_reward') {
+            const parsed = parseAmountInput(text);
+            if (parsed === null || parsed < 0) {
+              await bot.sendMessage(buyerChatId, '❌ لطفاً مبلغ پاداش هر زیرمجموعه را به تومان وارد کنید (مثلاً 5000 یا 0 برای غیرفعال‌سازی):');
+              return;
+            }
+            botCfg.referralRewardToman = parsed;
+            db.saveUser(seller);
+            this.userSessionStates.delete(sessionKey);
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ پاداش زیرمجموعه‌گیری ربات شما روی <b>${parsed > 0 ? `${parsed.toLocaleString()} تومان` : 'غیرفعال (۰ تومان)'}</b> تنظیم گردید.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+            await sendAdminReferralSettingsMenu(buyerChatId, seller);
+            return;
+          }
+
+          if (session.action === 'admin_create_discount_coupon' || session.action === 'admin_create_gift_coupon') {
+            const isGift = session.action === 'admin_create_gift_coupon';
+            const parts = text.split(/[,\s|]+/).map(s => s.trim()).filter(Boolean);
+            if (parts.length < 2) {
+              await bot.sendMessage(
+                buyerChatId,
+                isGift
+                  ? '❌ فرمت وارد شده صحیح نیست. لطفاً کد، مبلغ هدیه و تعداد مجاز را با فاصله بفرستید.\nمثال: <code>GIFT10 10000 50</code>'
+                  : '❌ فرمت وارد شده صحیح نیست. لطفاً کد، درصد تخفیف و تعداد مجاز را با فاصله بفرستید.\nمثال: <code>OFF20 20 100</code>',
+                { parse_mode: 'HTML' }
+              );
+              return;
+            }
+            const code = parts[0].toUpperCase();
+            const val = parseAmountInput(parts[1]) ?? parseInt(parts[1], 10);
+            const maxUsage = parts[2] ? (parseInt(parts[2], 10) || 100) : 100;
+
+            if (!code || isNaN(val) || val <= 0 || (!isGift && val > 100)) {
+              await bot.sendMessage(
+                buyerChatId,
+                isGift
+                  ? '❌ مبلغ هدیه باید عددی بزرگتر از صفر باشد.'
+                  : '❌ درصد تخفیف باید عددی بین 1 تا 100 باشد.'
+              );
+              return;
+            }
+
+            if (!botCfg.coupons) botCfg.coupons = [];
+            botCfg.coupons = botCfg.coupons.filter(c => c.code.toUpperCase() !== code);
+            botCfg.coupons.push({
+              code,
+              discountPercent: isGift ? 0 : val,
+              giftAmount: isGift ? val : 0,
+              maxUsage,
+              usedCount: 0,
+              usedBy: {}
+            });
+            db.saveUser(seller);
+            this.userSessionStates.delete(sessionKey);
+
+            await bot.sendMessage(
+              buyerChatId,
+              isGift
+                ? `✅ <b>کد هدیه <code>${escapeHtml(code)}</code> به مبلغ ${val.toLocaleString()} تومان (ظرفیت: ${maxUsage} بار) با موفقیت ساخته شد!</b>`
+                : `✅ <b>کد تخفیف <code>${escapeHtml(code)}</code> با ${val}% تخفیف خرید (ظرفیت: ${maxUsage} بار) با موفقیت ساخته شد!</b>`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+            await sendAdminCouponsMenu(buyerChatId, seller);
+            return;
+          }
+        }
+
+        // 1.5 Buyer Session: Entering Gift Code or Product Discount Coupon
+        if (session && session.action === 'buyer_enter_gift_code') {
+          const codeInput = text.trim().toUpperCase();
+          this.userSessionStates.delete(sessionKey);
+          const coupons = botCfg.coupons || [];
+          const found = coupons.find(c => c.code.toUpperCase() === codeInput);
+          if (!found) {
+            await bot.sendMessage(buyerChatId, '❌ کد وارد شده معتبر نیست یا منقضی شده است.', {
+              reply_markup: getMainKeyboard(seller, isUserAdmin)
+            });
+            return;
+          }
+          if ((found.usedCount || 0) >= (found.maxUsage || 100000)) {
+            await bot.sendMessage(buyerChatId, '❌ ظرفیت استفاده از این کد به پایان رسیده است.', {
+              reply_markup: getMainKeyboard(seller, isUserAdmin)
+            });
+            return;
+          }
+          if (found.usedBy && found.usedBy[String(buyerChatId)]) {
+            await bot.sendMessage(buyerChatId, '⚠️ شما قبلاً از این کد استفاده کرده‌اید.', {
+              reply_markup: getMainKeyboard(seller, isUserAdmin)
+            });
+            return;
+          }
+
+          if (found.giftAmount && found.giftAmount > 0) {
+            buyerRecord.balance = (buyerRecord.balance || 0) + found.giftAmount;
+            found.usedCount = (found.usedCount || 0) + 1;
+            if (!found.usedBy) found.usedBy = {};
+            found.usedBy[String(buyerChatId)] = 1;
+            db.saveUser(seller);
+            await bot.sendMessage(
+              buyerChatId,
+              `🎉 <b>تبریک! کد هدیه <code>${escapeHtml(found.code)}</code> با موفقیت اعمال شد!</b>\n\n` +
+                `🎁 مبلغ هدیه: <b>${found.giftAmount.toLocaleString()} تومان</b>\n` +
+                `💰 موجودی جدید کیف پول شما: <b>${(buyerRecord.balance || 0).toLocaleString()} تومان</b>`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, isUserAdmin) }
+            );
+            return;
+          } else if (found.discountPercent && found.discountPercent > 0) {
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ کد <code>${escapeHtml(found.code)}</code> شامل <b>${found.discountPercent}% تخفیف خرید سرویس</b> است!\n` +
+                `لطفاً از منوی «🛒 خرید سرویس» محصول مورد نظر خود را انتخاب کرده و روی دکمه <b>«🎫 ثبت کد تخفیف روی این خرید»</b> کلیک نمایید.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, isUserAdmin) }
+            );
+            return;
+          }
+        }
+
+        if (session && session.action === 'buyer_enter_prod_coupon' && session.data?.productId) {
+          const prodId = session.data.productId;
+          const codeInput = text.trim().toUpperCase();
+          const product = getAvailableProductsForReseller(seller).find(p => p.id === prodId);
+          if (!product) {
+            this.userSessionStates.delete(sessionKey);
+            await bot.sendMessage(buyerChatId, '❌ محصول یافت نشد.', {
+              reply_markup: getMainKeyboard(seller, isUserAdmin)
+            });
+            return;
+          }
+
+          const coupons = botCfg.coupons || [];
+          const found = coupons.find(c => c.code.toUpperCase() === codeInput && (c.discountPercent || 0) > 0);
+          if (!found) {
+            await bot.sendMessage(buyerChatId, '❌ کد تخفیف وارد شده معتبر نیست. لطفاً مجدداً بررسی کنید یا از دکمه بازگشت استفاده نمایید:');
+            return;
+          }
+          if ((found.usedCount || 0) >= (found.maxUsage || 100000)) {
+            await bot.sendMessage(buyerChatId, '❌ ظرفیت استفاده از این کد تخفیف تمام شده است.');
+            return;
+          }
+          if (found.usedBy && found.usedBy[String(buyerChatId)]) {
+            await bot.sendMessage(buyerChatId, '⚠️ شما قبلاً از این کد تخفیف استفاده کرده‌اید.');
+            return;
+          }
+
+          const { retailPrice: origRetail } = this.getProductPricesForSeller(seller, product);
+          const discPct = Math.min(100, Math.max(0, Number(found.discountPercent) || 0));
+          const discountedPrice = Math.max(0, Math.round(origRetail * (1 - discPct / 100)));
+          const buyerBal = buyerRecord.balance || 0;
+
+          this.userSessionStates.set(sessionKey, {
+            action: 'coupon_ready',
+            data: { productId: product.id, appliedCouponCode: found.code }
+          });
+
+          const detailMsg =
+            `🎉 <b>کد تخفیف <code>${escapeHtml(found.code)}</code> (${discPct}%) اعمال شد!</b>\n\n` +
+            `📦 <b>نام سرویس:</b> ${escapeHtml(product.name)}\n` +
+            `📊 <b>حجم ترافیک:</b> ${product.volumeGb} گیگابایت\n` +
+            `💰 <b>قیمت اصلی:</b> <s>${origRetail.toLocaleString()} تومان</s>\n` +
+            `🟢 <b>قیمت با تخفیف ویژه:</b> <b>${discountedPrice.toLocaleString()} تومان</b>\n` +
+            `👛 <b>موجودی کیف پول شما:</b> ${buyerBal.toLocaleString()} تومان\n\n` +
+            `اکنون جهت تکمیل خرید با قیمت تخفیف‌خورده، یکی از دکمه‌های زیر را انتخاب نمایید:`;
+
+          await bot.sendMessage(buyerChatId, detailMsg, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text:
+                      buyerBal >= discountedPrice || discountedPrice === 0
+                        ? '⚡ خرید آنی با تخفیف (نام خودکار)'
+                        : '🛒 تایید خرید با تخفیف و دریافت کارت (نام خودکار)',
+                    callback_data: `confirm_buy_${product.id}`,
+                    style: 'success'
+                  }
+                ],
+                [
+                  {
+                    text: '✏️ انتخاب نام دلخواه برای کانفیگ (با تخفیف)',
+                    callback_data: `custom_name_prod_${product.id}`,
+                    style: 'primary'
+                  }
+                ]
+              ]
+            }
+          });
+          return;
         }
 
         // 2. Buyer Session: Entering custom config name
@@ -2351,6 +2785,9 @@ class ResellerBotManager {
             await bot.deleteMessage(buyerChatId, msgId).catch(() => {});
             const effectiveBotName = this.getEffectiveBotName(seller);
             const buyerRec = (botCfg.buyers || []).find(b => b.chatId === buyerChatId);
+            if (buyerRec?.referredBy && !buyerRec.referralRewarded) {
+              await processPendingReferralReward(buyerChatId, seller);
+            }
             const customWelcome = (botCfg.welcomeMessage || '').trim();
             const welcome = customWelcome
               ? `${customWelcome}\n\n🆔 شناسه کاربری شما: <code>${buyerChatId}</code>\n💰 موجودی کیف پول: <b>${(buyerRec?.balance || 0).toLocaleString()} تومان</b>`
@@ -2505,6 +2942,13 @@ class ResellerBotManager {
             ],
             [
               {
+                text: '🎫 ثبت کد تخفیف روی این خرید',
+                callback_data: `apply_coupon_prod_${product.id}`,
+                style: 'primary'
+              }
+            ],
+            [
+              {
                 text: '🔙 بازگشت به لیست محصولات',
                 callback_data: backCallback,
                 style: 'danger'
@@ -2526,12 +2970,34 @@ class ResellerBotManager {
           return;
         }
 
+        if (data.startsWith('apply_coupon_prod_')) {
+          const prodId = data.replace('apply_coupon_prod_', '');
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, {
+            action: 'buyer_enter_prod_coupon',
+            data: { productId: prodId }
+          });
+          await bot.sendMessage(
+            buyerChatId,
+            `🎫 لطفاً <b>کد تخفیف</b> خود را ارسال نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
         if (data.startsWith('custom_name_prod_')) {
           const prodId = data.replace('custom_name_prod_', '');
           await bot.answerCallbackQuery(query.id).catch(() => {});
+          const prevCoupon = this.userSessionStates.get(sessionKey)?.data?.appliedCouponCode;
           this.userSessionStates.set(sessionKey, {
             action: 'awaiting_custom_name',
-            data: { productId: prodId }
+            data: { productId: prodId, appliedCouponCode: prevCoupon }
           });
           await bot.sendMessage(
             buyerChatId,
@@ -2565,6 +3031,29 @@ class ResellerBotManager {
         if (data === 'my_services_list' || data === 'user_purchases_list') {
           await bot.answerCallbackQuery(query.id).catch(() => {});
           await sendMyServicesList(buyerChatId, seller);
+          return;
+        }
+
+        if (data === 'buyer_referral_menu') {
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          await sendBuyerReferralMenu(buyerChatId, seller);
+          return;
+        }
+
+        if (data === 'buyer_redeem_gift_code') {
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'buyer_enter_gift_code' });
+          await bot.sendMessage(
+            buyerChatId,
+            `🎁 لطفاً <b>کد هدیه</b> یا <b>کد تخفیف</b> خود را ارسال نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
           return;
         }
 
@@ -2944,6 +3433,106 @@ class ResellerBotManager {
             await bot.answerCallbackQuery(query.id, { text: '🗑 کانال حذف شد.' }).catch(() => {});
           }
           await sendForceJoinMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_referral_settings') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          await sendAdminReferralSettingsMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data.startsWith('admin_ref_preset_')) {
+          if (!isFromAdmin) return;
+          const amount = parseInt(data.replace('admin_ref_preset_', ''), 10);
+          if (!isNaN(amount) && amount >= 0) {
+            botCfg.referralRewardToman = amount;
+            db.saveUser(seller);
+            await bot.answerCallbackQuery(query.id, {
+              text: amount > 0 ? `✅ پاداش زیرمجموعه‌گیری روی ${amount.toLocaleString()} تومان تنظیم شد.` : '🔴 پاداش زیرمجموعه‌گیری غیرفعال شد.'
+            }).catch(() => {});
+          }
+          await sendAdminReferralSettingsMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_ref_custom_input') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'admin_set_referral_reward' });
+          await bot.sendMessage(
+            buyerChatId,
+            `🎁 لطفاً مبلغ پاداش معرفی هر زیرمجموعه را به <b>تومان</b> وارد نمایید (مثلاً <code>5000</code> یا برای غیرفعال‌سازی <code>0</code>):`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
+        if (data === 'admin_coupons_menu') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          await sendAdminCouponsMenu(buyerChatId, seller, msgId);
+          return;
+        }
+
+        if (data === 'admin_add_discount_coupon') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'admin_create_discount_coupon' });
+          await bot.sendMessage(
+            buyerChatId,
+            `🏷 <b>ساخت کد تخفیف درصدی خرید برای مشتریان ربات شما:</b>\n\n` +
+              `لطفاً <b>نام کد</b>، <b>درصد تخفیف (۱ تا ۱۰۰)</b> و <b>تعداد دفعات مجاز</b> را با فاصله ارسال نمایید:\n\n` +
+              `📌 مثال (کد OFF20 با ۲۰٪ تخفیف برای ۱۰۰ نفر):\n` +
+              `<code>OFF20 20 100</code>`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
+        if (data === 'admin_add_gift_coupon') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'admin_create_gift_coupon' });
+          await bot.sendMessage(
+            buyerChatId,
+            `🎁 <b>ساخت کد هدیه شارژ کیف پول برای مشتریان ربات شما:</b>\n\n` +
+              `لطفاً <b>نام کد</b>، <b>مبلغ هدیه (تومان)</b> و <b>تعداد دفعات مجاز</b> را با فاصله ارسال نمایید:\n\n` +
+              `📌 مثال (کد GIFT10 به مبلغ ۱۰,۰۰۰ تومان برای ۵۰ نفر):\n` +
+              `<code>GIFT10 10000 50</code>`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
+
+        if (data.startsWith('admin_del_coupon_')) {
+          if (!isFromAdmin) return;
+          const idx = parseInt(data.replace('admin_del_coupon_', ''), 10);
+          if (Array.isArray(botCfg.coupons) && !isNaN(idx) && idx >= 0 && idx < botCfg.coupons.length) {
+            botCfg.coupons.splice(idx, 1);
+            db.saveUser(seller);
+            await bot.answerCallbackQuery(query.id, { text: '🗑 کد حذف شد.' }).catch(() => {});
+          }
+          await sendAdminCouponsMenu(buyerChatId, seller, msgId);
           return;
         }
 

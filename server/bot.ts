@@ -10,8 +10,8 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import QRCode from 'qrcode';
-import { getTehranShamsiDayRange, isTimestampInShamsiDay, getUserAccountingReport } from './accounting.js';
-import { generateUserStatementPdf, parseShamsiDateToTimestamp, PdfRangeOptions } from './pdfGenerator.js';
+import { getTehranShamsiDayRange, isTimestampInShamsiDay, getUserAccountingReport, formatShamsiDate } from './accounting.js';
+import { generateUserStatementPdf, parseShamsiDateToTimestamp, extractShamsiDateRange, PdfRangeOptions } from './pdfGenerator.js';
 import * as jalaali from 'jalaali-js';
 
 function escapeHtml(text: string): string {
@@ -509,26 +509,28 @@ function getProductButtonText(user: any, p: any): string {
     else if (p.panelType === 'mrocean') badge = '🌊 ';
     else if (p.panelType === 'rebecca') badge = '🟣 ';
     else if (p.panelType === 'sanaei') badge = '🔵 ';
-    
+    else badge = '🟢 ';
+
     const priceNum = Number(p.price) || 0;
     const pName = p.name || 'محصول';
+    const cleanBadge = /^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(pName) ? '' : badge;
 
     // Hide prices in bot if user has enabled discreet face-to-face selling mode
     if (user && user.hidePricesInBot) {
       const volInfo = isPayG ? 'مصرف آزاد' : (p.volumeGb ? `${p.volumeGb} GB` : 'نامحدود');
       const durInfo = isPayG ? 'نامحدود' : (p.durationDays ? `${p.durationDays} روز` : 'نامحدود');
-      return `📦 ${badge}${pName} (${volInfo} | ${durInfo}) [انتخاب]`;
+      return `${cleanBadge}${pName} (${volInfo} | ${durInfo}) [انتخاب]`;
     }
 
     if (user && user.isSeller) {
       const sellerDiscount = getSellerDiscountForProduct(user, p);
       if (sellerDiscount > 0) {
         const finalPrice = Math.max(0, Math.round(priceNum * (1 - sellerDiscount / 100)));
-        return `🎁 ${badge}${pName} - ${finalPrice.toLocaleString()} (${sellerDiscount}٪ تخفیف) ${unit}`;
+        return `🎁 ${cleanBadge}${pName} - ${finalPrice.toLocaleString()} (${sellerDiscount}٪ تخفیف) ${unit}`;
       }
     }
 
-    return `${badge}${pName} - ${priceNum.toLocaleString()} ${unit}`;
+    return `${cleanBadge}${pName} - ${priceNum.toLocaleString()} ${unit}`;
   } catch (e) {
     return (p && p.name) ? String(p.name) : 'محصول';
   }
@@ -1478,8 +1480,9 @@ export function inferGlassButtonStyle(btn: any): 'primary' | 'success' | 'danger
   }
 
   if (
-    /خرید|تایید|تمدید|شارژ|افزایش موجودی|پرداخت|سفارش|حجم دلخواه|تومان|رایگان|بله|فروش|🛒|✅|♻️|⚡|💳|🎁|🌊|🔵|🟣|🔸|💎/.test(text) ||
-    /^(buy_|select_prod_|confirm_|approve_|renew_|seller_cvol|open_cvol|enable)/.test(cb)
+    /خرید|تایید|تمدید|شارژ|افزایش موجودی|پرداخت|سفارش|حجم دلخواه|تومان|رایگان|بله|فروش|🛒|✅|♻️|⚡|💳|🎁|🌊|🔵|🟣|🔸|💎|🟢|📂|📁|🛍/.test(text) ||
+    /^(buy_|select_prod_|confirm_|approve_|renew_|seller_cvol|open_cvol|enable|show_category_|cat_)/.test(cb) ||
+    cb.includes('cat_') || cb.includes('category')
   ) {
     return 'success';
   }
@@ -1534,6 +1537,23 @@ export function enhanceBotForSpeedAndColoredButtons(botInstance: TelegramBot) {
     return origEditMessageText(text, colorizeReplyMarkup(options));
   }) as any;
 
+  const origEditMessageReplyMarkup = botInstance.editMessageReplyMarkup.bind(botInstance);
+  botInstance.editMessageReplyMarkup = ((replyMarkup: any, options?: any) => {
+    if (replyMarkup && typeof replyMarkup === 'object' && Array.isArray(replyMarkup.inline_keyboard)) {
+      replyMarkup.inline_keyboard = replyMarkup.inline_keyboard.map((row: any) =>
+        Array.isArray(row)
+          ? row.map((btn: any) => {
+              if (btn && typeof btn === 'object' && !btn.style) {
+                return { ...btn, style: inferGlassButtonStyle(btn) };
+              }
+              return btn;
+            })
+          : row
+      );
+    }
+    return origEditMessageReplyMarkup(replyMarkup, options);
+  }) as any;
+
   const origSendPhoto = botInstance.sendPhoto.bind(botInstance);
   botInstance.sendPhoto = ((chatId: any, photo: any, options?: any, fileOptions?: any) => {
     return origSendPhoto(chatId, photo, colorizeReplyMarkup(options), fileOptions);
@@ -1545,17 +1565,38 @@ export function enhanceBotForSpeedAndColoredButtons(botInstance: TelegramBot) {
   }) as any;
 }
 
+export function isValidTelegramBotToken(token?: string | null): boolean {
+  if (!token || typeof token !== 'string') return false;
+  const trimmed = token.trim();
+  if (trimmed.length < 35 || trimmed.length > 80) return false;
+  if (!/^\d{8,12}:[A-Za-z0-9_-]{32,}$/.test(trimmed)) return false;
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.includes('123456789:abc') ||
+    lower.includes('123456:') ||
+    lower.includes('23456789') ||
+    lower.includes('000000000:') ||
+    lower.includes('your_bot') ||
+    lower.includes('telegram_bot') ||
+    lower.includes('xxxxxxxx')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export async function initBot() {
   clearAllActiveIntervals();
   const state = db.getState();
   const rawToken = (
-    state.botToken && !state.botToken.startsWith('123456789:ABC') 
+    isValidTelegramBotToken(state.botToken)
       ? state.botToken 
-      : (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || state.botToken || '')
+      : (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || (isValidTelegramBotToken(state.botToken) ? state.botToken : ''))
   ).trim();
 
-  if (!rawToken || !rawToken.includes(':') || rawToken.length < 20) {
-    console.log('[Bot] No valid Bot Token configured. Bot not started.');
+  if (!isValidTelegramBotToken(rawToken)) {
+    console.log('[Bot] No valid Bot Token configured (token is empty, placeholder, or invalid). Polling suspended until configured in Admin Panel.');
     return;
   }
 
@@ -1607,7 +1648,17 @@ export async function initBot() {
       if (me?.username) cachedMainBotUsername = me.username;
       console.log(`[Bot] Successfully connected & verified as @${me.username} (${me.first_name})`);
     }).catch((verr: any) => {
-      console.warn(`[Bot Warning] getMe check returned: ${verr.message || verr}. Polling is active and waiting for connection.`);
+      const vMsg = verr?.message || String(verr);
+      if (vMsg.includes('401') || vMsg.includes('Unauthorized') || vMsg.includes('404')) {
+        console.warn(`[Bot Warning] Token invalid or revoked by Telegram (401 Unauthorized). Stopping polling.`);
+        if (bot && typeof bot.stopPolling === 'function') {
+          bot.stopPolling().catch(() => {});
+        }
+        bot = null;
+        isPolling = false;
+      } else {
+        console.warn(`[Bot Warning] getMe check returned: ${vMsg}. Polling is active.`);
+      }
     });
 
     // Attach crucial error listeners to avoid crashing or unhandled rejections
@@ -2029,24 +2080,25 @@ export async function initBot() {
     }
 
     try {
-      // Safe non-blocking fetch of live panel data
+      // Safe non-blocking fetch of live panel data across ALL panels
       let allClientsArray: any[] = [];
       try {
         allClientsArray = await Promise.race([
-          xui.getAllClientsWithTraffic(),
-          new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 2500))
+          multiPanel.getAllClientsWithTraffic(),
+          new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 3500))
         ]).catch(() => [] as any[]);
       } catch (e) {
         allClientsArray = [];
       }
 
-      const purchases = (targetUser.purchases || []).filter((p: any) => !p.isDeleted);
+      const purchases = (targetUser.purchases || []).filter((p: any) => !p.isDeleted || p.isCancelled);
       let userChanged = false;
 
       // Auto-credit positive balance towards seller debt if seller
       if (targetUser.isSeller && (targetUser.balance || 0) > 0) {
-        targetUser.totalPayments = (targetUser.totalPayments || 0) + targetUser.balance;
-        targetUser.debt = Math.max(0, (targetUser.debt || 0) - targetUser.balance);
+        const creditBal = targetUser.balance || 0;
+        targetUser.totalPayments = (targetUser.totalPayments || 0) + creditBal;
+        targetUser.debt = Math.max(0, (targetUser.debt || 0) - creditBal);
         targetUser.balance = 0;
         userChanged = true;
       }
@@ -2057,9 +2109,7 @@ export async function initBot() {
       let totalOriginalPrice = 0;
       let totalFinalPrice = 0;
       let totalDiscounts = 0;
-      let totalPaygActiveDebt = 0;
-      let totalPaygSettledFin = 0;
-      let totalFixedFin = 0;
+      let newlyBilledPaygDelta = 0;
       let paygDetailsList: string[] = [];
 
       // Time filters
@@ -2084,7 +2134,8 @@ export async function initBot() {
       const enrichedPurchases: EnrichedPurchase[] = [];
 
       purchases.forEach((p: any) => {
-        const pVol = p.volumeGb || 0;
+        const isCancelled = !!p.isCancelled;
+        const pVol = isCancelled ? (Number(p.cancellationUsedGb) || 0) : (p.volumeGb || 0);
         totalAllocatedGb += pVol;
 
         const clientObj = Array.isArray(allClientsArray) ? allClientsArray.find(cl =>
@@ -2097,10 +2148,6 @@ export async function initBot() {
         if (clientObj) {
           currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
           totalUsedBytes += currentUsed;
-          if (currentUsed > (p.lastUsedBytes || 0)) {
-            p.lastUsedBytes = currentUsed;
-            userChanged = true;
-          }
         } else {
           currentUsed = (p.lastUsedBytes || 0);
           totalUsedBytes += currentUsed;
@@ -2109,16 +2156,35 @@ export async function initBot() {
         let orig = 0;
         let fin = 0;
 
-        if (p.isPayAsYouGo) {
+        if (isCancelled) {
+          orig = Number(p.cancellationCost) || 0;
+          fin = orig;
+        } else if (p.isPayAsYouGo) {
           const baseSettled = p.baseSettledBytes || 0;
-          const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
-          const billableBytes = Math.max(0, currentUsed - effectiveBase);
-          const billableGb = billableBytes / (1024 * 1024 * 1024);
-          const settledGb = effectiveBase / (1024 * 1024 * 1024);
+          const prevLastUsed = p.lastUsedBytes || 0;
+          const effectiveLastUsed = Math.max(baseSettled, prevLastUsed);
 
           const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
           const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(targetUser, p);
           const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+
+          if (currentUsed > effectiveLastUsed) {
+            const deltaBytes = currentUsed - effectiveLastUsed;
+            const deltaGb = deltaBytes / (1024 * 1024 * 1024);
+            const deltaCost = Math.ceil(deltaGb * discountedPricePerGb);
+            if (deltaCost > 0) {
+              newlyBilledPaygDelta += deltaCost;
+            }
+          }
+          if (currentUsed > prevLastUsed) {
+            p.lastUsedBytes = currentUsed;
+            userChanged = true;
+          }
+
+          const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
+          const billableBytes = Math.max(0, currentUsed - effectiveBase);
+          const billableGb = billableBytes / (1024 * 1024 * 1024);
+          const settledGb = effectiveBase / (1024 * 1024 * 1024);
 
           const settledOrig = Math.ceil(settledGb * rawPricePerGb);
           const settledFin = Math.ceil(settledGb * discountedPricePerGb);
@@ -2129,18 +2195,18 @@ export async function initBot() {
           orig = settledOrig + currentOrig;
           fin = settledFin + currentFin;
 
-          totalPaygActiveDebt += currentFin;
-          totalPaygSettledFin += settledFin;
-
           const configName = p.name || p.id || 'سرویس مصرف آزاد';
-          paygDetailsList.push(`▫️ <b>${escapeHtml(configName)}</b>:\n   کل مصرف: ${((currentUsed)/(1024*1024*1024)).toFixed(2)} GB | تسویه شده: ${(settledGb).toFixed(2)} GB | محاسبه جدید: <b>${(billableGb).toFixed(2)} GB</b> (<b>${currentFin.toLocaleString()}</b> ت)`);
+          paygDetailsList.push(`▫️ <b>${escapeHtml(configName)}</b>:\n   کل مصرف: ${((currentUsed)/(1024*1024*1024)).toFixed(2)} GB | تسویه شده: ${(settledGb).toFixed(2)} GB | مصرف دوره جاری: <b>${(billableGb).toFixed(2)} GB</b> (<b>${currentFin.toLocaleString()}</b> ت)`);
         } else {
+          if (currentUsed > (p.lastUsedBytes || 0)) {
+            p.lastUsedBytes = currentUsed;
+            userChanged = true;
+          }
           orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
           fin = p.price !== undefined ? p.price : 0;
           if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
             orig = Math.round(fin / (1 - p.discountPercent / 100));
           }
-          totalFixedFin += fin;
         }
 
         if (orig < fin) orig = fin;
@@ -2176,29 +2242,18 @@ export async function initBot() {
       enrichedPurchases.sort((a, b) => a.createdTime - b.createdTime);
 
       if (targetUser.isSeller) {
+        if (newlyBilledPaygDelta > 0) {
+          targetUser.debt = Math.max(0, (targetUser.debt || 0) + newlyBilledPaygDelta);
+          userChanged = true;
+        }
         if (targetUser.totalSales !== totalFinalPrice) {
           targetUser.totalSales = totalFinalPrice;
           userChanged = true;
         }
-
-        const recordedPayments = targetUser.totalPayments || 0;
-        const paymentsForFixed = Math.max(0, recordedPayments - totalPaygSettledFin);
-        const activeFixedDebt = Math.max(0, totalFixedFin - paymentsForFixed);
-        const trueActiveDebt = activeFixedDebt + totalPaygActiveDebt;
-
-        let debtVal = trueActiveDebt;
-        if (purchases.length === 0) {
-          debtVal = targetUser.debt || 0;
-        }
-
-        if (targetUser.debt !== debtVal) {
-          targetUser.debt = debtVal;
-          userChanged = true;
-        }
-
-        const totalPayments = Math.max(recordedPayments, totalFinalPrice - debtVal);
-        if (targetUser.totalPayments !== totalPayments) {
-          targetUser.totalPayments = totalPayments;
+        const currentDebtVal = Math.max(0, targetUser.debt || 0);
+        const syncedPayments = Math.max(0, totalFinalPrice - currentDebtVal);
+        if (targetUser.totalPayments !== syncedPayments) {
+          targetUser.totalPayments = syncedPayments;
           userChanged = true;
         }
       }
@@ -2518,7 +2573,17 @@ export async function initBot() {
         ]
       ];
 
-      if (viewMode === 'statement') {
+      if (viewMode === 'daily') {
+        inline_keyboard.push([
+          { text: '📥 دانلود PDF فروش امروز', callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
+          { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
+        ]);
+      } else if (viewMode === 'monthly') {
+        inline_keyboard.push([
+          { text: '📥 دانلود PDF ماهانه (۳۰ روز)', callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` },
+          { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
+        ]);
+      } else {
         inline_keyboard.push([
           { text: '📥 دریافت PDF کامل صورتحساب (همه اسناد)', callback_data: `user_rep_pdf_${targetChatId}` },
           { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
@@ -3618,31 +3683,14 @@ export async function initBot() {
       const targetChatId = userSg.targetChatId || chatId;
       userSession.delete(chatId);
 
-      const parts = text.split(/تا|-|to|\s+/).filter(Boolean);
-      let startMs: number | null = null;
-      let endMs: number | null = null;
-      let rangeLabel = text.trim();
-
-      if (parts.length >= 2) {
-        startMs = parseShamsiDateToTimestamp(parts[0], false);
-        endMs = parseShamsiDateToTimestamp(parts[parts.length - 1], true);
-      } else if (parts.length === 1) {
-        startMs = parseShamsiDateToTimestamp(parts[0], false);
-        endMs = parseShamsiDateToTimestamp(parts[0], true);
-      }
-
-      if (!startMs || !endMs) {
-        bot!.sendMessage(chatId, '❌ فرمت تاریخ شمسی وارد شده معتبر نیست.\nمثال‌های صحیح:\n`1405/07/01 تا 1405/07/15`\n`1405/07/15`', { parse_mode: 'Markdown' });
+      const parsedRange = extractShamsiDateRange(text);
+      if (!parsedRange) {
+        bot!.sendMessage(chatId, '❌ فرمت تاریخ شمسی وارد شده معتبر نیست.\nمثال‌های صحیح:\n`1405/03/01 تا 1405/03/31`\n`1405/07/15`\n`1405/03`', { parse_mode: 'Markdown' });
         return;
       }
 
-      if (startMs > endMs) {
-        const tmp = startMs;
-        startMs = endMs;
-        endMs = tmp;
-      }
-
-      await sendShamsiFilteredReport(chatId, targetChatId, startMs, endMs, rangeLabel);
+      const rangeLabel = `${parsedRange.startDateStr} تا ${parsedRange.endDateStr}`;
+      await sendShamsiFilteredReport(chatId, targetChatId, parsedRange.startMs, parsedRange.endMs, rangeLabel);
       return;
     }
 
@@ -4543,6 +4591,12 @@ export async function initBot() {
                 targetUser.totalPayments = (targetUser.totalPayments || 0) + amount;
                 targetUser.debt = Math.max(0, (targetUser.debt || 0) - amount);
                 applyPaygSettlementToUser(targetUser, amount, targetUser.debt === 0);
+                recordUserTransaction(targetUser, {
+                  type: 'payment',
+                  direction: 'credit',
+                  amount,
+                  description: 'ثبت واریزی / پرداخت بدهی همکار توسط مدیریت'
+                });
                 db.saveUser(targetUser);
                 checkPaygReactivation(targetUser).catch(console.error);
                 bot!.sendMessage(chatId, `✅ مبلغ *${amount.toLocaleString()}* تومان به عنوان واریزی/پرداخت بدهی همکار با موفقیت ثبت شد.\n\n📉 بدهی باقیمانده فعلی: *${(targetUser.debt || 0).toLocaleString()}* تومان\n💳 مجموع کل پرداخت‌ها: *${(targetUser.totalPayments || 0).toLocaleString()}* تومان`, { parse_mode: 'Markdown' });
@@ -4553,6 +4607,12 @@ export async function initBot() {
                 bot!.sendMessage(targetUid, sellerChargeMsg, { parse_mode: 'HTML' }).catch(() => {});
               } else {
                 targetUser.balance = (targetUser.balance || 0) + amount;
+                recordUserTransaction(targetUser, {
+                  type: 'manual_credit',
+                  direction: 'credit',
+                  amount,
+                  description: 'افزایش موجودی کیف پول توسط مدیریت'
+                });
                 db.saveUser(targetUser);
                 checkPaygReactivation(targetUser).catch(console.error);
                 bot!.sendMessage(chatId, `✅ موجودی کاربر با موفقیت مبلغ ${amount.toLocaleString()} تومان افزایش یافت.`);
@@ -4586,10 +4646,22 @@ export async function initBot() {
               if (targetUser.isSeller) {
                 targetUser.totalPayments = Math.max(0, (targetUser.totalPayments || 0) - amount);
                 targetUser.debt = (targetUser.debt || 0) + amount;
+                recordUserTransaction(targetUser, {
+                  type: 'manual_debit',
+                  direction: 'debit',
+                  amount,
+                  description: 'کسر از پرداختی‌ها / افزایش بدهی همکار توسط مدیریت'
+                });
                 db.saveUser(targetUser);
                 bot!.sendMessage(chatId, `✅ مبلغ ${amount.toLocaleString()} تومان از پرداختی‌های همکار کسر شد.\nبدهی جدید: ${(targetUser.debt || 0).toLocaleString()} تومان\nمجموع پرداختی‌ها: ${(targetUser.totalPayments || 0).toLocaleString()} تومان`);
               } else {
                 targetUser.balance = (targetUser.balance || 0) - amount;
+                recordUserTransaction(targetUser, {
+                  type: 'manual_debit',
+                  direction: 'debit',
+                  amount,
+                  description: 'کسر موجودی کیف پول توسط مدیریت'
+                });
                 db.saveUser(targetUser);
                 bot!.sendMessage(chatId, `✅ موجودی کاربر با موفقیت مبلغ ${amount.toLocaleString()} تومان کاهش یافت.`);
               }
@@ -4891,15 +4963,21 @@ export async function initBot() {
             parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
           }
           
+          for (const u of parsed.users) {
+            if (u && u.isSeller && u.sellerBot && u.sellerBot.botToken && isValidTelegramBotToken(u.sellerBot.botToken)) {
+              if (u.sellerBot.enabled === undefined) u.sellerBot.enabled = true;
+            }
+          }
           const dbPath = path.join(process.cwd(), 'db.json');
           fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
           db.updateState(parsed);
           adminSession.delete(chatId);
           
-          bot!.sendMessage(chatId, '✅ <b>بازیابی کامل اطلاعات با موفقیت انجام شد!</b>\nتمامی کاربران، محصولات، تراکنش‌ها، کانکشن پنل‌ها و تنظیمات ربات با موفقیت جایگذاری و دیتابیس همگام شد. 🎉', { parse_mode: 'HTML' });
+          bot!.sendMessage(chatId, '✅ <b>بازیابی کامل اطلاعات با موفقیت انجام شد!</b>\nتمامی کاربران، محصولات، تراکنش‌ها، کانکشن پنل‌ها، تنظیمات ربات اصلی و ربات‌های همکاران با موفقیت جایگذاری و به صورت خودکار راه‌اندازی شدند. 🎉', { parse_mode: 'HTML' });
           
           setTimeout(() => {
             initBot();
+            import('./resellerBotManager.js').then(m => m.resellerBotManager.initAllResellerBots()).catch(console.error);
           }, 1500);
         } catch (err: any) {
           bot!.sendMessage(chatId, `❌ خطا در رمزگشایی و بازیابی فایل: ${err.message}\n\nلطفا مجدداً رمز صحیح را بازنویسی کنید یا فایل بکاپ سالمی ارسال کنید.`);
@@ -5430,11 +5508,19 @@ export async function initBot() {
               parsed.panel4 = { ...currentDbState.panel4, ...parsed.panel4 };
             }
 
+            for (const u of parsed.users) {
+              if (u && u.isSeller && u.sellerBot && u.sellerBot.botToken && isValidTelegramBotToken(u.sellerBot.botToken)) {
+                if (u.sellerBot.enabled === undefined) u.sellerBot.enabled = true;
+              }
+            }
             const dbPath = path.join(process.cwd(), 'db.json');
             fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2), 'utf8');
             db.updateState(parsed);
-            bot!.sendMessage(chatId, '✅ <b>بازیابی کامل اطلاعات با موفقیت انجام شد!</b>\nتمامی تنظیمات، محصولات، اطلاعات پنل و کاربران بدون معطلی بارگذاری و همگام شدند. 🎉', { parse_mode: 'HTML' });
-            setTimeout(() => { initBot(); }, 1500);
+            bot!.sendMessage(chatId, '✅ <b>بازیابی کامل اطلاعات با موفقیت انجام شد!</b>\nتمامی تنظیمات، محصولات، اطلاعات پنل، کاربران و ربات‌های اختصاصی همکاران بدون معطلی بارگذاری و به صورت خودکار فعال شدند. 🎉', { parse_mode: 'HTML' });
+            setTimeout(() => {
+              initBot();
+              import('./resellerBotManager.js').then(m => m.resellerBotManager.initAllResellerBots()).catch(console.error);
+            }, 1500);
             return;
           }
 
@@ -6645,8 +6731,8 @@ export async function initBot() {
       try {
         let options: PdfRangeOptions = {};
         if (startMs && endMs) {
-          const startDateStr = new Date(startMs).toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
-          const endDateStr = new Date(endMs).toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
+          const startDateStr = formatShamsiDate(new Date(startMs));
+          const endDateStr = formatShamsiDate(new Date(endMs));
           options = { startMs, endMs, startDateStr, endDateStr };
         }
 
@@ -6893,6 +6979,14 @@ export async function initBot() {
           applyPaygSettlementToUser(targetUser, settledAmount, true);
           if (targetUser.totalSales) {
             targetUser.totalPayments = targetUser.totalSales;
+          }
+          if (settledAmount > 0) {
+            recordUserTransaction(targetUser, {
+              type: 'settlement',
+              direction: 'credit',
+              amount: settledAmount,
+              description: 'تسویه کامل حساب بدهی همکار توسط مدیریت'
+            });
           }
           db.saveUser(targetUser);
           await checkPaygReactivation(targetUser);
@@ -8545,23 +8639,22 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
       if (user.isSeller) {
         // 1. If seller has any positive balance (e.g. from previously approved deposits), convert to totalPayments & reduce debt
         if ((user.balance || 0) > 0) {
-          user.totalPayments = (user.totalPayments || 0) + user.balance;
-          user.debt = Math.max(0, (user.debt || 0) - user.balance);
+          const creditBal = user.balance || 0;
+          user.totalPayments = (user.totalPayments || 0) + creditBal;
+          user.debt = Math.max(0, (user.debt || 0) - creditBal);
           user.balance = 0;
           userChanged = true;
         }
 
-        // 2. Reconcile all purchases with discounts
-        const purchases = user.purchases || [];
+        // 2. Reconcile active/cancelled purchases with discounts (exclude deleted non-cancelled configs)
+        const purchases = (user.purchases || []).filter((p: any) => !p.isDeleted || p.isCancelled);
         let totalOriginalPrice = 0;
         let totalFinalPrice = 0;
         let totalDiscounts = 0;
-        let totalPaygActiveDebt = 0;
-        let totalPaygSettledFin = 0;
-        let totalFixedFin = 0;
-        let hasPayg = false;
+        let newlyBilledPaygDelta = 0;
 
         for (const p of purchases) {
+          const isCancelled = !!p.isCancelled;
           const clientObj = allClientsArray.find(cl => 
             (cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase()) ||
             (cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase()) ||
@@ -8570,28 +8663,42 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
           let currentUsed = 0;
           if (clientObj) {
             currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
-            if (currentUsed > (p.lastUsedBytes || 0)) {
-              p.lastUsedBytes = currentUsed;
-              userChanged = true;
-            }
           } else {
             currentUsed = (p.lastUsedBytes || 0);
           }
 
-          let orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
-          let fin = p.price !== undefined ? p.price : 0;
+          let orig = 0;
+          let fin = 0;
 
-          if (p.isPayAsYouGo) {
-            hasPayg = true;
+          if (isCancelled) {
+            orig = Number(p.cancellationCost) || 0;
+            fin = orig;
+          } else if (p.isPayAsYouGo) {
             const baseSettled = p.baseSettledBytes || 0;
-            const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
-            const billableBytes = Math.max(0, currentUsed - effectiveBase);
-            const billableGb = billableBytes / (1024 * 1024 * 1024);
-            const settledGb = effectiveBase / (1024 * 1024 * 1024);
+            const prevLastUsed = p.lastUsedBytes || 0;
+            const effectiveLastUsed = Math.max(baseSettled, prevLastUsed);
 
             const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
             const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user, p);
             const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+
+            if (currentUsed > effectiveLastUsed) {
+              const deltaBytes = currentUsed - effectiveLastUsed;
+              const deltaGb = deltaBytes / (1024 * 1024 * 1024);
+              const deltaCost = Math.ceil(deltaGb * discountedPricePerGb);
+              if (deltaCost > 0) {
+                newlyBilledPaygDelta += deltaCost;
+              }
+            }
+            if (currentUsed > prevLastUsed) {
+              p.lastUsedBytes = currentUsed;
+              userChanged = true;
+            }
+
+            const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
+            const billableBytes = Math.max(0, currentUsed - effectiveBase);
+            const billableGb = billableBytes / (1024 * 1024 * 1024);
+            const settledGb = effectiveBase / (1024 * 1024 * 1024);
 
             const settledOrig = Math.ceil(settledGb * rawPricePerGb);
             const settledFin = Math.ceil(settledGb * discountedPricePerGb);
@@ -8601,14 +8708,16 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
 
             orig = settledOrig + currentOrig;
             fin = settledFin + currentFin;
-
-            totalPaygActiveDebt += currentFin;
-            totalPaygSettledFin += settledFin;
           } else {
+            if (currentUsed > (p.lastUsedBytes || 0)) {
+              p.lastUsedBytes = currentUsed;
+              userChanged = true;
+            }
+            orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
+            fin = p.price !== undefined ? p.price : 0;
             if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
               orig = Math.round(fin / (1 - p.discountPercent / 100));
             }
-            totalFixedFin += fin;
           }
 
           if (orig < fin) orig = fin;
@@ -8618,35 +8727,21 @@ export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount
           totalDiscounts += Math.max(0, orig - fin);
         }
 
+        // Only add newly consumed PAYG delta to user.debt — NEVER overwrite manual debt or past settlements!
+        if (newlyBilledPaygDelta > 0) {
+          user.debt = Math.max(0, (user.debt || 0) + newlyBilledPaygDelta);
+          userChanged = true;
+        }
+
         // Reconcile totalSales to equal total final net invoice
         if (user.totalSales !== totalFinalPrice) {
           user.totalSales = totalFinalPrice;
           userChanged = true;
         }
 
-        // Reconcile debt:
-        // 1. Unsettled active PAYG traffic is ALWAYS active debt of the current billing cycle.
-        // 2. Fixed packages: totalFixedFin is the sum of fixed package prices.
-        // 3. Recorded payments: user.totalPayments is total money paid/settled by the seller.
-        // 4. Settled PAYG accounts for totalPaygSettledFin of the recorded payments.
-        // 5. Any payments beyond settled PAYG cover fixed packages.
-        const recordedPayments = user.totalPayments || 0;
-        const paymentsForFixed = Math.max(0, recordedPayments - totalPaygSettledFin);
-        const activeFixedDebt = Math.max(0, totalFixedFin - paymentsForFixed);
-        const trueActiveDebt = activeFixedDebt + totalPaygActiveDebt;
-
-        let correctDebt = trueActiveDebt;
-        if (purchases.length === 0) {
-          correctDebt = user.debt || 0;
-        }
-
-        if (user.debt !== correctDebt) {
-          user.debt = correctDebt;
-          userChanged = true;
-        }
-
         // Reconcile totalPayments so that totalSales - totalPayments = debt
-        const correctPayments = Math.max(recordedPayments, totalFinalPrice - correctDebt);
+        const currentDebt = Math.max(0, user.debt || 0);
+        const correctPayments = Math.max(0, totalFinalPrice - currentDebt);
         if (user.totalPayments !== correctPayments) {
           user.totalPayments = correctPayments;
           userChanged = true;
