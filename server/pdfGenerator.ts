@@ -78,39 +78,48 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
       const fontReg = hasRegularFont ? 'Vazir' : 'Helvetica';
       const fontBold = hasBoldFont ? 'Vazir-Bold' : 'Helvetica-Bold';
 
-      const hasCustomRange = options.startMs !== undefined || options.endMs !== undefined;
-      const effStartMs = options.startMs !== undefined ? options.startMs : 0;
+      const isExplicitRange = (options.startMs !== undefined && options.startMs > 0) || (options.endMs !== undefined && options.endMs < Date.now() - 60000);
+      const hasCustomRange = isExplicitRange;
+      const effStartMs = hasCustomRange ? (options.startMs || 0) : 0;
       const effEndMs = options.endMs !== undefined ? options.endMs : Date.now();
 
-      // Get accounting data (already deduplicated and filtered if range is provided)
-      const fullReport = hasCustomRange
-        ? getUserAccountingReport(user, 'all', effStartMs, effEndMs)
-        : getUserAccountingReport(user, 'all');
+      // Retrieve full accounting report to compute both prior balance and period transactions
+      const fullReport = getUserAccountingReport(user, 'all');
+      const allRows = [...fullReport.ledgerRows].sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
 
-      let filteredLedger = fullReport.ledgerRows;
-      let rangeTitle = 'کل اسناد مالی و حسابداری - از ابتدا تاکنون';
-
-      if (hasCustomRange) {
-        filteredLedger = fullReport.ledgerRows.filter(row => {
-          const t = new Date(row.rawDate).getTime();
-          return t >= effStartMs && t <= effEndMs;
-        });
-        const sStr = options.startDateStr
-          ? normalizeDigitsToEnglish(options.startDateStr)
-          : formatShamsiDate(new Date(effStartMs));
-        const eStr = options.endDateStr
-          ? normalizeDigitsToEnglish(options.endDateStr)
-          : formatShamsiDate(new Date(effEndMs));
-        rangeTitle = `بازه زمانی: از ${sStr} تا ${eStr}`;
+      // 1. Calculate Previous Balance (مانده منقول از قبل) before the requested period
+      let prevBalance = 0;
+      if (hasCustomRange && effStartMs > 0) {
+        const prevRows = allRows.filter(r => new Date(r.rawDate).getTime() < effStartMs);
+        prevBalance = prevRows.reduce((acc, r) => acc + (r.debit || 0) - (r.credit || 0), 0);
       }
+
+      // 2. Filter rows strictly within the requested time interval
+      let filteredLedger = hasCustomRange
+        ? allRows.filter(row => {
+            const t = new Date(row.rawDate).getTime();
+            return t >= effStartMs && t <= effEndMs;
+          })
+        : allRows;
+
+      const sStr = options.startDateStr
+        ? normalizeDigitsToEnglish(options.startDateStr)
+        : (effStartMs > 0 ? formatShamsiDate(new Date(effStartMs)) : '');
+      const eStr = options.endDateStr
+        ? normalizeDigitsToEnglish(options.endDateStr)
+        : formatShamsiDate(new Date(effEndMs));
+
+      let rangeTitle = hasCustomRange
+        ? `بازه انتخابی: از ${sStr || 'ابتدا'} تا ${eStr}`
+        : 'کل اسناد مالی و حسابداری - از ابتدا تاکنون';
 
       // Sort chronological ascending (oldest first) for accounting table
       const rowsAsc = [...filteredLedger].sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
 
-      // Calculate totals & running balance strictly for the displayed rows
+      // Calculate period turnovers & running balance
       let rangeDebit = 0;
       let rangeCredit = 0;
-      let runningInTable = 0;
+      let runningInTable = prevBalance;
       rowsAsc.forEach(r => {
         rangeDebit += (r.debit || 0);
         rangeCredit += (r.credit || 0);
@@ -139,47 +148,95 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
       doc.text(fixRTL(`تاریخ صدور: ${todayFa}    ساعت: ${nowTime}    |    ${rangeTitle}`), 30, 66, { align: 'center', width: 535 });
 
       // --- USER INFO BOX ---
-      doc.rect(30, 110, 535, 55).fillAndStroke('#f8fafc', '#e2e8f0');
+      doc.rect(30, 110, 535, 60).fillAndStroke('#f8fafc', '#e2e8f0');
       doc.fillColor('#1e293b').font(fontBold).fontSize(10);
       
-      doc.text(fixRTL(`طرف حساب: ${uName}`), 300, 120, { align: 'right', width: 250 });
-      doc.text(fixRTL(`شناسه کاربری: ${user.chatId}`), 40, 120, { align: 'left', width: 220 });
+      doc.text(fixRTL(`طرف حساب: ${uName}`), 300, 118, { align: 'right', width: 250 });
+      doc.text(fixRTL(`شناسه کاربری: ${user.chatId}`), 40, 118, { align: 'left', width: 220 });
       
       doc.font(fontReg).fontSize(9).fillColor('#475569');
-      doc.text(fixRTL(`نقش کاربری: ${roleStr}`), 320, 140, { align: 'right', width: 230 });
-      doc.text(fixRTL(`مانده بدهی فعلی:  ${(user.debt || 0).toLocaleString()}  تومان`), 40, 140, { align: 'left', width: 220 });
+      doc.text(fixRTL(`نقش کاربری: ${roleStr}`), 320, 136, { align: 'right', width: 230 });
+      
+      if (hasCustomRange && effStartMs > 0) {
+        const endBalStatus = runningInTable > 0 ? 'بدهکار' : (runningInTable < 0 ? 'بستانکار' : 'تسویه');
+        doc.fillColor(runningInTable > 0 ? '#b91c1c' : '#15803d').font(fontBold);
+        doc.text(fixRTL(`مانده در پایان این بازه: ${Math.abs(runningInTable).toLocaleString()} ت (${endBalStatus})`), 40, 136, { align: 'left', width: 240 });
+        doc.font(fontReg).fontSize(8).fillColor('#64748b');
+        doc.text(fixRTL(`مانده کل لحظه‌ای حساب: ${(user.debt || 0).toLocaleString()} تومان بدهی`), 40, 151, { align: 'left', width: 240 });
+      } else {
+        doc.text(fixRTL(`مانده بدهی قطعی حساب: ${(user.debt || 0).toLocaleString()} تومان`), 40, 136, { align: 'left', width: 220 });
+      }
 
       // --- SUMMARY CARDS ---
-      const startY = 175;
-      const cardW = 165;
+      const startY = 180;
+      let cardW = 165;
       const cardH = 45;
 
-      // Card 1: Total Debits
-      doc.rect(30, startY, cardW, cardH).fillAndStroke('#fff1f2', '#fecdd3');
-      doc.fillColor('#e11d48').font(fontBold).fontSize(9);
-      doc.text(fixRTL('جمع گردش بدهکار (خریدها)'), 35, startY + 8, { align: 'center', width: cardW - 10 });
-      doc.fontSize(10.5);
-      doc.text(fixRTL(`${rangeDebit.toLocaleString()}  تومان`), 35, startY + 24, { align: 'center', width: cardW - 10 });
+      if (hasCustomRange && effStartMs > 0) {
+        // 4 summary cards: Prior Balance, Period Debits, Period Credits, Ending Balance
+        cardW = 125;
+        const gap = 12;
 
-      // Card 2: Total Credits
-      doc.rect(215, startY, cardW, cardH).fillAndStroke('#f0fdf4', '#bbf7d0');
-      doc.fillColor('#16a34a').font(fontBold).fontSize(9);
-      doc.text(fixRTL('جمع گردش بستانکار (واریزی‌ها)'), 220, startY + 8, { align: 'center', width: cardW - 10 });
-      doc.fontSize(10.5);
-      doc.text(fixRTL(`${rangeCredit.toLocaleString()}  تومان`), 220, startY + 24, { align: 'center', width: cardW - 10 });
+        // Card 1: Prior Balance (مانده از قبل)
+        const pBalStatus = prevBalance > 0 ? 'بدهکار' : (prevBalance < 0 ? 'بستانکار' : 'تسویه');
+        const pBalColor = prevBalance > 0 ? '#b91c1c' : (prevBalance < 0 ? '#15803d' : '#334155');
+        doc.rect(30, startY, cardW, cardH).fillAndStroke('#f8fafc', '#cbd5e1');
+        doc.fillColor('#334155').font(fontBold).fontSize(8);
+        doc.text(fixRTL('مانده از قبل (ابتدای بازه)'), 32, startY + 6, { align: 'center', width: cardW - 4 });
+        doc.fillColor(pBalColor).fontSize(9);
+        doc.text(fixRTL(`${Math.abs(prevBalance).toLocaleString()} ت (${pBalStatus})`), 32, startY + 23, { align: 'center', width: cardW - 4 });
 
-      // Card 3: Range Balance
-      const rangeBal = rangeDebit - rangeCredit;
-      const balColor = rangeBal > 0 ? '#b91c1c' : (rangeBal < 0 ? '#15803d' : '#334155');
-      const balStatus = rangeBal > 0 ? 'بدهکار' : (rangeBal < 0 ? 'بستانکار' : 'تسویه');
-      doc.rect(400, startY, cardW, cardH).fillAndStroke('#f8fafc', '#cbd5e1');
-      doc.fillColor('#334155').font(fontBold).fontSize(9);
-      doc.text(fixRTL('تراز خالص در این بازه'), 405, startY + 8, { align: 'center', width: cardW - 10 });
-      doc.fillColor(balColor).fontSize(10.5);
-      doc.text(fixRTL(`${Math.abs(rangeBal).toLocaleString()}  تومان  -  ${balStatus}`), 405, startY + 24, { align: 'center', width: cardW - 10 });
+        // Card 2: Period Debits
+        doc.rect(30 + cardW + gap, startY, cardW, cardH).fillAndStroke('#fff1f2', '#fecdd3');
+        doc.fillColor('#e11d48').font(fontBold).fontSize(8);
+        doc.text(fixRTL('گردش بدهکار بازه (خرید)'), 30 + cardW + gap + 2, startY + 6, { align: 'center', width: cardW - 4 });
+        doc.fontSize(9.5);
+        doc.text(fixRTL(`${rangeDebit.toLocaleString()} تومان`), 30 + cardW + gap + 2, startY + 23, { align: 'center', width: cardW - 4 });
+
+        // Card 3: Period Credits
+        doc.rect(30 + (cardW + gap) * 2, startY, cardW, cardH).fillAndStroke('#f0fdf4', '#bbf7d0');
+        doc.fillColor('#16a34a').font(fontBold).fontSize(8);
+        doc.text(fixRTL('گردش بستانکار بازه (واریز)'), 30 + (cardW + gap) * 2 + 2, startY + 6, { align: 'center', width: cardW - 4 });
+        doc.fontSize(9.5);
+        doc.text(fixRTL(`${rangeCredit.toLocaleString()} تومان`), 30 + (cardW + gap) * 2 + 2, startY + 23, { align: 'center', width: cardW - 4 });
+
+        // Card 4: Ending Balance of this period
+        const endStatus = runningInTable > 0 ? 'بدهکار' : (runningInTable < 0 ? 'بستانکار' : 'تسویه');
+        const endColor = runningInTable > 0 ? '#b91c1c' : (runningInTable < 0 ? '#15803d' : '#334155');
+        doc.rect(30 + (cardW + gap) * 3, startY, cardW, cardH).fillAndStroke('#f1f5f9', '#94a3b8');
+        doc.fillColor('#0f172a').font(fontBold).fontSize(8);
+        doc.text(fixRTL('مانده در پایان این بازه'), 30 + (cardW + gap) * 3 + 2, startY + 6, { align: 'center', width: cardW - 4 });
+        doc.fillColor(endColor).fontSize(9);
+        doc.text(fixRTL(`${Math.abs(runningInTable).toLocaleString()} ت (${endStatus})`), 30 + (cardW + gap) * 3 + 2, startY + 23, { align: 'center', width: cardW - 4 });
+      } else {
+        // Standard 3 cards: Total Debits, Total Credits, Overall Net Balance
+        // Card 1: Total Debits
+        doc.rect(30, startY, cardW, cardH).fillAndStroke('#fff1f2', '#fecdd3');
+        doc.fillColor('#e11d48').font(fontBold).fontSize(9);
+        doc.text(fixRTL('جمع گردش بدهکار (خریدها)'), 35, startY + 8, { align: 'center', width: cardW - 10 });
+        doc.fontSize(10.5);
+        doc.text(fixRTL(`${rangeDebit.toLocaleString()}  تومان`), 35, startY + 24, { align: 'center', width: cardW - 10 });
+
+        // Card 2: Total Credits
+        doc.rect(215, startY, cardW, cardH).fillAndStroke('#f0fdf4', '#bbf7d0');
+        doc.fillColor('#16a34a').font(fontBold).fontSize(9);
+        doc.text(fixRTL('جمع گردش بستانکار (واریزی‌ها)'), 220, startY + 8, { align: 'center', width: cardW - 10 });
+        doc.fontSize(10.5);
+        doc.text(fixRTL(`${rangeCredit.toLocaleString()}  تومان`), 220, startY + 24, { align: 'center', width: cardW - 10 });
+
+        // Card 3: Net Balance
+        const rangeBal = rangeDebit - rangeCredit;
+        const balColor = rangeBal > 0 ? '#b91c1c' : (rangeBal < 0 ? '#15803d' : '#334155');
+        const balStatus = rangeBal > 0 ? 'بدهکار' : (rangeBal < 0 ? 'بستانکار' : 'تسویه');
+        doc.rect(400, startY, cardW, cardH).fillAndStroke('#f8fafc', '#cbd5e1');
+        doc.fillColor('#334155').font(fontBold).fontSize(9);
+        doc.text(fixRTL('تراز کل حساب'), 405, startY + 8, { align: 'center', width: cardW - 10 });
+        doc.fillColor(balColor).fontSize(10.5);
+        doc.text(fixRTL(`${Math.abs(rangeBal).toLocaleString()}  تومان  -  ${balStatus}`), 405, startY + 24, { align: 'center', width: cardW - 10 });
+      }
 
       // --- TABLE HEADER ---
-      let y = 235;
+      let y = 240;
       const cols = {
         bal: { x: 30, w: 75 },
         credit: { x: 105, w: 65 },
@@ -201,12 +258,34 @@ export async function generateUserStatementPdf(user: User, options: PdfRangeOpti
 
       y += 22;
 
+      // If there was a previous balance prior to this period, render an opening balance row
+      if (hasCustomRange && effStartMs > 0 && prevBalance !== 0) {
+        doc.rect(30, y, 535, 22).fillAndStroke('#eff6ff', '#bfdbfe');
+        const pStatus = prevBalance > 0 ? 'بدهکار' : 'بستانکار';
+        const pColor = prevBalance > 0 ? '#b91c1c' : '#15803d';
+        doc.fillColor(pColor).font(fontBold).fontSize(7.5);
+        doc.text(fixRTL(`${Math.abs(prevBalance).toLocaleString()}  ${pStatus}`), cols.bal.x, y + 6, { width: cols.bal.w, align: 'center' });
+        doc.fillColor('#64748b').font(fontReg).fontSize(8);
+        doc.text('-', cols.credit.x, y + 6, { width: cols.credit.w, align: 'center' });
+        doc.text('-', cols.debit.x, y + 6, { width: cols.debit.w, align: 'center' });
+        doc.fillColor('#1e40af').font(fontBold).fontSize(8);
+        doc.text(fixRTL(`مانده منقول از اسناد قبل (پیش از ${sStr || 'این بازه'})`), cols.desc.x, y + 6, { width: cols.desc.w, align: 'right' });
+        doc.fillColor('#64748b').font(fontReg).fontSize(7.5);
+        doc.text(fixRTL('قبل از بازه'), cols.date.x, y + 6, { width: cols.date.w, align: 'center' });
+        doc.fillColor('#1e40af').font(fontBold).fontSize(8);
+        doc.text('۰', cols.num.x, y + 6, { width: cols.num.w, align: 'center' });
+        y += 22;
+      }
+
       // --- TABLE ROWS ---
       if (rowsAsc.length === 0) {
-        doc.rect(30, y, 535, 30).fillAndStroke('#ffffff', '#e2e8f0');
-        doc.fillColor('#64748b').font(fontReg).fontSize(10);
-        doc.text(fixRTL('هیچ تراکنش یا سندی در این بازه زمانی ثبت نشده است.'), 30, y + 10, { align: 'center', width: 535 });
-        y += 30;
+        doc.rect(30, y, 535, 34).fillAndStroke('#ffffff', '#e2e8f0');
+        doc.fillColor('#64748b').font(fontReg).fontSize(9.5);
+        const emptyMsg = hasCustomRange
+          ? `در بازه انتخابی (${rangeTitle}) هیچ رویداد یا تراکنش مالی جدیدی ثبت نگردیده است.`
+          : 'هیچ تراکنش یا سندی در این حساب ثبت نشده است.';
+        doc.text(fixRTL(emptyMsg), 30, y + 10, { align: 'center', width: 535 });
+        y += 34;
       } else {
         rowsAsc.forEach((row, idx) => {
           // Page overflow handling

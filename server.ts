@@ -2198,6 +2198,86 @@ async function startServer() {
     }
   });
 
+  // Dedicated endpoints for Reseller Bot Discount & Gift Coupon Management
+  api.post("/seller-portal/coupons/:chatId", (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
+      
+      const { code, discountPercent, giftAmount, maxUsage } = req.body;
+      const cleanCode = String(code || '').trim().replace(/\s+/g, '').toUpperCase();
+      if (!cleanCode) {
+        return res.status(400).json({ success: false, message: 'لطفاً نام کد تخفیف را وارد نمایید.' });
+      }
+
+      const discPct = discountPercent !== undefined ? Number(discountPercent) : 0;
+      const giftVal = giftAmount !== undefined ? Number(giftAmount) : 0;
+      const maxUse = maxUsage !== undefined && Number(maxUsage) > 0 ? Number(maxUsage) : 100;
+
+      if (discPct <= 0 && giftVal <= 0) {
+        return res.status(400).json({ success: false, message: 'باید حداقل درصد تخفیف (۱ تا ۱۰۰) یا مبلغ هدیه تعیین شود.' });
+      }
+      if (discPct > 100) {
+        return res.status(400).json({ success: false, message: 'درصد تخفیف نمی‌تواند بیش از ۱۰۰٪ باشد.' });
+      }
+
+      if (!user.sellerBot) {
+        user.sellerBot = { enabled: false, botToken: '' } as any;
+      }
+      if (!Array.isArray(user.sellerBot.coupons)) {
+        user.sellerBot.coupons = [];
+      }
+
+      // Remove previous code with same name if exists
+      user.sellerBot.coupons = user.sellerBot.coupons.filter(c => c.code.toUpperCase() !== cleanCode);
+      user.sellerBot.coupons.push({
+        code: cleanCode,
+        discountPercent: discPct > 0 ? discPct : 0,
+        giftAmount: giftVal > 0 ? giftVal : 0,
+        maxUsage: maxUse,
+        usedCount: 0,
+        usedBy: {}
+      });
+
+      db.saveUser(user);
+      db.saveImmediate();
+
+      res.json({
+        success: true,
+        message: discPct > 0 
+          ? `کد تخفیف ${cleanCode} با ${discPct}% تخفیف روی قیمت فروش به مشتری با موفقیت ذخیره شد.`
+          : `کد هدیه ${cleanCode} به مبلغ ${giftVal.toLocaleString()} تومان با موفقیت ذخیره شد.`,
+        coupons: user.sellerBot.coupons
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: 'خطا در ثبت کد تخفیف: ' + (e.message || String(e)) });
+    }
+  });
+
+  api.delete("/seller-portal/coupons/:chatId/:code", (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
+      
+      const targetCode = String(req.params.code || '').trim().toUpperCase();
+      if (!user.sellerBot || !Array.isArray(user.sellerBot.coupons)) {
+        return res.json({ success: true, coupons: [] });
+      }
+
+      user.sellerBot.coupons = user.sellerBot.coupons.filter(c => c.code.toUpperCase() !== targetCode);
+      db.saveUser(user);
+      db.saveImmediate();
+
+      res.json({
+        success: true,
+        message: `کد تخفیف ${targetCode} با موفقیت حذف گردید.`,
+        coupons: user.sellerBot.coupons
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: 'خطا در حذف کد: ' + (e.message || String(e)) });
+    }
+  });
+
   api.post("/seller-portal/bot-order-action/:chatId", async (req, res) => {
     try {
       const user = resolveSeller(req.params.chatId);

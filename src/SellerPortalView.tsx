@@ -111,6 +111,80 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [botSaveErrorMsg, setBotSaveErrorMsg] = useState('');
   const [orderActionLoading, setOrderActionLoading] = useState<string | null>(null);
 
+  // Dedicated Reseller Coupon Management states
+  const [newCouponCode, setNewCouponCode] = useState('');
+  const [newCouponType, setNewCouponType] = useState<'discount' | 'gift'>('discount');
+  const [newCouponValue, setNewCouponValue] = useState<number>(20);
+  const [newCouponMaxUsage, setNewCouponMaxUsage] = useState<number>(100);
+  const [couponActionLoading, setCouponActionLoading] = useState(false);
+  const [couponFeedbackMsg, setCouponFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleCreateCoupon = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanCode = newCouponCode.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    if (!cleanCode) {
+      setCouponFeedbackMsg({ type: 'error', text: 'لطفاً نام کد تخفیف را وارد کنید (فقط حروف و اعداد انگلیسی).' });
+      return;
+    }
+    if (newCouponType === 'discount' && (newCouponValue <= 0 || newCouponValue > 100)) {
+      setCouponFeedbackMsg({ type: 'error', text: 'درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.' });
+      return;
+    }
+    if (newCouponType === 'gift' && newCouponValue <= 0) {
+      setCouponFeedbackMsg({ type: 'error', text: 'مبلغ هدیه باید بیشتر از صفر باشد.' });
+      return;
+    }
+
+    setCouponActionLoading(true);
+    setCouponFeedbackMsg(null);
+    try {
+      const res = await fetch(`/api/seller-portal/coupons/${sellerData?.chatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: cleanCode,
+          discountPercent: newCouponType === 'discount' ? newCouponValue : 0,
+          giftAmount: newCouponType === 'gift' ? newCouponValue : 0,
+          maxUsage: newCouponMaxUsage > 0 ? newCouponMaxUsage : 100
+        })
+      });
+      const data = await res.json();
+      if (data && data.success) {
+        setBotConfig((prev: any) => ({ ...prev, coupons: data.coupons }));
+        setCouponFeedbackMsg({ type: 'success', text: data.message || 'کد با موفقیت ثبت شد.' });
+        setNewCouponCode('');
+      } else {
+        setCouponFeedbackMsg({ type: 'error', text: data?.message || 'خطا در ثبت کد تخفیف.' });
+      }
+    } catch (err: any) {
+      setCouponFeedbackMsg({ type: 'error', text: err.message || 'خطا در برقراری ارتباط با سرور.' });
+    } finally {
+      setCouponActionLoading(false);
+    }
+  };
+
+  const handleDeleteCoupon = async (code: string) => {
+    if (!window.confirm(`آیا از حذف کد تخفیف «${code}» مطمئن هستید؟`)) return;
+    setCouponActionLoading(true);
+    setCouponFeedbackMsg(null);
+    try {
+      const res = await fetch(`/api/seller-portal/coupons/${sellerData?.chatId}/${encodeURIComponent(code)}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (data && data.success) {
+        setBotConfig((prev: any) => ({ ...prev, coupons: data.coupons }));
+        setCouponFeedbackMsg({ type: 'success', text: data.message || 'کد با موفقیت حذف شد.' });
+      } else {
+        setCouponFeedbackMsg({ type: 'error', text: data?.message || 'خطا در حذف کد.' });
+      }
+    } catch (err: any) {
+      setCouponFeedbackMsg({ type: 'error', text: err.message || 'خطا در برقراری ارتباط با سرور.' });
+    } finally {
+      setCouponActionLoading(false);
+    }
+  };
+
   // Live API Tester states
   const [testingApi, setTestingApi] = useState(false);
   const [apiTestResponse, setApiTestResponse] = useState<any>(null);
@@ -2760,19 +2834,156 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                 </div>
 
                 {/* Section: Discount Codes & Gift Coupons (کدهای تخفیف و هدیه اختصاصی همکار) */}
-                <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                <div className="pt-4 border-t border-slate-800/80 space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Gift className="w-4 h-4 text-cyan-400" />
-                      <h5 className="text-xs font-bold text-slate-200">🎫 مدیریت کدهای تخفیف درصدی و کدهای هدیه کیف پول</h5>
+                      <h5 className="text-xs font-bold text-slate-200">🎫 ساخت و مدیریت کدهای تخفیف اختصاصی مشتریان ربات شما</h5>
                     </div>
-                    <span className="text-[10px] text-slate-400">
+                    <span className="text-[10px] bg-cyan-950/60 border border-cyan-800 text-cyan-400 px-2 py-0.5 rounded-full font-bold">
                       {Array.isArray(botConfig?.coupons) ? `${botConfig.coupons.length} کد فعال` : 'بدون کد'}
                     </span>
                   </div>
-                  <p className="text-[11px] text-slate-400">
-                    می‌توانید کدهای تخفیف درصدی برای اعمال هنگام خرید محصول یا کدهای هدیه (Gift Code) جهت شارژ مستقیم کیف پول کاربران خود بسازید. همچنین می‌توانید این کدها را از منوی <b>«🎫 مدیریت کدهای تخفیف و هدیه»</b> در تلگرام مدیریت نمایید.
-                  </p>
+
+                  <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 space-y-1">
+                    <p className="text-slate-300">
+                      💡 <b>قاعده حسابداری تخفیف‌ها:</b> کدهای تخفیف ساخته‌شده در این بخش، مستقیماً از قیمت فروش شما به مشتری کسر می‌گردد. بدهی همکاری شما به سیستم مادر به قیمت عمده محاسبه شده و <u>هرگز کاهش نمی‌یابد</u>؛ تخفیف مستقیماً از سود شما به مشتری داده می‌شود.
+                    </p>
+                  </div>
+
+                  {couponFeedbackMsg && (
+                    <div className={`p-3 rounded-xl text-xs font-medium border ${
+                      couponFeedbackMsg.type === 'success' 
+                        ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300' 
+                        : 'bg-rose-950/60 border-rose-800 text-rose-300'
+                    }`}>
+                      {couponFeedbackMsg.text}
+                    </div>
+                  )}
+
+                  {/* Add New Coupon Form */}
+                  <div className="p-4 bg-slate-950/90 border border-slate-800 rounded-2xl space-y-3">
+                    <div className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                      <span>➕ تعریف کد تخفیف / هدیه جدید:</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">نام کد (لاتین)</label>
+                        <input
+                          type="text"
+                          placeholder="مثلاً OFF20 یا NOROOZ"
+                          value={newCouponCode}
+                          onChange={(e) => setNewCouponCode(e.target.value.toUpperCase())}
+                          className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 text-xs text-cyan-400 font-mono font-bold outline-none uppercase placeholder:text-slate-600"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">نوع کد</label>
+                        <select
+                          value={newCouponType}
+                          onChange={(e) => setNewCouponType(e.target.value as any)}
+                          className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-400 rounded-xl px-2.5 py-2 text-xs text-slate-200 outline-none"
+                        >
+                          <option value="discount">🏷 تخفیف درصدی روی خرید</option>
+                          <option value="gift">🎁 کد هدیه شارژ کیف پول (تومان)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          {newCouponType === 'discount' ? 'درصد تخفیف (۱ تا ۱۰۰)' : 'مبلغ هدیه (تومان)'}
+                        </label>
+                        <input
+                          type="number"
+                          placeholder={newCouponType === 'discount' ? '20' : '10000'}
+                          value={newCouponValue || ''}
+                          onChange={(e) => setNewCouponValue(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono outline-none text-center"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">ظرفیت استفاده (تعداد)</label>
+                        <input
+                          type="number"
+                          placeholder="100"
+                          value={newCouponMaxUsage || ''}
+                          onChange={(e) => setNewCouponMaxUsage(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono outline-none text-center"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleCreateCoupon()}
+                        disabled={couponActionLoading || !newCouponCode.trim()}
+                        className="px-5 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-md shadow-cyan-500/20"
+                      >
+                        {couponActionLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Gift className="w-3.5 h-3.5" />}
+                        <span>ثبت و ذخیره کد تخفیف</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* List of active coupons */}
+                  {Array.isArray(botConfig?.coupons) && botConfig.coupons.length > 0 ? (
+                    <div className="overflow-x-auto rounded-2xl border border-slate-800">
+                      <table className="w-full text-right text-xs">
+                        <thead>
+                          <tr className="bg-slate-950/90 text-slate-400 text-[11px] border-b border-slate-800">
+                            <th className="py-2 px-3">کد تخفیف</th>
+                            <th className="py-2 px-3">نوع / مقدار</th>
+                            <th className="py-2 px-3">مصرف / ظرفیت</th>
+                            <th className="py-2 px-3 text-left">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {botConfig.coupons.map((c: any, idx: number) => {
+                            const isGift = (c.giftAmount || 0) > 0;
+                            const usage = `${c.usedCount || 0} / ${c.maxUsage || 100} بار`;
+                            return (
+                              <tr key={idx} className="hover:bg-slate-950/40 transition">
+                                <td className="py-2.5 px-3">
+                                  <span className="font-mono font-bold text-cyan-400 bg-cyan-950/60 border border-cyan-800/80 px-2 py-0.5 rounded-lg text-xs">
+                                    {c.code}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-300">
+                                  {isGift ? (
+                                    <span className="text-amber-400 font-bold">🎁 هدیه {c.giftAmount.toLocaleString()} ت</span>
+                                  ) : (
+                                    <span className="text-emerald-400 font-bold">🏷 {c.discountPercent}% تخفیف روی خرید</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-400 font-mono text-[11px]">
+                                  {usage}
+                                </td>
+                                <td className="py-2.5 px-3 text-left">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteCoupon(c.code)}
+                                    disabled={couponActionLoading}
+                                    className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 rounded-lg transition"
+                                    title="حذف کد"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-5 bg-slate-950/40 rounded-xl border border-slate-800/60 text-slate-500 text-xs">
+                      هنوز هیچ کد تخفیفی برای ربات اختصاصی خود تعریف نکرده‌اید.
+                    </div>
+                  )}
                 </div>
               </div>
 

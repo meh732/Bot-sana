@@ -2586,18 +2586,22 @@ export async function initBot() {
 
       if (viewMode === 'daily') {
         inline_keyboard.push([
-          { text: '📥 دانلود PDF فروش امروز', callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
+          { text: `📥 دانلود PDF فروش امروز (${todayFa})`, callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
           { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
         ]);
       } else if (viewMode === 'monthly') {
         inline_keyboard.push([
-          { text: '📥 دانلود PDF ماهانه (۳۰ روز)', callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` },
+          { text: '📥 دانلود PDF ماهانه (۳۰ روز اخیر)', callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` },
           { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
         ]);
       } else {
         inline_keyboard.push([
-          { text: '📥 دریافت PDF کامل صورتحساب (همه اسناد)', callback_data: `user_rep_pdf_${targetChatId}` },
-          { text: '🔍 فیلتر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
+          { text: `📥 دانلود PDF صورتحساب امروز (${todayFa})`, callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
+          { text: '📥 دانلود PDF ۳۰ روز اخیر', callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` }
+        ]);
+        inline_keyboard.push([
+          { text: '🔍 فیلتر بازه تاریخی شمسی و دانلود PDF', callback_data: `user_rep_filter_shamsi_${targetChatId}` },
+          { text: '📑 دانلود PDF کل اسناد (از ابتدا)', callback_data: `user_rep_pdf_${targetChatId}_0_${now}` }
         ]);
       }
 
@@ -2743,13 +2747,10 @@ export async function initBot() {
 
     const inline_keyboard = [
       [
-        { text: '📥 دانلود PDF کامل این بازه تاریخی', callback_data: `user_rep_pdf_${targetChatId}_${startMs}_${endMs}` }
+        { text: `📥 دانلود PDF دقیق این بازه (${rangeLabel})`, callback_data: `user_rep_pdf_${targetChatId}_${startMs}_${endMs}` }
       ],
       [
-        { text: '📥 دانلود PDF کل صورتحساب (تمام اسناد)', callback_data: `user_rep_pdf_${targetChatId}` },
-        { text: '🔍 تغییر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` }
-      ],
-      [
+        { text: '🔍 تغییر بازه تاریخی شمسی', callback_data: `user_rep_filter_shamsi_${targetChatId}` },
         { text: '🔙 بازگشت به صورتحساب کلی', callback_data: `user_rep_statement_${targetChatId}` }
       ]
     ];
@@ -6727,8 +6728,8 @@ export async function initBot() {
     if (data && data.startsWith('user_rep_pdf_')) {
       const parts = data.replace('user_rep_pdf_', '').split('_');
       const targetChatId = parseInt(parts[0], 10);
-      const startMs = parts[1] ? parseInt(parts[1], 10) : undefined;
-      const endMs = parts[2] ? parseInt(parts[2], 10) : undefined;
+      const rawStart = parts[1] !== undefined && parts[1] !== '' ? parseInt(parts[1], 10) : undefined;
+      const rawEnd = parts[2] !== undefined && parts[2] !== '' ? parseInt(parts[2], 10) : undefined;
 
       const targetUser = db.getUser(targetChatId);
       if (!targetUser) {
@@ -6737,14 +6738,21 @@ export async function initBot() {
       }
 
       answerQuery({ text: '⏳ در حال ساخت فایل PDF صورتحساب...' });
-      bot!.sendMessage(chatId, '⏳ در حال خروجی گرفتن و ساخت فایل PDF صورتحساب کامل... لطفاً چند لحظه شکیبا باشید.');
+      bot!.sendMessage(chatId, '⏳ در حال خروجی گرفتن و ساخت فایل PDF صورتحساب دقیق... لطفاً چند لحظه شکیبا باشید.');
 
       try {
         let options: PdfRangeOptions = {};
-        if (startMs && endMs) {
-          const startDateStr = formatShamsiDate(new Date(startMs));
-          const endDateStr = formatShamsiDate(new Date(endMs));
-          options = { startMs, endMs, startDateStr, endDateStr };
+        let rangeCaption = 'کل اسناد (از ابتدا تاکنون)';
+        if (rawStart !== undefined && rawEnd !== undefined) {
+          if (rawStart > 0) {
+            const startDateStr = formatShamsiDate(new Date(rawStart));
+            const endDateStr = formatShamsiDate(new Date(rawEnd));
+            options = { startMs: rawStart, endMs: rawEnd, startDateStr, endDateStr };
+            rangeCaption = `از ${startDateStr} تا ${endDateStr}`;
+          } else {
+            const endDateStr = formatShamsiDate(new Date(rawEnd));
+            options = { startMs: 0, endMs: rawEnd, startDateStr: 'ابتدا', endDateStr };
+          }
         }
 
         const pdfBuffer = await generateUserStatementPdf(targetUser, options);
@@ -6757,6 +6765,7 @@ export async function initBot() {
             caption: `📄 <b>فایل رسمی PDF صورتحساب حسابداری و دفتر معین</b>\n\n` +
                      `👤 <b>طرف حساب:</b> ${escapeHtml(targetUser.nickname || targetUser.username || String(targetUser.chatId))}\n` +
                      `🆔 <b>شناسه عددی:</b> <code>${targetUser.chatId}</code>\n` +
+                     `🗓 <b>دوره صورتحساب:</b> <code>${rangeCaption}</code>\n` +
                      `📅 <b>تاریخ صدور:</b> <code>${new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' })}</code>`
           },
           { filename: fileName, contentType: 'application/pdf' }

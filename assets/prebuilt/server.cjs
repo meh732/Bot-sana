@@ -84624,25 +84624,28 @@ async function generateUserStatementPdf(user, options = {}) {
       }
       const fontReg = hasRegularFont ? "Vazir" : "Helvetica";
       const fontBold = hasBoldFont ? "Vazir-Bold" : "Helvetica-Bold";
-      const hasCustomRange = options.startMs !== void 0 || options.endMs !== void 0;
-      const effStartMs = options.startMs !== void 0 ? options.startMs : 0;
+      const isExplicitRange = options.startMs !== void 0 && options.startMs > 0 || options.endMs !== void 0 && options.endMs < Date.now() - 6e4;
+      const hasCustomRange = isExplicitRange;
+      const effStartMs = hasCustomRange ? options.startMs || 0 : 0;
       const effEndMs = options.endMs !== void 0 ? options.endMs : Date.now();
-      const fullReport = hasCustomRange ? getUserAccountingReport(user, "all", effStartMs, effEndMs) : getUserAccountingReport(user, "all");
-      let filteredLedger = fullReport.ledgerRows;
-      let rangeTitle = "\u06A9\u0644 \u0627\u0633\u0646\u0627\u062F \u0645\u0627\u0644\u06CC \u0648 \u062D\u0633\u0627\u0628\u062F\u0627\u0631\u06CC - \u0627\u0632 \u0627\u0628\u062A\u062F\u0627 \u062A\u0627\u06A9\u0646\u0648\u0646";
-      if (hasCustomRange) {
-        filteredLedger = fullReport.ledgerRows.filter((row) => {
-          const t = new Date(row.rawDate).getTime();
-          return t >= effStartMs && t <= effEndMs;
-        });
-        const sStr = options.startDateStr ? normalizeDigitsToEnglish(options.startDateStr) : formatShamsiDate(new Date(effStartMs));
-        const eStr = options.endDateStr ? normalizeDigitsToEnglish(options.endDateStr) : formatShamsiDate(new Date(effEndMs));
-        rangeTitle = `\u0628\u0627\u0632\u0647 \u0632\u0645\u0627\u0646\u06CC: \u0627\u0632 ${sStr} \u062A\u0627 ${eStr}`;
+      const fullReport = getUserAccountingReport(user, "all");
+      const allRows = [...fullReport.ledgerRows].sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
+      let prevBalance = 0;
+      if (hasCustomRange && effStartMs > 0) {
+        const prevRows = allRows.filter((r) => new Date(r.rawDate).getTime() < effStartMs);
+        prevBalance = prevRows.reduce((acc, r) => acc + (r.debit || 0) - (r.credit || 0), 0);
       }
+      let filteredLedger = hasCustomRange ? allRows.filter((row) => {
+        const t = new Date(row.rawDate).getTime();
+        return t >= effStartMs && t <= effEndMs;
+      }) : allRows;
+      const sStr = options.startDateStr ? normalizeDigitsToEnglish(options.startDateStr) : effStartMs > 0 ? formatShamsiDate(new Date(effStartMs)) : "";
+      const eStr = options.endDateStr ? normalizeDigitsToEnglish(options.endDateStr) : formatShamsiDate(new Date(effEndMs));
+      let rangeTitle = hasCustomRange ? `\u0628\u0627\u0632\u0647 \u0627\u0646\u062A\u062E\u0627\u0628\u06CC: \u0627\u0632 ${sStr || "\u0627\u0628\u062A\u062F\u0627"} \u062A\u0627 ${eStr}` : "\u06A9\u0644 \u0627\u0633\u0646\u0627\u062F \u0645\u0627\u0644\u06CC \u0648 \u062D\u0633\u0627\u0628\u062F\u0627\u0631\u06CC - \u0627\u0632 \u0627\u0628\u062A\u062F\u0627 \u062A\u0627\u06A9\u0646\u0648\u0646";
       const rowsAsc = [...filteredLedger].sort((a, b) => new Date(a.rawDate).getTime() - new Date(b.rawDate).getTime());
       let rangeDebit = 0;
       let rangeCredit = 0;
-      let runningInTable = 0;
+      let runningInTable = prevBalance;
       rowsAsc.forEach((r) => {
         rangeDebit += r.debit || 0;
         rangeCredit += r.credit || 0;
@@ -84663,35 +84666,72 @@ async function generateUserStatementPdf(user, options = {}) {
       doc.text(fixRTL("\u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 \u0631\u0633\u0645\u06CC \u062D\u0633\u0627\u0628\u062F\u0627\u0631\u06CC \u0648 \u062F\u0641\u062A\u0631 \u0645\u0639\u06CC\u0646"), 30, 38, { align: "center", width: 535 });
       doc.fillColor("#94a3b8").font(fontReg).fontSize(9.5);
       doc.text(fixRTL(`\u062A\u0627\u0631\u06CC\u062E \u0635\u062F\u0648\u0631: ${todayFa}    \u0633\u0627\u0639\u062A: ${nowTime}    |    ${rangeTitle}`), 30, 66, { align: "center", width: 535 });
-      doc.rect(30, 110, 535, 55).fillAndStroke("#f8fafc", "#e2e8f0");
+      doc.rect(30, 110, 535, 60).fillAndStroke("#f8fafc", "#e2e8f0");
       doc.fillColor("#1e293b").font(fontBold).fontSize(10);
-      doc.text(fixRTL(`\u0637\u0631\u0641 \u062D\u0633\u0627\u0628: ${uName}`), 300, 120, { align: "right", width: 250 });
-      doc.text(fixRTL(`\u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0631\u0628\u0631\u06CC: ${user.chatId}`), 40, 120, { align: "left", width: 220 });
+      doc.text(fixRTL(`\u0637\u0631\u0641 \u062D\u0633\u0627\u0628: ${uName}`), 300, 118, { align: "right", width: 250 });
+      doc.text(fixRTL(`\u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0631\u0628\u0631\u06CC: ${user.chatId}`), 40, 118, { align: "left", width: 220 });
       doc.font(fontReg).fontSize(9).fillColor("#475569");
-      doc.text(fixRTL(`\u0646\u0642\u0634 \u06A9\u0627\u0631\u0628\u0631\u06CC: ${roleStr}`), 320, 140, { align: "right", width: 230 });
-      doc.text(fixRTL(`\u0645\u0627\u0646\u062F\u0647 \u0628\u062F\u0647\u06CC \u0641\u0639\u0644\u06CC:  ${(user.debt || 0).toLocaleString()}  \u062A\u0648\u0645\u0627\u0646`), 40, 140, { align: "left", width: 220 });
-      const startY = 175;
-      const cardW = 165;
+      doc.text(fixRTL(`\u0646\u0642\u0634 \u06A9\u0627\u0631\u0628\u0631\u06CC: ${roleStr}`), 320, 136, { align: "right", width: 230 });
+      if (hasCustomRange && effStartMs > 0) {
+        const endBalStatus = runningInTable > 0 ? "\u0628\u062F\u0647\u06A9\u0627\u0631" : runningInTable < 0 ? "\u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631" : "\u062A\u0633\u0648\u06CC\u0647";
+        doc.fillColor(runningInTable > 0 ? "#b91c1c" : "#15803d").font(fontBold);
+        doc.text(fixRTL(`\u0645\u0627\u0646\u062F\u0647 \u062F\u0631 \u067E\u0627\u06CC\u0627\u0646 \u0627\u06CC\u0646 \u0628\u0627\u0632\u0647: ${Math.abs(runningInTable).toLocaleString()} \u062A (${endBalStatus})`), 40, 136, { align: "left", width: 240 });
+        doc.font(fontReg).fontSize(8).fillColor("#64748b");
+        doc.text(fixRTL(`\u0645\u0627\u0646\u062F\u0647 \u06A9\u0644 \u0644\u062D\u0638\u0647\u200C\u0627\u06CC \u062D\u0633\u0627\u0628: ${(user.debt || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0628\u062F\u0647\u06CC`), 40, 151, { align: "left", width: 240 });
+      } else {
+        doc.text(fixRTL(`\u0645\u0627\u0646\u062F\u0647 \u0628\u062F\u0647\u06CC \u0642\u0637\u0639\u06CC \u062D\u0633\u0627\u0628: ${(user.debt || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646`), 40, 136, { align: "left", width: 220 });
+      }
+      const startY = 180;
+      let cardW = 165;
       const cardH = 45;
-      doc.rect(30, startY, cardW, cardH).fillAndStroke("#fff1f2", "#fecdd3");
-      doc.fillColor("#e11d48").font(fontBold).fontSize(9);
-      doc.text(fixRTL("\u062C\u0645\u0639 \u06AF\u0631\u062F\u0634 \u0628\u062F\u0647\u06A9\u0627\u0631 (\u062E\u0631\u06CC\u062F\u0647\u0627)"), 35, startY + 8, { align: "center", width: cardW - 10 });
-      doc.fontSize(10.5);
-      doc.text(fixRTL(`${rangeDebit.toLocaleString()}  \u062A\u0648\u0645\u0627\u0646`), 35, startY + 24, { align: "center", width: cardW - 10 });
-      doc.rect(215, startY, cardW, cardH).fillAndStroke("#f0fdf4", "#bbf7d0");
-      doc.fillColor("#16a34a").font(fontBold).fontSize(9);
-      doc.text(fixRTL("\u062C\u0645\u0639 \u06AF\u0631\u062F\u0634 \u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631 (\u0648\u0627\u0631\u06CC\u0632\u06CC\u200C\u0647\u0627)"), 220, startY + 8, { align: "center", width: cardW - 10 });
-      doc.fontSize(10.5);
-      doc.text(fixRTL(`${rangeCredit.toLocaleString()}  \u062A\u0648\u0645\u0627\u0646`), 220, startY + 24, { align: "center", width: cardW - 10 });
-      const rangeBal = rangeDebit - rangeCredit;
-      const balColor = rangeBal > 0 ? "#b91c1c" : rangeBal < 0 ? "#15803d" : "#334155";
-      const balStatus = rangeBal > 0 ? "\u0628\u062F\u0647\u06A9\u0627\u0631" : rangeBal < 0 ? "\u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631" : "\u062A\u0633\u0648\u06CC\u0647";
-      doc.rect(400, startY, cardW, cardH).fillAndStroke("#f8fafc", "#cbd5e1");
-      doc.fillColor("#334155").font(fontBold).fontSize(9);
-      doc.text(fixRTL("\u062A\u0631\u0627\u0632 \u062E\u0627\u0644\u0635 \u062F\u0631 \u0627\u06CC\u0646 \u0628\u0627\u0632\u0647"), 405, startY + 8, { align: "center", width: cardW - 10 });
-      doc.fillColor(balColor).fontSize(10.5);
-      doc.text(fixRTL(`${Math.abs(rangeBal).toLocaleString()}  \u062A\u0648\u0645\u0627\u0646  -  ${balStatus}`), 405, startY + 24, { align: "center", width: cardW - 10 });
-      let y = 235;
+      if (hasCustomRange && effStartMs > 0) {
+        cardW = 125;
+        const gap = 12;
+        const pBalStatus = prevBalance > 0 ? "\u0628\u062F\u0647\u06A9\u0627\u0631" : prevBalance < 0 ? "\u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631" : "\u062A\u0633\u0648\u06CC\u0647";
+        const pBalColor = prevBalance > 0 ? "#b91c1c" : prevBalance < 0 ? "#15803d" : "#334155";
+        doc.rect(30, startY, cardW, cardH).fillAndStroke("#f8fafc", "#cbd5e1");
+        doc.fillColor("#334155").font(fontBold).fontSize(8);
+        doc.text(fixRTL("\u0645\u0627\u0646\u062F\u0647 \u0627\u0632 \u0642\u0628\u0644 (\u0627\u0628\u062A\u062F\u0627\u06CC \u0628\u0627\u0632\u0647)"), 32, startY + 6, { align: "center", width: cardW - 4 });
+        doc.fillColor(pBalColor).fontSize(9);
+        doc.text(fixRTL(`${Math.abs(prevBalance).toLocaleString()} \u062A (${pBalStatus})`), 32, startY + 23, { align: "center", width: cardW - 4 });
+        doc.rect(30 + cardW + gap, startY, cardW, cardH).fillAndStroke("#fff1f2", "#fecdd3");
+        doc.fillColor("#e11d48").font(fontBold).fontSize(8);
+        doc.text(fixRTL("\u06AF\u0631\u062F\u0634 \u0628\u062F\u0647\u06A9\u0627\u0631 \u0628\u0627\u0632\u0647 (\u062E\u0631\u06CC\u062F)"), 30 + cardW + gap + 2, startY + 6, { align: "center", width: cardW - 4 });
+        doc.fontSize(9.5);
+        doc.text(fixRTL(`${rangeDebit.toLocaleString()} \u062A\u0648\u0645\u0627\u0646`), 30 + cardW + gap + 2, startY + 23, { align: "center", width: cardW - 4 });
+        doc.rect(30 + (cardW + gap) * 2, startY, cardW, cardH).fillAndStroke("#f0fdf4", "#bbf7d0");
+        doc.fillColor("#16a34a").font(fontBold).fontSize(8);
+        doc.text(fixRTL("\u06AF\u0631\u062F\u0634 \u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631 \u0628\u0627\u0632\u0647 (\u0648\u0627\u0631\u06CC\u0632)"), 30 + (cardW + gap) * 2 + 2, startY + 6, { align: "center", width: cardW - 4 });
+        doc.fontSize(9.5);
+        doc.text(fixRTL(`${rangeCredit.toLocaleString()} \u062A\u0648\u0645\u0627\u0646`), 30 + (cardW + gap) * 2 + 2, startY + 23, { align: "center", width: cardW - 4 });
+        const endStatus = runningInTable > 0 ? "\u0628\u062F\u0647\u06A9\u0627\u0631" : runningInTable < 0 ? "\u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631" : "\u062A\u0633\u0648\u06CC\u0647";
+        const endColor = runningInTable > 0 ? "#b91c1c" : runningInTable < 0 ? "#15803d" : "#334155";
+        doc.rect(30 + (cardW + gap) * 3, startY, cardW, cardH).fillAndStroke("#f1f5f9", "#94a3b8");
+        doc.fillColor("#0f172a").font(fontBold).fontSize(8);
+        doc.text(fixRTL("\u0645\u0627\u0646\u062F\u0647 \u062F\u0631 \u067E\u0627\u06CC\u0627\u0646 \u0627\u06CC\u0646 \u0628\u0627\u0632\u0647"), 30 + (cardW + gap) * 3 + 2, startY + 6, { align: "center", width: cardW - 4 });
+        doc.fillColor(endColor).fontSize(9);
+        doc.text(fixRTL(`${Math.abs(runningInTable).toLocaleString()} \u062A (${endStatus})`), 30 + (cardW + gap) * 3 + 2, startY + 23, { align: "center", width: cardW - 4 });
+      } else {
+        doc.rect(30, startY, cardW, cardH).fillAndStroke("#fff1f2", "#fecdd3");
+        doc.fillColor("#e11d48").font(fontBold).fontSize(9);
+        doc.text(fixRTL("\u062C\u0645\u0639 \u06AF\u0631\u062F\u0634 \u0628\u062F\u0647\u06A9\u0627\u0631 (\u062E\u0631\u06CC\u062F\u0647\u0627)"), 35, startY + 8, { align: "center", width: cardW - 10 });
+        doc.fontSize(10.5);
+        doc.text(fixRTL(`${rangeDebit.toLocaleString()}  \u062A\u0648\u0645\u0627\u0646`), 35, startY + 24, { align: "center", width: cardW - 10 });
+        doc.rect(215, startY, cardW, cardH).fillAndStroke("#f0fdf4", "#bbf7d0");
+        doc.fillColor("#16a34a").font(fontBold).fontSize(9);
+        doc.text(fixRTL("\u062C\u0645\u0639 \u06AF\u0631\u062F\u0634 \u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631 (\u0648\u0627\u0631\u06CC\u0632\u06CC\u200C\u0647\u0627)"), 220, startY + 8, { align: "center", width: cardW - 10 });
+        doc.fontSize(10.5);
+        doc.text(fixRTL(`${rangeCredit.toLocaleString()}  \u062A\u0648\u0645\u0627\u0646`), 220, startY + 24, { align: "center", width: cardW - 10 });
+        const rangeBal = rangeDebit - rangeCredit;
+        const balColor = rangeBal > 0 ? "#b91c1c" : rangeBal < 0 ? "#15803d" : "#334155";
+        const balStatus = rangeBal > 0 ? "\u0628\u062F\u0647\u06A9\u0627\u0631" : rangeBal < 0 ? "\u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631" : "\u062A\u0633\u0648\u06CC\u0647";
+        doc.rect(400, startY, cardW, cardH).fillAndStroke("#f8fafc", "#cbd5e1");
+        doc.fillColor("#334155").font(fontBold).fontSize(9);
+        doc.text(fixRTL("\u062A\u0631\u0627\u0632 \u06A9\u0644 \u062D\u0633\u0627\u0628"), 405, startY + 8, { align: "center", width: cardW - 10 });
+        doc.fillColor(balColor).fontSize(10.5);
+        doc.text(fixRTL(`${Math.abs(rangeBal).toLocaleString()}  \u062A\u0648\u0645\u0627\u0646  -  ${balStatus}`), 405, startY + 24, { align: "center", width: cardW - 10 });
+      }
+      let y = 240;
       const cols = {
         bal: { x: 30, w: 75 },
         credit: { x: 105, w: 65 },
@@ -84709,11 +84749,29 @@ async function generateUserStatementPdf(user, options = {}) {
       doc.text(fixRTL("\u062A\u0627\u0631\u06CC\u062E \u0648 \u0632\u0645\u0627\u0646"), cols.date.x, y + 6, { width: cols.date.w, align: "center" });
       doc.text(fixRTL("\u0631\u062F\u06CC\u0641"), cols.num.x, y + 6, { width: cols.num.w, align: "center" });
       y += 22;
+      if (hasCustomRange && effStartMs > 0 && prevBalance !== 0) {
+        doc.rect(30, y, 535, 22).fillAndStroke("#eff6ff", "#bfdbfe");
+        const pStatus = prevBalance > 0 ? "\u0628\u062F\u0647\u06A9\u0627\u0631" : "\u0628\u0633\u062A\u0627\u0646\u06A9\u0627\u0631";
+        const pColor = prevBalance > 0 ? "#b91c1c" : "#15803d";
+        doc.fillColor(pColor).font(fontBold).fontSize(7.5);
+        doc.text(fixRTL(`${Math.abs(prevBalance).toLocaleString()}  ${pStatus}`), cols.bal.x, y + 6, { width: cols.bal.w, align: "center" });
+        doc.fillColor("#64748b").font(fontReg).fontSize(8);
+        doc.text("-", cols.credit.x, y + 6, { width: cols.credit.w, align: "center" });
+        doc.text("-", cols.debit.x, y + 6, { width: cols.debit.w, align: "center" });
+        doc.fillColor("#1e40af").font(fontBold).fontSize(8);
+        doc.text(fixRTL(`\u0645\u0627\u0646\u062F\u0647 \u0645\u0646\u0642\u0648\u0644 \u0627\u0632 \u0627\u0633\u0646\u0627\u062F \u0642\u0628\u0644 (\u067E\u06CC\u0634 \u0627\u0632 ${sStr || "\u0627\u06CC\u0646 \u0628\u0627\u0632\u0647"})`), cols.desc.x, y + 6, { width: cols.desc.w, align: "right" });
+        doc.fillColor("#64748b").font(fontReg).fontSize(7.5);
+        doc.text(fixRTL("\u0642\u0628\u0644 \u0627\u0632 \u0628\u0627\u0632\u0647"), cols.date.x, y + 6, { width: cols.date.w, align: "center" });
+        doc.fillColor("#1e40af").font(fontBold).fontSize(8);
+        doc.text("\u06F0", cols.num.x, y + 6, { width: cols.num.w, align: "center" });
+        y += 22;
+      }
       if (rowsAsc.length === 0) {
-        doc.rect(30, y, 535, 30).fillAndStroke("#ffffff", "#e2e8f0");
-        doc.fillColor("#64748b").font(fontReg).fontSize(10);
-        doc.text(fixRTL("\u0647\u06CC\u0686 \u062A\u0631\u0627\u06A9\u0646\u0634 \u06CC\u0627 \u0633\u0646\u062F\u06CC \u062F\u0631 \u0627\u06CC\u0646 \u0628\u0627\u0632\u0647 \u0632\u0645\u0627\u0646\u06CC \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A."), 30, y + 10, { align: "center", width: 535 });
-        y += 30;
+        doc.rect(30, y, 535, 34).fillAndStroke("#ffffff", "#e2e8f0");
+        doc.fillColor("#64748b").font(fontReg).fontSize(9.5);
+        const emptyMsg = hasCustomRange ? `\u062F\u0631 \u0628\u0627\u0632\u0647 \u0627\u0646\u062A\u062E\u0627\u0628\u06CC (${rangeTitle}) \u0647\u06CC\u0686 \u0631\u0648\u06CC\u062F\u0627\u062F \u06CC\u0627 \u062A\u0631\u0627\u06A9\u0646\u0634 \u0645\u0627\u0644\u06CC \u062C\u062F\u06CC\u062F\u06CC \u062B\u0628\u062A \u0646\u06AF\u0631\u062F\u06CC\u062F\u0647 \u0627\u0633\u062A.` : "\u0647\u06CC\u0686 \u062A\u0631\u0627\u06A9\u0646\u0634 \u06CC\u0627 \u0633\u0646\u062F\u06CC \u062F\u0631 \u0627\u06CC\u0646 \u062D\u0633\u0627\u0628 \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.";
+        doc.text(fixRTL(emptyMsg), 30, y + 10, { align: "center", width: 535 });
+        y += 34;
       } else {
         rowsAsc.forEach((row, idx) => {
           if (y > 760) {
@@ -84857,6 +84915,10 @@ __export(resellerBotManager_exports, {
 });
 function escapeHtml(text) {
   return (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+function normalizeDigitsToEnglish2(str) {
+  if (!str) return "";
+  return str.replace(/[۰-۹]/g, (d) => "\u06F0\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7\u06F8\u06F9".indexOf(d).toString()).replace(/[٠-٩]/g, (d) => "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u06F8\u06F9".indexOf(d).toString());
 }
 async function fetchSubscriptionLiveInfo(subUrl) {
   if (!subUrl || !subUrl.startsWith("http://") && !subUrl.startsWith("https://")) {
@@ -86789,22 +86851,37 @@ ${refLink}`
               }
               if (session.action === "admin_create_discount_coupon" || session.action === "admin_create_gift_coupon") {
                 const isGift = session.action === "admin_create_gift_coupon";
-                const parts = text.split(/[,\s|]+/).map((s) => s.trim()).filter(Boolean);
-                if (parts.length < 2) {
+                const normalizedText = normalizeDigitsToEnglish2(text).trim();
+                const parts = normalizedText.split(/[,\s|]+/).map((s) => s.trim()).filter(Boolean);
+                if (parts.length === 1) {
+                  const code2 = parts[0].toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+                  if (!code2) {
+                    await bot2.sendMessage(buyerChatId, "\u274C \u0646\u0627\u0645 \u06A9\u062F \u0628\u0627\u06CC\u062F \u0634\u0627\u0645\u0644 \u062D\u0631\u0648\u0641 \u0648 \u0627\u0639\u062F\u0627\u062F \u0627\u0646\u06AF\u0644\u06CC\u0633\u06CC \u0628\u0627\u0634\u062F. \u0644\u0637\u0641\u0627\u064B \u0645\u062C\u062F\u062F\u0627\u064B \u0627\u0631\u0633\u0627\u0644 \u06A9\u0646\u06CC\u062F:");
+                    return;
+                  }
+                  this.userSessionStates.set(sessionKey, {
+                    action: isGift ? "admin_coupon_enter_gift_val" : "admin_coupon_enter_percent",
+                    data: { code: code2, isGift }
+                  });
                   await bot2.sendMessage(
                     buyerChatId,
-                    isGift ? "\u274C \u0641\u0631\u0645\u062A \u0648\u0627\u0631\u062F \u0634\u062F\u0647 \u0635\u062D\u06CC\u062D \u0646\u06CC\u0633\u062A. \u0644\u0637\u0641\u0627\u064B \u06A9\u062F\u060C \u0645\u0628\u0644\u063A \u0647\u062F\u06CC\u0647 \u0648 \u062A\u0639\u062F\u0627\u062F \u0645\u062C\u0627\u0632 \u0631\u0627 \u0628\u0627 \u0641\u0627\u0635\u0644\u0647 \u0628\u0641\u0631\u0633\u062A\u06CC\u062F.\n\u0645\u062B\u0627\u0644: <code>GIFT10 10000 50</code>" : "\u274C \u0641\u0631\u0645\u062A \u0648\u0627\u0631\u062F \u0634\u062F\u0647 \u0635\u062D\u06CC\u062D \u0646\u06CC\u0633\u062A. \u0644\u0637\u0641\u0627\u064B \u06A9\u062F\u060C \u062F\u0631\u0635\u062F \u062A\u062E\u0641\u06CC\u0641 \u0648 \u062A\u0639\u062F\u0627\u062F \u0645\u062C\u0627\u0632 \u0631\u0627 \u0628\u0627 \u0641\u0627\u0635\u0644\u0647 \u0628\u0641\u0631\u0633\u062A\u06CC\u062F.\n\u0645\u062B\u0627\u0644: <code>OFF20 20 100</code>",
+                    isGift ? `\u2705 \u06A9\u062F \u0647\u062F\u06CC\u0647 <code>${escapeHtml(code2)}</code> \u062B\u0628\u062A \u0634\u062F.
+
+\u0644\u0637\u0641\u0627\u064B <b>\u0645\u0628\u0644\u063A \u0647\u062F\u06CC\u0647 \u0628\u0647 \u062A\u0648\u0645\u0627\u0646</b> \u0631\u0627 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F (\u0645\u062B\u0644\u0627\u064B: <code>10000</code> \u06CC\u0627 \u06F1\u06F0 \u0647\u0632\u0627\u0631):` : `\u2705 \u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 <code>${escapeHtml(code2)}</code> \u062B\u0628\u062A \u0634\u062F.
+
+\u0644\u0637\u0641\u0627\u064B <b>\u062F\u0631\u0635\u062F \u062A\u062E\u0641\u06CC\u0641</b> \u0631\u0627 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F (\u0639\u062F\u062F\u06CC \u0628\u06CC\u0646 \u06F1 \u062A\u0627 \u06F1\u06F0\u06F0\u060C \u0645\u062B\u0644\u0627\u064B: <code>20</code>):`,
                     { parse_mode: "HTML" }
                   );
                   return;
                 }
-                const code = parts[0].toUpperCase();
+                const code = parts[0].toUpperCase().replace(/[^A-Z0-9_-]/g, "");
                 const val = parseAmountInput(parts[1]) ?? parseInt(parts[1], 10);
                 const maxUsage = parts[2] ? parseInt(parts[2], 10) || 100 : 100;
                 if (!code || isNaN(val) || val <= 0 || !isGift && val > 100) {
                   await bot2.sendMessage(
                     buyerChatId,
-                    isGift ? "\u274C \u0645\u0628\u0644\u063A \u0647\u062F\u06CC\u0647 \u0628\u0627\u06CC\u062F \u0639\u062F\u062F\u06CC \u0628\u0632\u0631\u06AF\u062A\u0631 \u0627\u0632 \u0635\u0641\u0631 \u0628\u0627\u0634\u062F." : "\u274C \u062F\u0631\u0635\u062F \u062A\u062E\u0641\u06CC\u0641 \u0628\u0627\u06CC\u062F \u0639\u062F\u062F\u06CC \u0628\u06CC\u0646 1 \u062A\u0627 100 \u0628\u0627\u0634\u062F."
+                    isGift ? "\u274C \u0645\u0628\u0644\u063A \u0647\u062F\u06CC\u0647 \u0628\u0627\u06CC\u062F \u0639\u062F\u062F\u06CC \u0628\u0632\u0631\u06AF\u062A\u0631 \u0627\u0632 \u0635\u0641\u0631 \u0628\u0627\u0634\u062F.\n\u0646\u0645\u0648\u0646\u0647 \u0635\u062D\u06CC\u062D: <code>GIFT10 10000 50</code>" : "\u274C \u062F\u0631\u0635\u062F \u062A\u062E\u0641\u06CC\u0641 \u0628\u0627\u06CC\u062F \u0639\u062F\u062F\u06CC \u0628\u06CC\u0646 1 \u062A\u0627 100 \u0628\u0627\u0634\u062F.\n\u0646\u0645\u0648\u0646\u0647 \u0635\u062D\u06CC\u062D: <code>OFF20 20 100</code>",
+                    { parse_mode: "HTML" }
                   );
                   return;
                 }
@@ -86819,10 +86896,66 @@ ${refLink}`
                   usedBy: {}
                 });
                 db.saveUser(seller);
+                db.saveImmediate();
                 this.userSessionStates.delete(sessionKey);
                 await bot2.sendMessage(
                   buyerChatId,
-                  isGift ? `\u2705 <b>\u06A9\u062F \u0647\u062F\u06CC\u0647 <code>${escapeHtml(code)}</code> \u0628\u0647 \u0645\u0628\u0644\u063A ${val.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 (\u0638\u0631\u0641\u06CC\u062A: ${maxUsage} \u0628\u0627\u0631) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0633\u0627\u062E\u062A\u0647 \u0634\u062F!</b>` : `\u2705 <b>\u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 <code>${escapeHtml(code)}</code> \u0628\u0627 ${val}% \u062A\u062E\u0641\u06CC\u0641 \u062E\u0631\u06CC\u062F (\u0638\u0631\u0641\u06CC\u062A: ${maxUsage} \u0628\u0627\u0631) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0633\u0627\u062E\u062A\u0647 \u0634\u062F!</b>`,
+                  isGift ? `\u2705 <b>\u06A9\u062F \u0647\u062F\u06CC\u0647 <code>${escapeHtml(code)}</code> \u0628\u0647 \u0645\u0628\u0644\u063A ${val.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 (\u0638\u0631\u0641\u06CC\u062A: ${maxUsage} \u0628\u0627\u0631) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0633\u0627\u062E\u062A\u0647 \u0634\u062F!</b>
+
+\u{1F4A1} <i>\u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0634\u0645\u0627 \u0628\u0627 \u0648\u0627\u0631\u062F \u06A9\u0631\u062F\u0646 \u0627\u06CC\u0646 \u06A9\u062F \u062F\u0631 \u0631\u0628\u0627\u062A\u060C \u06A9\u06CC\u0641 \u067E\u0648\u0644\u0634\u0627\u0646 \u0634\u0627\u0631\u0698 \u0645\u06CC\u200C\u0634\u0648\u062F.</i>` : `\u2705 <b>\u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 <code>${escapeHtml(code)}</code> \u0628\u0627 ${val}% \u062A\u062E\u0641\u06CC\u0641 \u062E\u0631\u06CC\u062F (\u0638\u0631\u0641\u06CC\u062A: ${maxUsage} \u0628\u0627\u0631) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0633\u0627\u062E\u062A\u0647 \u0634\u062F!</b>
+
+\u{1F4A1} <i>\u0627\u06CC\u0646 \u062A\u062E\u0641\u06CC\u0641 \u0641\u0642\u0637 \u0631\u0648\u06CC \u0642\u06CC\u0645\u062A \u0641\u0631\u0648\u0634 \u0634\u0645\u0627 \u0628\u0647 \u0645\u0634\u062A\u0631\u06CC \u0627\u0639\u0645\u0627\u0644 \u0634\u062F\u0647 \u0648 \u0627\u0632 \u0633\u0648\u062F \u0634\u0645\u0627 \u06A9\u0633\u0631 \u0645\u06CC\u200C\u06AF\u0631\u062F\u062F\u061B \u0647\u0632\u06CC\u0646\u0647 \u0639\u0645\u062F\u0647 \u0648 \u0628\u062F\u0647\u06CC \u0634\u0645\u0627 \u0628\u0647 \u0633\u06CC\u0633\u062A\u0645 \u062A\u063A\u06CC\u06CC\u0631\u06CC \u0646\u062E\u0648\u0627\u0647\u062F \u06A9\u0631\u062F.</i>`,
+                  { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
+                );
+                await sendAdminCouponsMenu(buyerChatId, seller);
+                return;
+              }
+              if (session.action === "admin_coupon_enter_percent" || session.action === "admin_coupon_enter_gift_val") {
+                const isGift = session.action === "admin_coupon_enter_gift_val";
+                const code = session.data?.code;
+                const parsedVal = parseAmountInput(normalizeDigitsToEnglish2(text)) ?? parseInt(normalizeDigitsToEnglish2(text), 10);
+                if (isNaN(parsedVal) || parsedVal <= 0 || !isGift && parsedVal > 100) {
+                  await bot2.sendMessage(
+                    buyerChatId,
+                    isGift ? "\u274C \u0644\u0637\u0641\u0627\u064B \u0645\u0628\u0644\u063A \u0645\u0639\u062A\u0628\u0631 \u0628\u0647 \u062A\u0648\u0645\u0627\u0646 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F (\u0645\u062B\u0644\u0627\u064B: 10000):" : "\u274C \u0644\u0637\u0641\u0627\u064B \u062F\u0631\u0635\u062F\u06CC \u0628\u06CC\u0646 1 \u062A\u0627 100 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F (\u0645\u062B\u0644\u0627\u064B: 20):"
+                  );
+                  return;
+                }
+                this.userSessionStates.set(sessionKey, {
+                  action: "admin_coupon_enter_max_usage",
+                  data: { code, val: parsedVal, isGift }
+                });
+                await bot2.sendMessage(
+                  buyerChatId,
+                  `\u2705 \u0645\u0642\u062F\u0627\u0631 ${isGift ? `${parsedVal.toLocaleString()} \u062A\u0648\u0645\u0627\u0646` : `${parsedVal}%`} \u062A\u0627\u06CC\u06CC\u062F \u0634\u062F.
+
+\u0627\u06A9\u0646\u0648\u0646 <b>\u062D\u062F\u0627\u06A9\u062B\u0631 \u062F\u0641\u0639\u0627\u062A \u0645\u062C\u0627\u0632 \u0627\u0633\u062A\u0641\u0627\u062F\u0647</b> \u0631\u0627 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F (\u0645\u062B\u0644\u0627\u064B <code>50</code> \u06CC\u0627 <code>100</code>\u060C \u06CC\u0627 \u0639\u062F\u062F <code>0</code> \u0628\u0631\u0627\u06CC \u0646\u0627\u0645\u062D\u062F\u0648\u062F):`,
+                  { parse_mode: "HTML" }
+                );
+                return;
+              }
+              if (session.action === "admin_coupon_enter_max_usage") {
+                const { code, val, isGift } = session.data || {};
+                const rawMax = parseInt(normalizeDigitsToEnglish2(text), 10);
+                const maxUsage = isNaN(rawMax) || rawMax <= 0 ? 1e5 : rawMax;
+                if (!botCfg.coupons) botCfg.coupons = [];
+                botCfg.coupons = botCfg.coupons.filter((c) => c.code.toUpperCase() !== code);
+                botCfg.coupons.push({
+                  code,
+                  discountPercent: isGift ? 0 : val,
+                  giftAmount: isGift ? val : 0,
+                  maxUsage,
+                  usedCount: 0,
+                  usedBy: {}
+                });
+                db.saveUser(seller);
+                db.saveImmediate();
+                this.userSessionStates.delete(sessionKey);
+                await bot2.sendMessage(
+                  buyerChatId,
+                  isGift ? `\u2705 <b>\u06A9\u062F \u0647\u062F\u06CC\u0647 <code>${escapeHtml(code)}</code> \u0628\u0647 \u0645\u0628\u0644\u063A ${val.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 (\u0638\u0631\u0641\u06CC\u062A: ${maxUsage >= 1e5 ? "\u0646\u0627\u0645\u062D\u062F\u0648\u062F" : `${maxUsage} \u0628\u0627\u0631`}) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0627\u06CC\u062C\u0627\u062F \u06AF\u0631\u062F\u06CC\u062F!</b>` : `\u2705 <b>\u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 <code>${escapeHtml(code)}</code> \u0628\u0627 ${val}% \u062A\u062E\u0641\u06CC\u0641 \u0648\u06CC\u0698\u0647 \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 (\u0638\u0631\u0641\u06CC\u062A: ${maxUsage >= 1e5 ? "\u0646\u0627\u0645\u062D\u062F\u0648\u062F" : `${maxUsage} \u0628\u0627\u0631`}) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0641\u0639\u0627\u0644 \u0634\u062F!</b>
+
+\u{1F4A1} <i>\u062A\u0648\u062C\u0647: \u062A\u062E\u0641\u06CC\u0641 \u0627\u0632 \u0633\u0648\u062F \u0634\u0645\u0627 \u0628\u0647 \u0645\u0634\u062A\u0631\u06CC \u062F\u0627\u062F\u0647 \u0645\u06CC\u200C\u0634\u0648\u062F \u0648 \u0628\u062F\u0647\u06CC \u0639\u0645\u062F\u0647 \u0634\u0645\u0627 \u0628\u0647 \u0633\u06CC\u0633\u062A\u0645 \u0645\u0627\u062F\u0631 \u0628\u0647 \u0642\u06CC\u0645\u062A \u0647\u0645\u06A9\u0627\u0631 \u0628\u062F\u0648\u0646 \u062A\u063A\u06CC\u06CC\u0631 \u0628\u0627\u0642\u06CC \u0645\u06CC\u200C\u0645\u0627\u0646\u062F.</i>`,
                   { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
                 );
                 await sendAdminCouponsMenu(buyerChatId, seller);
@@ -91050,18 +91183,22 @@ ${paygDetailsList.join("\n\n")}
       ];
       if (viewMode === "daily") {
         inline_keyboard.push([
-          { text: "\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u0641\u0631\u0648\u0634 \u0627\u0645\u0631\u0648\u0632", callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
+          { text: `\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u0641\u0631\u0648\u0634 \u0627\u0645\u0631\u0648\u0632 (${todayFa})`, callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
           { text: "\u{1F50D} \u0641\u06CC\u0644\u062A\u0631 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC \u0634\u0645\u0633\u06CC", callback_data: `user_rep_filter_shamsi_${targetChatId}` }
         ]);
       } else if (viewMode === "monthly") {
         inline_keyboard.push([
-          { text: "\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u0645\u0627\u0647\u0627\u0646\u0647 (\u06F3\u06F0 \u0631\u0648\u0632)", callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` },
+          { text: "\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u0645\u0627\u0647\u0627\u0646\u0647 (\u06F3\u06F0 \u0631\u0648\u0632 \u0627\u062E\u06CC\u0631)", callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` },
           { text: "\u{1F50D} \u0641\u06CC\u0644\u062A\u0631 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC \u0634\u0645\u0633\u06CC", callback_data: `user_rep_filter_shamsi_${targetChatId}` }
         ]);
       } else {
         inline_keyboard.push([
-          { text: "\u{1F4E5} \u062F\u0631\u06CC\u0627\u0641\u062A PDF \u06A9\u0627\u0645\u0644 \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 (\u0647\u0645\u0647 \u0627\u0633\u0646\u0627\u062F)", callback_data: `user_rep_pdf_${targetChatId}` },
-          { text: "\u{1F50D} \u0641\u06CC\u0644\u062A\u0631 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC \u0634\u0645\u0633\u06CC", callback_data: `user_rep_filter_shamsi_${targetChatId}` }
+          { text: `\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 \u0627\u0645\u0631\u0648\u0632 (${todayFa})`, callback_data: `user_rep_pdf_${targetChatId}_${todayStartMs}_${todayEndMs}` },
+          { text: "\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u06F3\u06F0 \u0631\u0648\u0632 \u0627\u062E\u06CC\u0631", callback_data: `user_rep_pdf_${targetChatId}_${now - MS_PER_MONTH}_${now}` }
+        ]);
+        inline_keyboard.push([
+          { text: "\u{1F50D} \u0641\u06CC\u0644\u062A\u0631 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC \u0634\u0645\u0633\u06CC \u0648 \u062F\u0627\u0646\u0644\u0648\u062F PDF", callback_data: `user_rep_filter_shamsi_${targetChatId}` },
+          { text: "\u{1F4D1} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u06A9\u0644 \u0627\u0633\u0646\u0627\u062F (\u0627\u0632 \u0627\u0628\u062A\u062F\u0627)", callback_data: `user_rep_pdf_${targetChatId}_0_${now}` }
         ]);
       }
       inline_keyboard.push([
@@ -91189,13 +91326,10 @@ ${paygDetailsList.join("\n\n")}
 ` + ledgerText;
     const inline_keyboard = [
       [
-        { text: "\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u06A9\u0627\u0645\u0644 \u0627\u06CC\u0646 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC", callback_data: `user_rep_pdf_${targetChatId}_${startMs}_${endMs}` }
+        { text: `\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u062F\u0642\u06CC\u0642 \u0627\u06CC\u0646 \u0628\u0627\u0632\u0647 (${rangeLabel})`, callback_data: `user_rep_pdf_${targetChatId}_${startMs}_${endMs}` }
       ],
       [
-        { text: "\u{1F4E5} \u062F\u0627\u0646\u0644\u0648\u062F PDF \u06A9\u0644 \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 (\u062A\u0645\u0627\u0645 \u0627\u0633\u0646\u0627\u062F)", callback_data: `user_rep_pdf_${targetChatId}` },
-        { text: "\u{1F50D} \u062A\u063A\u06CC\u06CC\u0631 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC \u0634\u0645\u0633\u06CC", callback_data: `user_rep_filter_shamsi_${targetChatId}` }
-      ],
-      [
+        { text: "\u{1F50D} \u062A\u063A\u06CC\u06CC\u0631 \u0628\u0627\u0632\u0647 \u062A\u0627\u0631\u06CC\u062E\u06CC \u0634\u0645\u0633\u06CC", callback_data: `user_rep_filter_shamsi_${targetChatId}` },
         { text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 \u06A9\u0644\u06CC", callback_data: `user_rep_statement_${targetChatId}` }
       ]
     ];
@@ -95131,21 +95265,28 @@ ${refLink}
       if (data && data.startsWith("user_rep_pdf_")) {
         const parts = data.replace("user_rep_pdf_", "").split("_");
         const targetChatId = parseInt(parts[0], 10);
-        const startMs = parts[1] ? parseInt(parts[1], 10) : void 0;
-        const endMs = parts[2] ? parseInt(parts[2], 10) : void 0;
+        const rawStart = parts[1] !== void 0 && parts[1] !== "" ? parseInt(parts[1], 10) : void 0;
+        const rawEnd = parts[2] !== void 0 && parts[2] !== "" ? parseInt(parts[2], 10) : void 0;
         const targetUser = db.getUser(targetChatId);
         if (!targetUser) {
           answerQuery({ text: "\u274C \u06A9\u0627\u0631\u0628\u0631 \u0645\u0648\u0631\u062F \u0646\u0638\u0631 \u06CC\u0627\u0641\u062A \u0646\u0634\u062F.", show_alert: true });
           return;
         }
         answerQuery({ text: "\u23F3 \u062F\u0631 \u062D\u0627\u0644 \u0633\u0627\u062E\u062A \u0641\u0627\u06CC\u0644 PDF \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628..." });
-        bot.sendMessage(chatId, "\u23F3 \u062F\u0631 \u062D\u0627\u0644 \u062E\u0631\u0648\u062C\u06CC \u06AF\u0631\u0641\u062A\u0646 \u0648 \u0633\u0627\u062E\u062A \u0641\u0627\u06CC\u0644 PDF \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 \u06A9\u0627\u0645\u0644... \u0644\u0637\u0641\u0627\u064B \u0686\u0646\u062F \u0644\u062D\u0638\u0647 \u0634\u06A9\u06CC\u0628\u0627 \u0628\u0627\u0634\u06CC\u062F.");
+        bot.sendMessage(chatId, "\u23F3 \u062F\u0631 \u062D\u0627\u0644 \u062E\u0631\u0648\u062C\u06CC \u06AF\u0631\u0641\u062A\u0646 \u0648 \u0633\u0627\u062E\u062A \u0641\u0627\u06CC\u0644 PDF \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628 \u062F\u0642\u06CC\u0642... \u0644\u0637\u0641\u0627\u064B \u0686\u0646\u062F \u0644\u062D\u0638\u0647 \u0634\u06A9\u06CC\u0628\u0627 \u0628\u0627\u0634\u06CC\u062F.");
         try {
           let options = {};
-          if (startMs && endMs) {
-            const startDateStr = formatShamsiDate(new Date(startMs));
-            const endDateStr = formatShamsiDate(new Date(endMs));
-            options = { startMs, endMs, startDateStr, endDateStr };
+          let rangeCaption = "\u06A9\u0644 \u0627\u0633\u0646\u0627\u062F (\u0627\u0632 \u0627\u0628\u062A\u062F\u0627 \u062A\u0627\u06A9\u0646\u0648\u0646)";
+          if (rawStart !== void 0 && rawEnd !== void 0) {
+            if (rawStart > 0) {
+              const startDateStr = formatShamsiDate(new Date(rawStart));
+              const endDateStr = formatShamsiDate(new Date(rawEnd));
+              options = { startMs: rawStart, endMs: rawEnd, startDateStr, endDateStr };
+              rangeCaption = `\u0627\u0632 ${startDateStr} \u062A\u0627 ${endDateStr}`;
+            } else {
+              const endDateStr = formatShamsiDate(new Date(rawEnd));
+              options = { startMs: 0, endMs: rawEnd, startDateStr: "\u0627\u0628\u062A\u062F\u0627", endDateStr };
+            }
           }
           const pdfBuffer = await generateUserStatementPdf(targetUser, options);
           const fileName = `Statement_${targetUser.chatId}_${Date.now()}.pdf`;
@@ -95157,6 +95298,7 @@ ${refLink}
 
 \u{1F464} <b>\u0637\u0631\u0641 \u062D\u0633\u0627\u0628:</b> ${escapeHtml2(targetUser.nickname || targetUser.username || String(targetUser.chatId))}
 \u{1F194} <b>\u0634\u0646\u0627\u0633\u0647 \u0639\u062F\u062F\u06CC:</b> <code>${targetUser.chatId}</code>
+\u{1F5D3} <b>\u062F\u0648\u0631\u0647 \u0635\u0648\u0631\u062A\u062D\u0633\u0627\u0628:</b> <code>${rangeCaption}</code>
 \u{1F4C5} <b>\u062A\u0627\u0631\u06CC\u062E \u0635\u062F\u0648\u0631:</b> <code>${(/* @__PURE__ */ new Date()).toLocaleDateString("fa-IR", { timeZone: "Asia/Tehran" })}</code>`
             },
             { filename: fileName, contentType: "application/pdf" }
@@ -98976,6 +99118,70 @@ async function startServer() {
       });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message || "\u062E\u0637\u0627 \u062F\u0631 \u0630\u062E\u06CC\u0631\u0647 \u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0631\u0628\u0627\u062A" });
+    }
+  });
+  api.post("/seller-portal/coupons/:chatId", (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: "\u062D\u0633\u0627\u0628 \u0647\u0645\u06A9\u0627\u0631 \u0645\u0639\u062A\u0628\u0631 \u0646\u06CC\u0633\u062A." });
+      const { code, discountPercent, giftAmount, maxUsage } = req.body;
+      const cleanCode = String(code || "").trim().replace(/\s+/g, "").toUpperCase();
+      if (!cleanCode) {
+        return res.status(400).json({ success: false, message: "\u0644\u0637\u0641\u0627\u064B \u0646\u0627\u0645 \u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 \u0631\u0627 \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F." });
+      }
+      const discPct = discountPercent !== void 0 ? Number(discountPercent) : 0;
+      const giftVal = giftAmount !== void 0 ? Number(giftAmount) : 0;
+      const maxUse = maxUsage !== void 0 && Number(maxUsage) > 0 ? Number(maxUsage) : 100;
+      if (discPct <= 0 && giftVal <= 0) {
+        return res.status(400).json({ success: false, message: "\u0628\u0627\u06CC\u062F \u062D\u062F\u0627\u0642\u0644 \u062F\u0631\u0635\u062F \u062A\u062E\u0641\u06CC\u0641 (\u06F1 \u062A\u0627 \u06F1\u06F0\u06F0) \u06CC\u0627 \u0645\u0628\u0644\u063A \u0647\u062F\u06CC\u0647 \u062A\u0639\u06CC\u06CC\u0646 \u0634\u0648\u062F." });
+      }
+      if (discPct > 100) {
+        return res.status(400).json({ success: false, message: "\u062F\u0631\u0635\u062F \u062A\u062E\u0641\u06CC\u0641 \u0646\u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u062F \u0628\u06CC\u0634 \u0627\u0632 \u06F1\u06F0\u06F0\u066A \u0628\u0627\u0634\u062F." });
+      }
+      if (!user.sellerBot) {
+        user.sellerBot = { enabled: false, botToken: "" };
+      }
+      if (!Array.isArray(user.sellerBot.coupons)) {
+        user.sellerBot.coupons = [];
+      }
+      user.sellerBot.coupons = user.sellerBot.coupons.filter((c) => c.code.toUpperCase() !== cleanCode);
+      user.sellerBot.coupons.push({
+        code: cleanCode,
+        discountPercent: discPct > 0 ? discPct : 0,
+        giftAmount: giftVal > 0 ? giftVal : 0,
+        maxUsage: maxUse,
+        usedCount: 0,
+        usedBy: {}
+      });
+      db.saveUser(user);
+      db.saveImmediate();
+      res.json({
+        success: true,
+        message: discPct > 0 ? `\u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 ${cleanCode} \u0628\u0627 ${discPct}% \u062A\u062E\u0641\u06CC\u0641 \u0631\u0648\u06CC \u0642\u06CC\u0645\u062A \u0641\u0631\u0648\u0634 \u0628\u0647 \u0645\u0634\u062A\u0631\u06CC \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F.` : `\u06A9\u062F \u0647\u062F\u06CC\u0647 ${cleanCode} \u0628\u0647 \u0645\u0628\u0644\u063A ${giftVal.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F.`,
+        coupons: user.sellerBot.coupons
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "\u062E\u0637\u0627 \u062F\u0631 \u062B\u0628\u062A \u06A9\u062F \u062A\u062E\u0641\u06CC\u0641: " + (e.message || String(e)) });
+    }
+  });
+  api.delete("/seller-portal/coupons/:chatId/:code", (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) return res.status(404).json({ success: false, message: "\u062D\u0633\u0627\u0628 \u0647\u0645\u06A9\u0627\u0631 \u0645\u0639\u062A\u0628\u0631 \u0646\u06CC\u0633\u062A." });
+      const targetCode = String(req.params.code || "").trim().toUpperCase();
+      if (!user.sellerBot || !Array.isArray(user.sellerBot.coupons)) {
+        return res.json({ success: true, coupons: [] });
+      }
+      user.sellerBot.coupons = user.sellerBot.coupons.filter((c) => c.code.toUpperCase() !== targetCode);
+      db.saveUser(user);
+      db.saveImmediate();
+      res.json({
+        success: true,
+        message: `\u06A9\u062F \u062A\u062E\u0641\u06CC\u0641 ${targetCode} \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u062D\u0630\u0641 \u06AF\u0631\u062F\u06CC\u062F.`,
+        coupons: user.sellerBot.coupons
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "\u062E\u0637\u0627 \u062F\u0631 \u062D\u0630\u0641 \u06A9\u062F: " + (e.message || String(e)) });
     }
   });
   api.post("/seller-portal/bot-order-action/:chatId", async (req, res) => {

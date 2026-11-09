@@ -36,6 +36,13 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#039;');
 }
 
+function normalizeDigitsToEnglish(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString())
+    .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧۸۹'.indexOf(d).toString());
+}
+
 async function fetchSubscriptionLiveInfo(subUrl: string): Promise<{
   upload: number;
   download: number;
@@ -2245,18 +2252,31 @@ class ResellerBotManager {
 
           if (session.action === 'admin_create_discount_coupon' || session.action === 'admin_create_gift_coupon') {
             const isGift = session.action === 'admin_create_gift_coupon';
-            const parts = text.split(/[,\s|]+/).map(s => s.trim()).filter(Boolean);
-            if (parts.length < 2) {
+            const normalizedText = normalizeDigitsToEnglish(text).trim();
+            const parts = normalizedText.split(/[,\s|]+/).map(s => s.trim()).filter(Boolean);
+            
+            // If user typed only the code name, switch to step-by-step wizard
+            if (parts.length === 1) {
+              const code = parts[0].toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+              if (!code) {
+                await bot.sendMessage(buyerChatId, '❌ نام کد باید شامل حروف و اعداد انگلیسی باشد. لطفاً مجدداً ارسال کنید:');
+                return;
+              }
+              this.userSessionStates.set(sessionKey, {
+                action: isGift ? 'admin_coupon_enter_gift_val' : 'admin_coupon_enter_percent',
+                data: { code, isGift }
+              });
               await bot.sendMessage(
                 buyerChatId,
                 isGift
-                  ? '❌ فرمت وارد شده صحیح نیست. لطفاً کد، مبلغ هدیه و تعداد مجاز را با فاصله بفرستید.\nمثال: <code>GIFT10 10000 50</code>'
-                  : '❌ فرمت وارد شده صحیح نیست. لطفاً کد، درصد تخفیف و تعداد مجاز را با فاصله بفرستید.\nمثال: <code>OFF20 20 100</code>',
+                  ? `✅ کد هدیه <code>${escapeHtml(code)}</code> ثبت شد.\n\nلطفاً <b>مبلغ هدیه به تومان</b> را وارد کنید (مثلاً: <code>10000</code> یا ۱۰ هزار):`
+                  : `✅ کد تخفیف <code>${escapeHtml(code)}</code> ثبت شد.\n\nلطفاً <b>درصد تخفیف</b> را وارد کنید (عددی بین ۱ تا ۱۰۰، مثلاً: <code>20</code>):`,
                 { parse_mode: 'HTML' }
               );
               return;
             }
-            const code = parts[0].toUpperCase();
+
+            const code = parts[0].toUpperCase().replace(/[^A-Z0-9_-]/g, '');
             const val = parseAmountInput(parts[1]) ?? parseInt(parts[1], 10);
             const maxUsage = parts[2] ? (parseInt(parts[2], 10) || 100) : 100;
 
@@ -2264,8 +2284,9 @@ class ResellerBotManager {
               await bot.sendMessage(
                 buyerChatId,
                 isGift
-                  ? '❌ مبلغ هدیه باید عددی بزرگتر از صفر باشد.'
-                  : '❌ درصد تخفیف باید عددی بین 1 تا 100 باشد.'
+                  ? '❌ مبلغ هدیه باید عددی بزرگتر از صفر باشد.\nنمونه صحیح: <code>GIFT10 10000 50</code>'
+                  : '❌ درصد تخفیف باید عددی بین 1 تا 100 باشد.\nنمونه صحیح: <code>OFF20 20 100</code>',
+                { parse_mode: 'HTML' }
               );
               return;
             }
@@ -2281,13 +2302,69 @@ class ResellerBotManager {
               usedBy: {}
             });
             db.saveUser(seller);
+            db.saveImmediate();
             this.userSessionStates.delete(sessionKey);
 
             await bot.sendMessage(
               buyerChatId,
               isGift
-                ? `✅ <b>کد هدیه <code>${escapeHtml(code)}</code> به مبلغ ${val.toLocaleString()} تومان (ظرفیت: ${maxUsage} بار) با موفقیت ساخته شد!</b>`
-                : `✅ <b>کد تخفیف <code>${escapeHtml(code)}</code> با ${val}% تخفیف خرید (ظرفیت: ${maxUsage} بار) با موفقیت ساخته شد!</b>`,
+                ? `✅ <b>کد هدیه <code>${escapeHtml(code)}</code> به مبلغ ${val.toLocaleString()} تومان (ظرفیت: ${maxUsage} بار) با موفقیت ساخته شد!</b>\n\n💡 <i>مشتریان شما با وارد کردن این کد در ربات، کیف پولشان شارژ می‌شود.</i>`
+                : `✅ <b>کد تخفیف <code>${escapeHtml(code)}</code> با ${val}% تخفیف خرید (ظرفیت: ${maxUsage} بار) با موفقیت ساخته شد!</b>\n\n💡 <i>این تخفیف فقط روی قیمت فروش شما به مشتری اعمال شده و از سود شما کسر می‌گردد؛ هزینه عمده و بدهی شما به سیستم تغییری نخواهد کرد.</i>`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+            );
+            await sendAdminCouponsMenu(buyerChatId, seller);
+            return;
+          }
+
+          if (session.action === 'admin_coupon_enter_percent' || session.action === 'admin_coupon_enter_gift_val') {
+            const isGift = session.action === 'admin_coupon_enter_gift_val';
+            const code = session.data?.code;
+            const parsedVal = parseAmountInput(normalizeDigitsToEnglish(text)) ?? parseInt(normalizeDigitsToEnglish(text), 10);
+            if (isNaN(parsedVal) || parsedVal <= 0 || (!isGift && parsedVal > 100)) {
+              await bot.sendMessage(
+                buyerChatId,
+                isGift
+                  ? '❌ لطفاً مبلغ معتبر به تومان وارد کنید (مثلاً: 10000):'
+                  : '❌ لطفاً درصدی بین 1 تا 100 وارد کنید (مثلاً: 20):'
+              );
+              return;
+            }
+            this.userSessionStates.set(sessionKey, {
+              action: 'admin_coupon_enter_max_usage',
+              data: { code, val: parsedVal, isGift }
+            });
+            await bot.sendMessage(
+              buyerChatId,
+              `✅ مقدار ${isGift ? `${parsedVal.toLocaleString()} تومان` : `${parsedVal}%`} تایید شد.\n\nاکنون <b>حداکثر دفعات مجاز استفاده</b> را وارد کنید (مثلاً <code>50</code> یا <code>100</code>، یا عدد <code>0</code> برای نامحدود):`,
+              { parse_mode: 'HTML' }
+            );
+            return;
+          }
+
+          if (session.action === 'admin_coupon_enter_max_usage') {
+            const { code, val, isGift } = session.data || {};
+            const rawMax = parseInt(normalizeDigitsToEnglish(text), 10);
+            const maxUsage = isNaN(rawMax) || rawMax <= 0 ? 100000 : rawMax;
+
+            if (!botCfg.coupons) botCfg.coupons = [];
+            botCfg.coupons = botCfg.coupons.filter(c => c.code.toUpperCase() !== code);
+            botCfg.coupons.push({
+              code,
+              discountPercent: isGift ? 0 : val,
+              giftAmount: isGift ? val : 0,
+              maxUsage,
+              usedCount: 0,
+              usedBy: {}
+            });
+            db.saveUser(seller);
+            db.saveImmediate();
+            this.userSessionStates.delete(sessionKey);
+
+            await bot.sendMessage(
+              buyerChatId,
+              isGift
+                ? `✅ <b>کد هدیه <code>${escapeHtml(code)}</code> به مبلغ ${val.toLocaleString()} تومان (ظرفیت: ${maxUsage >= 100000 ? 'نامحدود' : `${maxUsage} بار`}) با موفقیت ایجاد گردید!</b>`
+                : `✅ <b>کد تخفیف <code>${escapeHtml(code)}</code> با ${val}% تخفیف ویژه مشتریان (ظرفیت: ${maxUsage >= 100000 ? 'نامحدود' : `${maxUsage} بار`}) با موفقیت فعال شد!</b>\n\n💡 <i>توجه: تخفیف از سود شما به مشتری داده می‌شود و بدهی عمده شما به سیستم مادر به قیمت همکار بدون تغییر باقی می‌ماند.</i>`,
               { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
             );
             await sendAdminCouponsMenu(buyerChatId, seller);
