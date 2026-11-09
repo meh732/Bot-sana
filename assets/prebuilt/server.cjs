@@ -90224,6 +90224,7 @@ async function initBot() {
         console.warn(`[Bot Warning] getMe check returned: ${vMsg}. Polling is active.`);
       }
     });
+    let lastTransientLogTime = 0;
     bot.on("polling_error", (error) => {
       const errMsg = error?.message || String(error);
       if (errMsg.includes("404") || errMsg.includes("401") || errMsg.includes("Unauthorized") || errMsg.includes("Not Found")) {
@@ -90237,6 +90238,15 @@ async function initBot() {
       }
       if (errMsg.includes("409") || errMsg.includes("Conflict")) {
         console.warn("[Bot Warning] Telegram 409 Conflict: Another bot process is running with this token. Please ensure only 1 instance runs.");
+        return;
+      }
+      const isTransient = errMsg.includes("502") || errMsg.includes("504") || errMsg.includes("ESOCKETTIMEDOUT") || errMsg.includes("ECONNRESET") || errMsg.includes("ETIMEDOUT");
+      if (isTransient) {
+        const now = Date.now();
+        if (now - lastTransientLogTime > 6e4) {
+          lastTransientLogTime = now;
+          console.warn("[Bot Info] Telegram server temporary gateway delay (502/Timeout). Polling is waiting and will auto-reconnect...");
+        }
         return;
       }
       console.error("[Bot Error] Polling error:", errMsg);
