@@ -4355,20 +4355,32 @@ class ResellerBotManager {
     try {
       // CASE 1: WALLET DEPOSIT IN BOT 2
       if (order.type === 'deposit') {
-        const buyerRec = (seller.sellerBot.buyers || []).find(b => b.chatId === order.buyerChatId);
-        if (buyerRec) {
-          buyerRec.balance = (buyerRec.balance || 0) + (order.retailPrice || 0);
+        if (!seller.sellerBot.buyers) seller.sellerBot.buyers = [];
+        let buyerRec = seller.sellerBot.buyers.find(b => b.chatId === order.buyerChatId);
+        if (!buyerRec) {
+          buyerRec = {
+            chatId: order.buyerChatId,
+            username: order.buyerUsername || '',
+            name: order.buyerName || 'مشتری',
+            balance: 0,
+            joinedAt: new Date().toISOString()
+          };
+          seller.sellerBot.buyers.push(buyerRec);
         }
+        buyerRec.balance = (buyerRec.balance || 0) + (order.retailPrice || 0);
         order.status = 'approved';
         order.approvedAt = new Date().toISOString();
+        seller.sellerBot.totalRevenueToman = (seller.sellerBot.totalRevenueToman || 0) + (order.retailPrice || 0);
+
         db.saveUser(seller);
+        db.saveImmediate();
 
         if (childBot) {
           await childBot
             .sendMessage(
               order.buyerChatId,
               `🎉 <b>فیش واریزی شما تایید شد و کیف پول شما به مبلغ ${(order.retailPrice || 0).toLocaleString()} تومان شارژ گردید!</b>\n\n` +
-                `💰 <b>موجودی فعلی کیف پول شما:</b> <b>${(buyerRec?.balance || 0).toLocaleString()} تومان</b>\n` +
+                `💰 <b>موجودی فعلی کیف پول شما:</b> <b>${(buyerRec?.balance || 0).toLocaleString()} تومان</b>\n\n` +
                 `هم‌اکنون می‌توانید از منوی «🛒 خرید سرویس» یا «📋 لیست خریدهای من» به صورت آنی خرید یا تمدید نمایید.`,
               { parse_mode: 'HTML' }
             )
@@ -4377,14 +4389,14 @@ class ResellerBotManager {
 
         return {
           success: true,
-          message: `کیف پول مشتری به مبلغ ${(order.retailPrice || 0).toLocaleString()} تومان شارژ شد.`
+          message: `کیف پول مشتری با موفقیت به مبلغ ${(order.retailPrice || 0).toLocaleString()} تومان شارژ شد.`
         };
       }
 
       // CASE 2: SERVICE RENEWAL IN BOT 2 (Charges Wholesale Cost to Seller's Debt in Bot 1)
       if (order.type === 'renew') {
         const allPurchases = seller.purchases || [];
-        const purchase = allPurchases.find(
+        let purchase = allPurchases.find(
           (p: any) =>
             (order.deliveredPurchaseId && (p.id === order.deliveredPurchaseId || p.subId === order.deliveredPurchaseId)) ||
             (order.deliveredSubUrl &&
@@ -4392,8 +4404,16 @@ class ResellerBotManager {
                 p.sanaeiSubUrl === order.deliveredSubUrl ||
                 p.rebeccaSubUrl === order.deliveredSubUrl ||
                 p.mroceanSubUrl === order.deliveredSubUrl ||
-                p.panel4SubUrl === order.deliveredSubUrl))
+                p.panel4SubUrl === order.deliveredSubUrl)) ||
+            (order.productId && (p.id === order.productId || p.subId === order.productId))
         );
+
+        if (!purchase && order.targetOrderId) {
+          const origOrder = (seller.sellerBot?.orders || []).find(o => o.id === order.targetOrderId);
+          if (origOrder && origOrder.deliveredPurchaseId) {
+            purchase = allPurchases.find((p: any) => p.id === origOrder.deliveredPurchaseId || p.subId === origOrder.deliveredPurchaseId);
+          }
+        }
 
         if (!purchase) {
           throw new Error('کانفیگ اولیه جهت تمدید در لیست خریدهای همکار یافت نشد.');
@@ -4456,6 +4476,7 @@ class ResellerBotManager {
         seller.sellerBot.totalProfitToman = (seller.sellerBot.totalProfitToman || 0) + (order.profit || 0);
 
         db.saveUser(seller);
+        db.saveImmediate();
 
         // Notify Seller in Master Bot about debt addition
         const masterBot = getBot();
@@ -4506,10 +4527,32 @@ class ResellerBotManager {
           customName: cleanCustomName,
           source: 'api'
         });
-      } else if (order.productId) {
-        purchase = await executeSellerPortalPurchase(sellerChatId, order.productId, cleanCustomName, 'api');
+      } else if (order.productId || order.type === 'product') {
+        try {
+          purchase = await executeSellerPortalPurchase(sellerChatId, order.productId || order.productName || '', cleanCustomName, 'api');
+        } catch (prodErr: any) {
+          if (order.volumeGb && order.volumeGb > 0) {
+            purchase = await executeSellerCustomVolumePurchase({
+              sellerChatId,
+              volumeGb: order.volumeGb,
+              durationDays: order.durationDays || 30,
+              customName: cleanCustomName,
+              source: 'api'
+            });
+          } else {
+            throw prodErr;
+          }
+        }
+      } else if (order.volumeGb && order.volumeGb > 0) {
+        purchase = await executeSellerCustomVolumePurchase({
+          sellerChatId,
+          volumeGb: order.volumeGb,
+          durationDays: order.durationDays || 30,
+          customName: cleanCustomName,
+          source: 'api'
+        });
       } else {
-        throw new Error('نوع سفارش نامشخص است.');
+        throw new Error('نوع سفارش نامشخص است یا اطلاعات محصول معتبر نیست.');
       }
 
       // Re-fetch seller because executeSellerPortalPurchase updated seller.debt & seller.purchases in db!
@@ -4539,6 +4582,7 @@ class ResellerBotManager {
       }
 
       db.saveUser(updatedSeller);
+      db.saveImmediate();
 
       if (childBot) {
         await childBot

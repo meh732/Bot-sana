@@ -248,8 +248,23 @@ export async function executeSellerPortalPurchase(sellerChatId: number, productI
     product = state.products.find((p: any) => p && !p.disabled && Number(p.volumeGb) === numGb);
   }
 
+  // If still not found, check if cleanId contains product ID or name or vice versa
   if (!product) {
-    throw new Error(`محصول مورد نظر با شناسه یا عنوان «${productId}» یافت نشد.`);
+    product = state.products.find((p: any) => {
+      if (!p || p.disabled) return false;
+      const pId = String(p.id || '').trim().toLowerCase();
+      const pName = String(p.name || '').trim().toLowerCase();
+      return pId.includes(cleanId) || cleanId.includes(pId) || pName.includes(cleanId) || cleanId.includes(pName);
+    });
+  }
+
+  // Fallback: if still not found, get the first active non-disabled product
+  if (!product) {
+    product = state.products.find((p: any) => p && !p.disabled);
+  }
+
+  if (!product) {
+    throw new Error(`هیچ محصول فعالی در سیستم جهت صدور یافت نشد.`);
   }
 
   const isPAYG = !!product.isPayAsYouGo;
