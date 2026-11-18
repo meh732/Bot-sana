@@ -1152,10 +1152,359 @@ class ResellerBotManager {
       });
     };
 
+    const getMergedBuyersList = (seller: User) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const map = new Map<number, any>();
+
+      for (const b of botCfg.buyers || []) {
+        const cid = Number(b.chatId);
+        if (!cid || isNaN(cid)) continue;
+        map.set(cid, {
+          chatId: cid,
+          name: b.name || 'کاربر',
+          username: b.username || '',
+          balance: Number(b.balance) || 0,
+          joinedAt: b.joinedAt || '',
+          testUsed: !!b.testUsed,
+          referralCount: b.referralCount || 0,
+          referralEarnings: b.referralEarnings || 0,
+          ordersCount: 0,
+          approvedServicesCount: 0,
+          totalSpentToman: 0,
+          lastOrderAt: b.joinedAt || ''
+        });
+      }
+
+      for (const o of botCfg.orders || []) {
+        const cid = Number(o.buyerChatId);
+        if (!cid || isNaN(cid)) continue;
+        let entry = map.get(cid);
+        if (!entry) {
+          entry = {
+            chatId: cid,
+            name: o.buyerName || 'کاربر',
+            username: o.buyerUsername || '',
+            balance: 0,
+            joinedAt: o.createdAt || '',
+            testUsed: o.type === 'free_test',
+            referralCount: 0,
+            referralEarnings: 0,
+            ordersCount: 0,
+            approvedServicesCount: 0,
+            totalSpentToman: 0,
+            lastOrderAt: o.createdAt || ''
+          };
+          map.set(cid, entry);
+        } else {
+          if ((!entry.name || entry.name === 'کاربر') && o.buyerName) entry.name = o.buyerName;
+          if (!entry.username && o.buyerUsername) entry.username = o.buyerUsername;
+        }
+        entry.ordersCount += 1;
+        if (o.status === 'approved') {
+          if (o.type !== 'deposit') entry.approvedServicesCount += 1;
+          entry.totalSpentToman += Number(o.retailPrice) || 0;
+        }
+        if (o.createdAt && (!entry.lastOrderAt || new Date(o.createdAt).getTime() > new Date(entry.lastOrderAt).getTime())) {
+          entry.lastOrderAt = o.createdAt;
+        }
+      }
+
+      return Array.from(map.values()).sort((a, b) => {
+        const ta = a.lastOrderAt ? new Date(a.lastOrderAt).getTime() : 0;
+        const tb = b.lastOrderAt ? new Date(b.lastOrderAt).getTime() : 0;
+        return tb - ta;
+      });
+    };
+
+    const sendAdminBuyersMenu = async (adminChatId: number, seller: User, page = 0, editMsgId?: number) => {
+      const merged = getMergedBuyersList(seller);
+      const pageSize = 12;
+      const totalPages = Math.max(1, Math.ceil(merged.length / pageSize));
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+      const slice = merged.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+      let textOut = `👥 <b>مدیریت مشتریان و استعلام سوابق (${merged.length} نفر):</b>\n\n`;
+      if (merged.length === 0) {
+        textOut += `ℹ️ هنوز هیچ کاربری در این ربات ثبت نشده است.\nمی‌توانید از دکمه‌های زیر با وارد کردن <b>آیدی عددی</b> کاربر، موجودی کیف پولش را شارژ کنید یا سوابق را بررسی نمایید:`;
+      } else {
+        textOut += `صفحه <b>${safePage + 1}</b> از <b>${totalPages}</b>\nبرای مشاهده <b>تمامی خریدهای قبلی</b> یا <b>شارژ موجودی پول</b>، مشتری را انتخاب کنید یا آیدی عددی او را جستجو نمایید:`;
+      }
+
+      const inline_keyboard: any[][] = [
+        [
+          { text: '🔍 جستجو و سوابق با آیدی عددی', callback_data: 'admin_search_buyer_by_id', style: 'success' },
+          { text: '💳 شارژ مستقیم با آیدی عددی', callback_data: 'admin_quick_charge_by_id', style: 'primary' }
+        ]
+      ];
+
+      slice.forEach(b => {
+        const namePart = b.name && b.name !== 'کاربر' ? b.name : (b.username ? `@${b.username}` : 'کاربر');
+        const label = `👤 ${namePart} | ${b.chatId} | ${(b.balance || 0).toLocaleString()} ت (${b.ordersCount} خرید)`;
+        inline_keyboard.push([
+          { text: label.slice(0, 62), callback_data: `admin_buyer_${b.chatId}`, style: 'primary' }
+        ]);
+      });
+
+      if (totalPages > 1) {
+        const navRow: any[] = [];
+        if (safePage > 0) navRow.push({ text: '◀️ صفحه قبل', callback_data: `admin_buyers_page_${safePage - 1}`, style: 'primary' });
+        if (safePage < totalPages - 1) navRow.push({ text: 'صفحه بعد ▶️', callback_data: `admin_buyers_page_${safePage + 1}`, style: 'primary' });
+        if (navRow.length > 0) inline_keyboard.push(navRow);
+      }
+
+      inline_keyboard.push([{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'danger' }]);
+
+      if (editMsgId) {
+        await bot.editMessageText(textOut, {
+          chat_id: adminChatId,
+          message_id: editMsgId,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard }
+        }).catch(async () => {
+          await bot.sendMessage(adminChatId, textOut, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+        });
+      } else {
+        await bot.sendMessage(adminChatId, textOut, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+      }
+    };
+
+    const sendBuyerDetailByChatId = async (adminChatId: number, seller: User, targetId: number, page = 0, editMsgId?: number) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const b = (botCfg.buyers || []).find(item => Number(item.chatId) === targetId);
+      const allOrders = (botCfg.orders || [])
+        .filter(o => Number(o.buyerChatId) === targetId)
+        .sort((a, z) => new Date(z.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      const linkedPurchaseIds = new Set(allOrders.map(o => o.deliveredPurchaseId).filter(Boolean));
+      const linkedSubUrls = new Set(allOrders.map(o => o.deliveredSubUrl).filter(Boolean));
+      const extraPurchases = (seller.purchases || []).filter((p: any) => {
+        if (!p || p.isDeleted) return false;
+        if (linkedPurchaseIds.has(p.id)) return false;
+        const pSub = p.subUrl || p.mroceanSubUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || p.panel4SubUrl;
+        if (pSub && linkedSubUrls.has(pSub)) return false;
+        const hay = `${p.customName || ''} ${p.name || ''} ${p.id || ''}`;
+        return hay.includes(String(targetId));
+      });
+
+      type HistoryEntry = {
+        kind: 'order' | 'purchase';
+        id: string;
+        title: string;
+        typeLabel: string;
+        statusLabel: string;
+        status: string;
+        price: number;
+        volumeGb: number;
+        createdAt: string;
+        hasService: boolean;
+        order?: SellerBotOrder;
+      };
+
+      const history: HistoryEntry[] = [];
+      for (const ord of allOrders) {
+        const typeMap: Record<string, string> = {
+          product: 'خرید سرویس',
+          custom_volume: 'حجم دلخواه',
+          renew: 'تمدید سرویس',
+          free_test: 'تست رایگان',
+          deposit: 'شارژ کیف پول'
+        };
+        const statusMap: Record<string, string> = {
+          approved: '✅ موفق',
+          pending: '⏳ در انتظار تایید',
+          rejected: '❌ رد شده'
+        };
+        history.push({
+          kind: 'order',
+          id: ord.id,
+          title: ord.customName || ord.productName || typeMap[ord.type] || ord.id,
+          typeLabel: typeMap[ord.type] || ord.type,
+          statusLabel: statusMap[ord.status] || ord.status,
+          status: ord.status,
+          price: Number(ord.retailPrice) || 0,
+          volumeGb: Number(ord.volumeGb) || 0,
+          createdAt: ord.createdAt || '',
+          hasService: ord.type !== 'deposit' && !!(ord.deliveredPurchaseId || ord.deliveredSubUrl),
+          order: ord
+        });
+      }
+      for (const p of extraPurchases) {
+        history.push({
+          kind: 'purchase',
+          id: p.id,
+          title: p.customName || p.name || p.id,
+          typeLabel: 'سرویس پنل همکار',
+          statusLabel: p.isCancelled ? '🚫 ابطال‌شده' : (p.disabled ? '🛑 قطع‌شده' : '✅ فعال'),
+          status: 'approved',
+          price: Number(p.price) || 0,
+          volumeGb: Number(p.volumeGb) || 0,
+          createdAt: p.createdAt || '',
+          hasService: true
+        });
+      }
+
+      history.sort((a, z) => new Date(z.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      const displayName = b?.name || allOrders.find(o => o.buyerName)?.buyerName || 'کاربر';
+      const displayUser = b?.username || allOrders.find(o => o.buyerUsername)?.buyerUsername || '';
+      const walletBalance = Number(b?.balance) || 0;
+      const totalApprovedCount = history.filter(h => h.status === 'approved' && h.kind === 'order' && h.order?.type !== 'deposit').length + extraPurchases.length;
+      const totalSpent = allOrders.filter(o => o.status === 'approved').reduce((acc, o) => acc + (Number(o.retailPrice) || 0), 0);
+
+      const pageSize = 8;
+      const totalPages = Math.max(1, Math.ceil(history.length / pageSize));
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+      const slice = history.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+      let info =
+        `👤 <b>پرونده کامل مشتری (با آیدی عددی):</b>\n\n` +
+        `🆔 شناسه عددی: <code>${targetId}</code>\n` +
+        `👤 نام: <b>${escapeHtml(displayName)}</b> ${displayUser ? `(@${escapeHtml(displayUser)})` : ''}\n` +
+        `💰 موجودی کیف پول فعلی: <b>${walletBalance.toLocaleString()} تومان</b>\n` +
+        `🧾 کل سوابق و خریدهای ثبت‌شده: <b>${history.length} مورد</b> (${totalApprovedCount} سرویس)\n` +
+        `💵 جمع کل پرداختی‌های تاییدشده: <b>${totalSpent.toLocaleString()} تومان</b>\n` +
+        (!b ? `ℹ️ <i>این شناسه هنوز استارت نزده یا قبلاً در لیست مشتریان ثبت نشده بود؛ با زدن دکمه شارژ، حسابش به صورت خودکار ایجاد و شارژ می‌شود.</i>\n` : '') +
+        `\n📜 <b>سوابق خریدها (صفحه ${safePage + 1} از ${totalPages}):</b>\n`;
+
+      if (slice.length === 0) {
+        info += `<i>هیچ خرید یا تراکنشی برای این آیدی عددی ثبت نشده است.</i>`;
+      } else {
+        slice.forEach((h, idx) => {
+          const num = safePage * pageSize + idx + 1;
+          const dateStr = h.createdAt ? new Date(h.createdAt).toLocaleDateString('fa-IR') : '—';
+          info += `\n${num}. <b>${escapeHtml(h.title)}</b> [${h.statusLabel}]\n   💳 ${h.price.toLocaleString()} ت | 📅 ${dateStr} | 🆔 <code>${escapeHtml(h.id)}</code>`;
+        });
+      }
+
+      const inline_keyboard: any[][] = [
+        [
+          { text: '➕ شارژ موجودی کیف پول', callback_data: `admin_charge_add_${targetId}`, style: 'success' },
+          { text: '➖ کسر از کیف پول', callback_data: `admin_charge_sub_${targetId}`, style: 'danger' }
+        ]
+      ];
+
+      slice.forEach(h => {
+        if (h.hasService) {
+          inline_keyboard.push([
+            {
+              text: `🔍 مشاهده/تمدید: ${h.title}`.slice(0, 56),
+              callback_data: `view_srv_${h.id}`,
+              style: 'primary'
+            }
+          ]);
+        } else if (h.kind === 'order' && h.status === 'pending') {
+          inline_keyboard.push([
+            { text: `✅ تایید (${h.title.slice(0, 22)})`, callback_data: `child_approve_${h.id}`, style: 'success' },
+            { text: `❌ رد`, callback_data: `child_reject_${h.id}`, style: 'danger' }
+          ]);
+        }
+      });
+
+      if (totalPages > 1) {
+        const navRow: any[] = [];
+        if (safePage > 0) navRow.push({ text: '◀️ صفحه قبل', callback_data: `admin_buyer_page_${targetId}_${safePage - 1}`, style: 'primary' });
+        if (safePage < totalPages - 1) navRow.push({ text: 'صفحه بعد ▶️', callback_data: `admin_buyer_page_${targetId}_${safePage + 1}`, style: 'primary' });
+        if (navRow.length > 0) inline_keyboard.push(navRow);
+      }
+
+      inline_keyboard.push([
+        { text: '🔍 جستجوی آیدی عددی دیگر', callback_data: 'admin_search_buyer_by_id', style: 'primary' },
+        { text: '🔙 لیست مشتریان', callback_data: 'admin_buyers_menu', style: 'danger' }
+      ]);
+
+      if (editMsgId) {
+        await bot.editMessageText(info, {
+          chat_id: adminChatId,
+          message_id: editMsgId,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard }
+        }).catch(async () => {
+          await bot.sendMessage(adminChatId, info, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+        });
+      } else {
+        await bot.sendMessage(adminChatId, info, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+      }
+    };
+
+    const sendAllConfigsMenu = async (adminChatId: number, seller: User, page = 0, editMsgId?: number) => {
+      const botCfg = seller.sellerBot || ({} as SellerBotConfig);
+      const purchases = (seller.purchases || []).filter((p: any) => !p.isDeleted).slice().reverse();
+      if (purchases.length === 0) {
+        const emptyMsg = 'ℹ️ هنوز هیچ کانفیگی ثبت نشده است.';
+        const kbd: any = {
+          inline_keyboard: [
+            [{ text: '🔍 جستجوی سوابق خرید با آیدی عددی', callback_data: 'admin_search_buyer_by_id', style: 'success' }],
+            [{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'danger' }]
+          ]
+        };
+        if (editMsgId) {
+          await bot.editMessageText(emptyMsg, { chat_id: adminChatId, message_id: editMsgId, reply_markup: kbd }).catch(async () => {
+            await bot.sendMessage(adminChatId, emptyMsg, { reply_markup: kbd });
+          });
+        } else {
+          await bot.sendMessage(adminChatId, emptyMsg, { reply_markup: kbd });
+        }
+        return;
+      }
+
+      const ordersByPurchaseId = new Map<string, SellerBotOrder>();
+      for (const o of botCfg.orders || []) {
+        if (o.deliveredPurchaseId) ordersByPurchaseId.set(o.deliveredPurchaseId, o);
+      }
+
+      const pageSize = 12;
+      const totalPages = Math.max(1, Math.ceil(purchases.length / pageSize));
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+      const slice = purchases.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+      const msg =
+        `📋 <b>کل کانفیگ‌ها و خریدهای ثبت‌شده (${purchases.length} مورد):</b>\n` +
+        `صفحه <b>${safePage + 1}</b> از <b>${totalPages}</b>\n\n` +
+        `جهت مشاهده لینک، بارکد، حجم مصرفی و تمدید روی هر مورد کلیک کنید یا با آیدی عددی مشتری جستجو نمایید:`;
+
+      const inline_keyboard: any[][] = [
+        [{ text: '🔍 جستجو و سوابق کامل با آیدی عددی مشتری', callback_data: 'admin_search_buyer_by_id', style: 'success' }]
+      ];
+
+      slice.forEach((p: any) => {
+        const linkedOrd = ordersByPurchaseId.get(p.id);
+        const buyerTag = linkedOrd ? ` | ID:${linkedOrd.buyerChatId}` : '';
+        inline_keyboard.push([
+          {
+            text: `🔑 ${p.customName || p.name || p.id} (${p.volumeGb || 0}GB${buyerTag})`.slice(0, 60),
+            callback_data: `view_srv_${p.id}`,
+            style: 'primary'
+          }
+        ]);
+      });
+
+      if (totalPages > 1) {
+        const navRow: any[] = [];
+        if (safePage > 0) navRow.push({ text: '◀️ صفحه قبل', callback_data: `admin_all_configs_page_${safePage - 1}`, style: 'primary' });
+        if (safePage < totalPages - 1) navRow.push({ text: 'صفحه بعد ▶️', callback_data: `admin_all_configs_page_${safePage + 1}`, style: 'primary' });
+        if (navRow.length > 0) inline_keyboard.push(navRow);
+      }
+
+      inline_keyboard.push([{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'danger' }]);
+
+      if (editMsgId) {
+        await bot.editMessageText(msg, {
+          chat_id: adminChatId,
+          message_id: editMsgId,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard }
+        }).catch(async () => {
+          await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+        });
+      } else {
+        await bot.sendMessage(adminChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+      }
+    };
+
     const sendAdminPanelMenu = async (adminChatId: number, seller: User, editMsgId?: number) => {
       const botCfg = seller.sellerBot || ({} as SellerBotConfig);
       const pendingOrders = (botCfg.orders || []).filter(o => o.status === 'pending');
-      const totalBuyers = (botCfg.buyers || []).length;
+      const totalBuyers = getMergedBuyersList(seller).length;
       const totalOrders = (botCfg.orders || []).filter(o => o.type !== 'deposit' && o.status === 'approved').length;
 
       const isUnlimited = isSellerUnlimitedLimit(seller);
@@ -1189,7 +1538,7 @@ class ResellerBotManager {
         `🏦 <b>وضعیت حساب همکار شما:</b>\n` +
         `• 📉 <b>بدهی فعلی همکار: ${debtVal.toLocaleString()} تومان</b>\n` +
         `• 🔋 <b>اعتبار خرید باقیمانده: ${creditDisplay}</b>\n\n` +
-        `از دکمه‌های شیشه‌ای زیر جهت مدیریت مشتریان ربات دوم، ارسال پیام همگانی، قفل کانال، قیمت‌گذاری و امکانات کامل پنل همکار خود استفاده کنید:`;
+        `از دکمه‌های شیشه‌ای زیر جهت مدیریت مشتریان ربات دوم، استعلام سوابق با آیدی عددی، شارژ کیف پول، پیام همگانی، قفل کانال، قیمت‌گذاری و امکانات کامل پنل همکار خود استفاده کنید:`;
 
       const inline_keyboard: any[][] = [];
       if (pendingOrders.length > 0) {
@@ -1205,7 +1554,11 @@ class ResellerBotManager {
       // Section 1: Bot 2 Storefront, Customers, Broadcast & Force Join Management
       inline_keyboard.push([
         { text: '👥 مدیریت مشتریان و شارژ دستی', callback_data: 'admin_buyers_menu', style: 'primary' },
-        { text: '📋 استعلام، تمدید و ابطال کانفیگ‌ها', callback_data: 'admin_all_configs', style: 'primary' }
+        { text: '📋 کل خریدها و کانفیگ‌ها', callback_data: 'admin_all_configs', style: 'primary' }
+      ]);
+
+      inline_keyboard.push([
+        { text: '🔍 سوابق خرید و شارژ مشتری با آیدی عددی', callback_data: 'admin_search_buyer_by_id', style: 'success' }
       ]);
 
       inline_keyboard.push([
@@ -2126,43 +2479,71 @@ class ResellerBotManager {
             return;
           }
 
+          if (session.action === 'admin_search_buyer_by_id') {
+            const cleanDigits = normalizeDigitsToEnglish(text).replace(/[^0-9]/g, '');
+            const targetId = Number(cleanDigits);
+            if (!cleanDigits || isNaN(targetId) || targetId <= 0) {
+              await bot.sendMessage(buyerChatId, '❌ لطفاً یک <b>آیدی عددی معتبر تلگرام</b> (فقط عدد، مثلاً <code>123456789</code>) وارد نمایید:', {
+                parse_mode: 'HTML'
+              });
+              return;
+            }
+            this.userSessionStates.delete(sessionKey);
+            await bot.sendMessage(buyerChatId, `🔍 پرونده مشتری <code>${targetId}</code> بارگذاری شد:`, {
+              parse_mode: 'HTML',
+              reply_markup: getMainKeyboard(seller, true)
+            });
+            await sendBuyerDetailByChatId(buyerChatId, seller, targetId, 0);
+            return;
+          }
+
+          if (session.action === 'admin_quick_charge_buyer_id') {
+            const cleanDigits = normalizeDigitsToEnglish(text).replace(/[^0-9]/g, '');
+            const targetId = Number(cleanDigits);
+            if (!cleanDigits || isNaN(targetId) || targetId <= 0) {
+              await bot.sendMessage(buyerChatId, '❌ لطفاً یک <b>آیدی عددی معتبر تلگرام</b> (فقط عدد، مثلاً <code>123456789</code>) وارد نمایید:', {
+                parse_mode: 'HTML'
+              });
+              return;
+            }
+            const existingBuyer = (botCfg.buyers || []).find(b => Number(b.chatId) === targetId);
+            this.userSessionStates.set(sessionKey, {
+              action: 'admin_charge_buyer_amount',
+              data: { targetBuyerChatId: targetId, mode: 'add' }
+            });
+            await bot.sendMessage(
+              buyerChatId,
+              `💳 <b>شارژ موجودی کیف پول مشتری <code>${targetId}</code></b>\n` +
+                (existingBuyer ? `👤 نام: <b>${escapeHtml(existingBuyer.name || 'کاربر')}</b> | موجودی فعلی: <b>${(existingBuyer.balance || 0).toLocaleString()} تومان</b>\n\n` : 'ℹ️ <i>این کاربر در صورت نبودن، به صورت خودکار ایجاد و شارژ می‌شود.</i>\n\n') +
+                `➕ لطفاً مبلغ افزایش موجودی را به <b>تومان</b> وارد نمایید:`,
+              { parse_mode: 'HTML' }
+            );
+            return;
+          }
+
           if (session.action === 'admin_charge_buyer_amount' && session.data?.targetBuyerChatId) {
             const targetId = Number(session.data.targetBuyerChatId);
             const mode: 'add' | 'sub' = session.data.mode || 'add';
-            const amount = parseAmountInput(text);
+            const amount = parseAmountInput(normalizeDigitsToEnglish(text));
             if (amount === null || amount <= 0) {
               await bot.sendMessage(buyerChatId, '❌ لطفاً مبلغ معتبر به تومان وارد نمایید:');
               return;
             }
-            const targetBuyer = (botCfg.buyers || []).find(b => b.chatId === targetId);
-            if (!targetBuyer) {
+            const chargeRes = await this.chargeBuyerWallet(sellerChatId, targetId, amount, mode);
+            if (!chargeRes.success || !chargeRes.buyer) {
               this.userSessionStates.delete(sessionKey);
-              await bot.sendMessage(buyerChatId, '❌ مشتری یافت نشد.');
+              await bot.sendMessage(buyerChatId, `❌ ${chargeRes.message || 'خطا در شارژ موجودی مشتری.'}`);
               return;
             }
-            if (mode === 'add') {
-              targetBuyer.balance = (targetBuyer.balance || 0) + amount;
-            } else {
-              targetBuyer.balance = Math.max(0, (targetBuyer.balance || 0) - amount);
-            }
-            db.saveUser(seller);
             this.userSessionStates.delete(sessionKey);
+            const freshSeller = db.getUser(sellerChatId) || seller;
 
             await bot.sendMessage(
               buyerChatId,
-              `✅ موجودی کیف پول مشتری <code>${targetId}</code> (${escapeHtml(targetBuyer.name || '')}) با موفقیت به <b>${(targetBuyer.balance || 0).toLocaleString()} تومان</b> بروزرسانی شد.`,
-              { parse_mode: 'HTML', reply_markup: getMainKeyboard(seller, true) }
+              `✅ موجودی کیف پول مشتری <code>${targetId}</code> (${escapeHtml(chargeRes.buyer.name || '')}) با موفقیت به <b>${(chargeRes.buyer.balance || 0).toLocaleString()} تومان</b> بروزرسانی شد.`,
+              { parse_mode: 'HTML', reply_markup: getMainKeyboard(freshSeller, true) }
             );
-
-            await bot
-              .sendMessage(
-                targetId,
-                mode === 'add'
-                  ? `🎉 <b>حساب کیف پول شما توسط مدیریت فروشگاه به مبلغ ${amount.toLocaleString()} تومان شارژ شد!</b>\n💰 موجودی جدید شما: <b>${(targetBuyer.balance || 0).toLocaleString()} تومان</b>`
-                  : `ℹ️ مبلغ ${amount.toLocaleString()} تومان از موجودی کیف پول شما کسر گردید.\n💰 موجودی فعلی: <b>${(targetBuyer.balance || 0).toLocaleString()} تومان</b>`,
-                { parse_mode: 'HTML' }
-              )
-              .catch(() => {});
+            await sendBuyerDetailByChatId(buyerChatId, freshSeller, targetId, 0);
             return;
           }
 
@@ -3999,69 +4380,73 @@ class ResellerBotManager {
           return;
         }
 
-        // Admin: Manage Buyers & Manual Balance Charge
-        if (data === 'admin_buyers_menu') {
+        // Admin: Manage Buyers & Manual Balance Charge + History by Numeric ID
+        if (data === 'admin_buyers_menu' || data.startsWith('admin_buyers_page_')) {
+          if (!isFromAdmin) return;
+          const page = data.startsWith('admin_buyers_page_') ? Math.max(0, parseInt(data.replace('admin_buyers_page_', ''), 10) || 0) : 0;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          await sendAdminBuyersMenu(buyerChatId, seller, page, data.startsWith('admin_buyers_page_') ? msgId : undefined);
+          return;
+        }
+
+        if (data === 'admin_search_buyer_by_id') {
           if (!isFromAdmin) return;
           await bot.answerCallbackQuery(query.id).catch(() => {});
-          const buyers = botCfg.buyers || [];
-          if (buyers.length === 0) {
-            await bot.sendMessage(buyerChatId, 'ℹ️ هنوز هیچ کاربری وارد ربات شما نشده است.');
-            return;
-          }
+          this.userSessionStates.set(sessionKey, { action: 'admin_search_buyer_by_id' });
+          await bot.sendMessage(
+            buyerChatId,
+            `🔍 <b>جستجو و مشاهده کل خریدهای قبلی و شارژ مشتری با آیدی عددی:</b>\n\n` +
+              `لطفاً <b>آیدی عددی تلگرام مشتری</b> (مثلاً <code>123456789</code>) را ارسال نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
 
-          let textOut = `👥 <b>لیست مشتریان ربات شما (${buyers.length} نفر):</b>\n\nجهت شارژ دستی کیف پول یا مشاهده سرویس‌های هر مشتری، روی دکمه مربوط به او کلیک کنید:\n\n`;
-          const inline_keyboard: any[][] = [];
+        if (data === 'admin_quick_charge_by_id') {
+          if (!isFromAdmin) return;
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          this.userSessionStates.set(sessionKey, { action: 'admin_quick_charge_buyer_id' });
+          await bot.sendMessage(
+            buyerChatId,
+            `💳 <b>شارژ مستقیم کیف پول مشتری با آیدی عددی:</b>\n\n` +
+              `لطفاً <b>آیدی عددی تلگرام مشتری</b> (مثلاً <code>123456789</code>) را ارسال نمایید:`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
+          );
+          return;
+        }
 
-          buyers.slice(-20).reverse().forEach(b => {
-            const label = `👤 ${b.name || b.chatId} (${(b.balance || 0).toLocaleString()} ت)`;
-            inline_keyboard.push([
-              { text: label, callback_data: `admin_buyer_${b.chatId}`, style: 'primary' }
-            ]);
-          });
-
-          inline_keyboard.push([{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'danger' }]);
-          await bot.sendMessage(buyerChatId, textOut, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+        if (data.startsWith('admin_buyer_page_')) {
+          if (!isFromAdmin) return;
+          const rest = data.replace('admin_buyer_page_', '');
+          const parts = rest.split('_');
+          const targetId = Number(parts[0]);
+          const page = Math.max(0, parseInt(parts[1] || '0', 10) || 0);
+          await bot.answerCallbackQuery(query.id).catch(() => {});
+          await sendBuyerDetailByChatId(buyerChatId, seller, targetId, page, msgId);
           return;
         }
 
         if (data.startsWith('admin_buyer_')) {
           if (!isFromAdmin) return;
           const targetId = Number(data.replace('admin_buyer_', ''));
-          const b = (botCfg.buyers || []).find(item => item.chatId === targetId);
-          if (!b) {
-            await bot.answerCallbackQuery(query.id, { text: 'مشتری یافت نشد.' });
+          if (!targetId || isNaN(targetId)) {
+            await bot.answerCallbackQuery(query.id, { text: 'آیدی نامعتبر است.' });
             return;
           }
           await bot.answerCallbackQuery(query.id).catch(() => {});
-          const buyerOrders = (botCfg.orders || []).filter(o => o.buyerChatId === targetId && o.status === 'approved' && o.type !== 'deposit');
-
-          const info =
-            `👤 <b>مدیریت مشتری در ربات اختصاصی شما:</b>\n\n` +
-            `🆔 شناسه عددی: <code>${b.chatId}</code>\n` +
-            `👤 نام: <b>${escapeHtml(b.name || 'کاربر')}</b> (@${escapeHtml(b.username || 'بدون_آیدی')})\n` +
-            `💰 موجودی کیف پول در ربات شما: <b>${(b.balance || 0).toLocaleString()} تومان</b>\n` +
-            `📦 تعداد سرویس‌های فعال: <b>${buyerOrders.length} عدد</b>\n`;
-
-          const inline_keyboard: any[][] = [
-            [
-              { text: '➕ شارژ دستی کیف پول مشتری', callback_data: `admin_charge_add_${b.chatId}`, style: 'success' },
-              { text: '➖ کسر از کیف پول مشتری', callback_data: `admin_charge_sub_${b.chatId}`, style: 'danger' }
-            ]
-          ];
-
-          buyerOrders.slice(-5).forEach(ord => {
-            inline_keyboard.push([
-              {
-                text: `🔍 سرویس: ${ord.customName || ord.productName || ord.id}`,
-                callback_data: `view_srv_${ord.id}`,
-                style: 'primary'
-              }
-            ]);
-          });
-
-          inline_keyboard.push([{ text: '🔙 بازگشت به لیست مشتریان', callback_data: 'admin_buyers_menu', style: 'danger' }]);
-
-          await bot.sendMessage(buyerChatId, info, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          await sendBuyerDetailByChatId(buyerChatId, seller, targetId, 0);
           return;
         }
 
@@ -4079,34 +4464,25 @@ class ResellerBotManager {
             isAdd
               ? `➕ لطفاً مبلغی که می‌خواهید به کیف پول مشتری <code>${targetId}</code> <b>اضافه</b> شود را به تومان وارد نمایید:`
               : `➖ لطفاً مبلغی که می‌خواهید از کیف پول مشتری <code>${targetId}</code> <b>کسر</b> شود را به تومان وارد نمایید:`,
-            { parse_mode: 'HTML' }
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                keyboard: [[{ text: 'بازگشت به منوی اصلی', style: 'danger' } as any]],
+                resize_keyboard: true
+              }
+            }
           );
           return;
         }
 
-        // Admin: View & Manage All Sold Configs
-        if (data === 'admin_all_configs') {
+        // Admin: View & Manage All Sold Configs (Paginated)
+        if (data === 'admin_all_configs' || data.startsWith('admin_all_configs_page_')) {
           if (!isFromAdmin) return;
+          const page = data.startsWith('admin_all_configs_page_')
+            ? Math.max(0, parseInt(data.replace('admin_all_configs_page_', ''), 10) || 0)
+            : 0;
           await bot.answerCallbackQuery(query.id).catch(() => {});
-          const purchases = (seller.purchases || []).filter((p: any) => !p.isDeleted);
-          if (purchases.length === 0) {
-            await bot.sendMessage(buyerChatId, 'ℹ️ هنوز هیچ کانفیگی ثبت نشده است.');
-            return;
-          }
-
-          let msg = `📋 <b>لیست آخرین کانفیگ‌های شما (${purchases.length} مورد):</b>\n\nجهت مشاهده لینک، بارکد، حجم مصرفی و تمدید هر کانفیگ روی آن کلیک کنید:`;
-          const inline_keyboard: any[][] = [];
-          purchases.slice(-15).reverse().forEach((p: any) => {
-            inline_keyboard.push([
-              {
-                text: `🔑 ${p.customName || p.name || p.id} (${p.volumeGb || 0}GB)`,
-                callback_data: `view_srv_${p.id}`,
-                style: 'primary'
-              }
-            ]);
-          });
-          inline_keyboard.push([{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'admin_main', style: 'danger' }]);
-          await bot.sendMessage(buyerChatId, msg, { parse_mode: 'HTML', reply_markup: { inline_keyboard } });
+          await sendAllConfigsMenu(buyerChatId, seller, page, data.startsWith('admin_all_configs_page_') ? msgId : undefined);
           return;
         }
 
@@ -4646,6 +5022,84 @@ class ResellerBotManager {
     }
 
     return { success: true, message: 'سفارش با موفقیت رد شد و به خریدار اطلاع داده شد.' };
+  }
+
+  /**
+   * Charge or deduct a Bot 2 customer's wallet balance by numeric ID (auto-creating buyer record if absent)
+   */
+  public async chargeBuyerWallet(
+    sellerChatId: number,
+    buyerChatId: number,
+    amount: number,
+    mode: 'add' | 'sub' = 'add'
+  ): Promise<{ success: boolean; message: string; buyer?: any }> {
+    const seller = db.getUser(sellerChatId);
+    if (!seller || !seller.isSeller) {
+      return { success: false, message: 'حساب همکار معتبر نیست.' };
+    }
+    const cleanBuyerId = Number(buyerChatId);
+    const cleanAmount = Math.round(Number(amount));
+    if (!cleanBuyerId || isNaN(cleanBuyerId) || cleanBuyerId <= 0) {
+      return { success: false, message: 'آیدی عددی مشتری نامعتبر است.' };
+    }
+    if (!cleanAmount || isNaN(cleanAmount) || cleanAmount <= 0) {
+      return { success: false, message: 'مبلغ باید عددی بزرگتر از صفر (به تومان) باشد.' };
+    }
+
+    if (!seller.sellerBot) {
+      seller.sellerBot = { enabled: false, botToken: '', botName: '' } as SellerBotConfig;
+    }
+    if (!Array.isArray(seller.sellerBot.buyers)) {
+      seller.sellerBot.buyers = [];
+    }
+
+    let buyer = seller.sellerBot.buyers.find(b => Number(b.chatId) === cleanBuyerId);
+    if (!buyer) {
+      const prevOrder = (seller.sellerBot.orders || []).find(o => Number(o.buyerChatId) === cleanBuyerId);
+      buyer = {
+        chatId: cleanBuyerId,
+        username: prevOrder?.buyerUsername || '',
+        name: prevOrder?.buyerName || 'کاربر',
+        joinedAt: prevOrder?.createdAt || new Date().toISOString(),
+        balance: 0,
+        referralCount: 0,
+        referralEarnings: 0
+      };
+      seller.sellerBot.buyers.push(buyer);
+    }
+
+    if (mode === 'add') {
+      buyer.balance = (Number(buyer.balance) || 0) + cleanAmount;
+    } else {
+      buyer.balance = Math.max(0, (Number(buyer.balance) || 0) - cleanAmount);
+    }
+
+    db.saveUser(seller);
+    db.saveImmediate();
+
+    const notifyMsg =
+      mode === 'add'
+        ? `🎉 <b>حساب کیف پول شما توسط مدیریت فروشگاه به مبلغ ${cleanAmount.toLocaleString()} تومان شارژ شد!</b>\n💰 موجودی جدید شما: <b>${(buyer.balance || 0).toLocaleString()} تومان</b>`
+        : `ℹ️ مبلغ ${cleanAmount.toLocaleString()} تومان از موجودی کیف پول شما کسر گردید.\n💰 موجودی فعلی: <b>${(buyer.balance || 0).toLocaleString()} تومان</b>`;
+
+    const record = this.activeBots.get(sellerChatId);
+    if (record?.bot) {
+      await record.bot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
+    } else if (seller.sellerBot.botToken && isValidTelegramBotToken(seller.sellerBot.botToken)) {
+      try {
+        const tempBot = new TelegramBot(seller.sellerBot.botToken, { polling: false });
+        await tempBot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      message:
+        mode === 'add'
+          ? `کیف پول مشتری ${cleanBuyerId} به مبلغ ${cleanAmount.toLocaleString()} تومان شارژ شد. موجودی فعلی: ${(buyer.balance || 0).toLocaleString()} تومان.`
+          : `مبلغ ${cleanAmount.toLocaleString()} تومان از کیف پول مشتری ${cleanBuyerId} کسر شد. موجودی فعلی: ${(buyer.balance || 0).toLocaleString()} تومان.`,
+      buyer
+    };
   }
 }
 

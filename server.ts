@@ -1363,6 +1363,28 @@ async function startServer() {
 
       const sellerApiKey = ensureSellerApiKey(user, true);
 
+      const botOrdersByPurchaseId = new Map<string, any>();
+      const botOrdersBySubUrl = new Map<string, any>();
+      for (const ord of user.sellerBot?.orders || []) {
+        if (ord.deliveredPurchaseId) botOrdersByPurchaseId.set(ord.deliveredPurchaseId, ord);
+        if (ord.deliveredSubUrl) botOrdersBySubUrl.set(ord.deliveredSubUrl, ord);
+      }
+
+      const enrichedPurchases = (user.purchases || [])
+        .filter((p: any) => !p.isDeleted)
+        .map((p: any) => {
+          const pSub = p.subUrl || p.mroceanSubUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || p.panel4SubUrl;
+          const matchedOrd = botOrdersByPurchaseId.get(p.id) || (pSub ? botOrdersBySubUrl.get(pSub) : undefined);
+          return {
+            ...p,
+            buyerChatId: matchedOrd?.buyerChatId ?? (p as any).buyerChatId ?? undefined,
+            buyerName: matchedOrd?.buyerName ?? undefined,
+            buyerUsername: matchedOrd?.buyerUsername ?? undefined,
+            orderId: matchedOrd?.id ?? undefined,
+            retailPrice: matchedOrd?.retailPrice ?? undefined
+          };
+        });
+
       res.json({
         success: true,
         seller: {
@@ -1381,7 +1403,7 @@ async function startServer() {
           sellerDiscount: user.sellerDiscount || 0,
           customDisplayPrices: user.customDisplayPrices || {},
           showCustomPricesOnly: user.showCustomPricesOnly ?? true,
-          purchases: (user.purchases || []).filter((p: any) => !p.isDeleted),
+          purchases: enrichedPurchases,
           transactions: user.transactions || []
         },
         accounting: {
@@ -2056,12 +2078,71 @@ async function startServer() {
         rawSavedBotName === `فروشگاه ${chatId}`;
       const cleanBotName = isSellerIdentityName ? (user.sellerBot?.botFirstName || '') : rawSavedBotName;
 
+      const buildMergedBuyers = () => {
+        const map = new Map<number, any>();
+        for (const b of user.sellerBot?.buyers || []) {
+          const cid = Number(b.chatId);
+          if (!cid || isNaN(cid)) continue;
+          map.set(cid, {
+            ...b,
+            chatId: cid,
+            balance: Number(b.balance) || 0,
+            ordersCount: 0,
+            approvedServicesCount: 0,
+            totalSpentToman: 0,
+            lastOrderAt: b.joinedAt || ''
+          });
+        }
+        for (const o of user.sellerBot?.orders || []) {
+          const cid = Number(o.buyerChatId);
+          if (!cid || isNaN(cid)) continue;
+          let entry = map.get(cid);
+          if (!entry) {
+            entry = {
+              chatId: cid,
+              name: o.buyerName || 'کاربر',
+              username: o.buyerUsername || '',
+              balance: 0,
+              joinedAt: o.createdAt || '',
+              ordersCount: 0,
+              approvedServicesCount: 0,
+              totalSpentToman: 0,
+              lastOrderAt: o.createdAt || ''
+            };
+            map.set(cid, entry);
+          } else {
+            if ((!entry.name || entry.name === 'کاربر') && o.buyerName) entry.name = o.buyerName;
+            if (!entry.username && o.buyerUsername) entry.username = o.buyerUsername;
+          }
+          entry.ordersCount += 1;
+          if (o.status === 'approved') {
+            if (o.type !== 'deposit') entry.approvedServicesCount += 1;
+            entry.totalSpentToman += Number(o.retailPrice) || 0;
+          }
+          if (o.createdAt && (!entry.lastOrderAt || new Date(o.createdAt).getTime() > new Date(entry.lastOrderAt).getTime())) {
+            entry.lastOrderAt = o.createdAt;
+          }
+        }
+        return Array.from(map.values()).sort((a, b) => {
+          const ta = a.lastOrderAt ? new Date(a.lastOrderAt).getTime() : 0;
+          const tb = b.lastOrderAt ? new Date(b.lastOrderAt).getTime() : 0;
+          return tb - ta;
+        });
+      };
+
+      const mergedBuyers = buildMergedBuyers();
+      const sortedOrders = [...(user.sellerBot?.orders || [])].sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
+
       res.json({
         success: true,
         sellerBot: user.sellerBot
           ? {
               ...user.sellerBot,
-              botName: cleanBotName
+              botName: cleanBotName,
+              orders: sortedOrders,
+              buyers: mergedBuyers
             }
           : {
               enabled: false,
@@ -2076,7 +2157,9 @@ async function startServer() {
               cardNumber: '',
               cardHolder: '',
               autoDeliverAfterPayment: false,
-              freeTestEnabled: true
+              freeTestEnabled: true,
+              orders: [],
+              buyers: []
             },
         status,
         products,
@@ -2299,6 +2382,103 @@ async function startServer() {
       }
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  api.get("/seller-portal/bot-buyer-lookup/:chatId/:buyerChatId", (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
+      }
+      const rawBuyerId = String(req.params.buyerChatId || '')
+        .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+        .replace(/[^0-9]/g, '');
+      const buyerChatId = Number(rawBuyerId);
+      if (!rawBuyerId || isNaN(buyerChatId) || buyerChatId <= 0) {
+        return res.status(400).json({ success: false, message: 'آیدی عددی مشتری نامعتبر است.' });
+      }
+
+      const botOrders = (user.sellerBot?.orders || [])
+        .filter(o => Number(o.buyerChatId) === buyerChatId)
+        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      const existingBuyer = (user.sellerBot?.buyers || []).find(b => Number(b.chatId) === buyerChatId);
+
+      const linkedPurchaseIds = new Set(botOrders.map(o => o.deliveredPurchaseId).filter(Boolean));
+      const linkedSubUrls = new Set(botOrders.map(o => o.deliveredSubUrl).filter(Boolean));
+      const matchedPurchases = (user.purchases || [])
+        .filter((p: any) => {
+          if (!p || p.isDeleted) return false;
+          if (linkedPurchaseIds.has(p.id)) return false;
+          const pSub = p.subUrl || p.mroceanSubUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || p.panel4SubUrl;
+          if (pSub && linkedSubUrls.has(pSub)) return false;
+          const hay = `${p.customName || ''} ${p.name || ''} ${p.id || ''}`;
+          return hay.includes(String(buyerChatId));
+        })
+        .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      const totalSpentToman = botOrders
+        .filter(o => o.status === 'approved')
+        .reduce((acc, o) => acc + (Number(o.retailPrice) || 0), 0);
+      const approvedServicesCount =
+        botOrders.filter(o => o.status === 'approved' && o.type !== 'deposit').length + matchedPurchases.length;
+
+      res.json({
+        success: true,
+        buyer: {
+          chatId: buyerChatId,
+          name: existingBuyer?.name || botOrders.find(o => o.buyerName)?.buyerName || 'کاربر',
+          username: existingBuyer?.username || botOrders.find(o => o.buyerUsername)?.buyerUsername || '',
+          balance: Number(existingBuyer?.balance) || 0,
+          joinedAt: existingBuyer?.joinedAt || botOrders[botOrders.length - 1]?.createdAt || '',
+          inBuyersList: !!existingBuyer,
+          referralCount: existingBuyer?.referralCount || 0,
+          referralEarnings: existingBuyer?.referralEarnings || 0
+        },
+        orders: botOrders,
+        matchedPurchases,
+        summary: {
+          totalOrdersCount: botOrders.length + matchedPurchases.length,
+          approvedServicesCount,
+          totalSpentToman
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: 'خطا در استعلام پرونده مشتری: ' + (e.message || String(e)) });
+    }
+  });
+
+  api.post("/seller-portal/bot-buyer-charge/:chatId", async (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: 'حساب همکار معتبر نیست.' });
+      }
+      const rawBuyerId = String(req.body?.buyerChatId ?? '')
+        .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+        .replace(/[^0-9]/g, '');
+      const buyerChatId = Number(rawBuyerId);
+      const rawAmount = String(req.body?.amount ?? '')
+        .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+        .replace(/[^0-9]/g, '');
+      const amount = Number(rawAmount);
+      const mode: 'add' | 'sub' = req.body?.mode === 'sub' ? 'sub' : 'add';
+
+      const result = await resellerBotManager.chargeBuyerWallet(user.chatId, buyerChatId, amount, mode);
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+
+      const freshUser = db.getUser(user.chatId);
+      return res.json({
+        success: true,
+        message: result.message,
+        buyer: result.buyer,
+        buyers: freshUser?.sellerBot?.buyers || []
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: 'خطا در شارژ موجودی مشتری: ' + (e.message || String(e)) });
     }
   });
 

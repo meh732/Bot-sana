@@ -37,7 +37,9 @@ import {
   Info,
   Bot,
   Power,
-  Save
+  Save,
+  Users,
+  Wallet
 } from 'lucide-react';
 
 interface SellerPortalProps {
@@ -110,6 +112,85 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   const [botSaveSuccessMsg, setBotSaveSuccessMsg] = useState('');
   const [botSaveErrorMsg, setBotSaveErrorMsg] = useState('');
   const [orderActionLoading, setOrderActionLoading] = useState<string | null>(null);
+
+  // Bot 2 Customer Lookup by Numeric ID & Wallet Charge states
+  const [buyerLookupId, setBuyerLookupId] = useState('');
+  const [buyerLookupLoading, setBuyerLookupLoading] = useState(false);
+  const [buyerLookupResult, setBuyerLookupResult] = useState<any>(null);
+  const [buyerLookupError, setBuyerLookupError] = useState('');
+  const [buyerChargeAmount, setBuyerChargeAmount] = useState('');
+  const [buyerChargeLoading, setBuyerChargeLoading] = useState(false);
+  const [buyerChargeFeedback, setBuyerChargeFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [buyersListSearch, setBuyersListSearch] = useState('');
+  const [ordersListSearch, setOrdersListSearch] = useState('');
+
+  const normalizeDigits = (val: string) =>
+    String(val || '')
+      .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+      .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+
+  const handleLookupBuyer = async (overrideId?: string | number) => {
+    const targetSellerId = sellerData?.chatId ? String(sellerData.chatId) : chatId;
+    const rawId = overrideId !== undefined ? String(overrideId) : buyerLookupId;
+    const cleanId = normalizeDigits(rawId).replace(/[^0-9]/g, '');
+    if (!targetSellerId) return;
+    if (!cleanId) {
+      setBuyerLookupError('لطفاً آیدی عددی تلگرام مشتری را وارد نمایید.');
+      return;
+    }
+    setBuyerLookupId(cleanId);
+    setBuyerLookupLoading(true);
+    setBuyerLookupError('');
+    setBuyerChargeFeedback(null);
+    try {
+      const res = await fetch(`/api/seller-portal/bot-buyer-lookup/${targetSellerId}/${cleanId}`);
+      const data = await res.json().catch(() => null);
+      if (data && data.success) {
+        setBuyerLookupResult(data);
+      } else {
+        setBuyerLookupError(data?.message || 'خطا در استعلام پرونده مشتری.');
+      }
+    } catch (err: any) {
+      setBuyerLookupError(err?.message || 'خطا در ارتباط با سرور.');
+    } finally {
+      setBuyerLookupLoading(false);
+    }
+  };
+
+  const handleChargeBuyerWallet = async (targetBuyerId: number, mode: 'add' | 'sub') => {
+    const targetSellerId = sellerData?.chatId ? String(sellerData.chatId) : chatId;
+    if (!targetSellerId || !targetBuyerId) return;
+    const cleanAmt = Number(normalizeDigits(buyerChargeAmount).replace(/[^0-9]/g, ''));
+    if (!cleanAmt || isNaN(cleanAmt) || cleanAmt <= 0) {
+      setBuyerChargeFeedback({ type: 'error', text: 'لطفاً مبلغ معتبر به تومان وارد نمایید.' });
+      return;
+    }
+    setBuyerChargeLoading(true);
+    setBuyerChargeFeedback(null);
+    try {
+      const res = await fetch(`/api/seller-portal/bot-buyer-charge/${targetSellerId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          buyerChatId: targetBuyerId,
+          amount: cleanAmt,
+          mode
+        })
+      });
+      const data = await res.json().catch(() => null);
+      if (data && data.success) {
+        setBuyerChargeFeedback({ type: 'success', text: data.message || 'موجودی با موفقیت بروزرسانی شد.' });
+        setBuyerChargeAmount('');
+        await Promise.all([fetchBotConfig(targetSellerId), handleLookupBuyer(targetBuyerId)]);
+      } else {
+        setBuyerChargeFeedback({ type: 'error', text: data?.message || 'خطا در بروزرسانی موجودی.' });
+      }
+    } catch (err: any) {
+      setBuyerChargeFeedback({ type: 'error', text: err?.message || 'خطا در ارتباط با سرور.' });
+    } finally {
+      setBuyerChargeLoading(false);
+    }
+  };
 
   // Dedicated Reseller Coupon Management states
   const [newCouponCode, setNewCouponCode] = useState('');
@@ -807,10 +888,16 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
   });
 
   const sellerPurchases = (sellerData?.purchases || []).filter((p: any) => {
-    const matchesSearch = !purchasesSearchQuery || 
-      (p.id && p.id.toLowerCase().includes(purchasesSearchQuery.toLowerCase())) ||
-      (p.name && p.name.toLowerCase().includes(purchasesSearchQuery.toLowerCase())) ||
-      (p.subId && String(p.subId).toLowerCase().includes(purchasesSearchQuery.toLowerCase()));
+    const q = purchasesSearchQuery.trim().toLowerCase();
+    const matchesSearch = !q ||
+      (p.id && p.id.toLowerCase().includes(q)) ||
+      (p.name && p.name.toLowerCase().includes(q)) ||
+      (p.customName && p.customName.toLowerCase().includes(q)) ||
+      (p.subId && String(p.subId).toLowerCase().includes(q)) ||
+      (p.buyerChatId && String(p.buyerChatId).includes(normalizeDigits(q))) ||
+      (p.buyerName && String(p.buyerName).toLowerCase().includes(q)) ||
+      (p.buyerUsername && String(p.buyerUsername).toLowerCase().includes(q)) ||
+      (p.orderId && String(p.orderId).toLowerCase().includes(q));
 
     if (!matchesSearch) return false;
 
@@ -1557,7 +1644,7 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                   type="text"
                   value={purchasesSearchQuery}
                   onChange={(e) => setPurchasesSearchQuery(e.target.value)}
-                  placeholder="جستجوی نام مشتری، شناسه یا ساب..."
+                  placeholder="جستجوی آیدی عددی مشتری، نام مشتری، شناسه یا ساب..."
                   className="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -1637,6 +1724,22 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                           <p className="text-[11px] text-slate-500 font-mono mt-1" dir="ltr">
                             ID: {p.id}
                           </p>
+                          {p.buyerChatId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTab('bot');
+                                fetchBotConfig();
+                                handleLookupBuyer(p.buyerChatId);
+                              }}
+                              className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-medium transition"
+                            >
+                              <Users className="w-3 h-3" />
+                              <span>
+                                مشتری ربات: {p.buyerName || 'کاربر'} ({p.buyerChatId}) — سوابق و شارژ
+                              </span>
+                            </button>
+                          )}
                         </div>
 
                         <div className="text-left text-xs">
@@ -3003,91 +3106,665 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
               </div>
             </form>
 
-            {/* Section 4: Live Orders & Receipts from Reseller Bot Customers */}
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-lg space-y-4">
+            {/* Section 4: Customer Lookup by Numeric ID, Complete Purchase History & Wallet Charge */}
+            <div className="bg-slate-900 border border-slate-800 p-4 sm:p-6 rounded-3xl shadow-lg space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <Users className="w-5 h-5 text-emerald-400" />
+                  <h3 className="font-bold text-slate-100 text-sm">
+                    ۴. مدیریت مشتریان ربات، استعلام کل خریدهای قبل با آیدی عددی و شارژ موجودی پول ({(botConfig.buyers || []).length} نفر)
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchBotConfig()}
+                  className="p-2 bg-slate-800 text-slate-300 rounded-xl hover:text-white transition flex items-center gap-1.5 text-xs self-start sm:self-auto"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>بروزرسانی مشتریان</span>
+                </button>
+              </div>
+
+              {/* Search by Numeric ID */}
+              <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
+                <label className="text-xs font-bold text-slate-200 block">
+                  🔍 استعلام پرونده، سوابق تمام خریدهای قبلی و شارژ مستقیم با آیدی عددی تلگرام مشتری:
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    dir="ltr"
+                    value={buyerLookupId}
+                    onChange={(e) => setBuyerLookupId(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleLookupBuyer();
+                      }
+                    }}
+                    placeholder="آیدی عددی مشتری (مثلاً 123456789)"
+                    className="flex-1 px-4 py-2.5 bg-slate-900 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={buyerLookupLoading}
+                    onClick={() => handleLookupBuyer()}
+                    className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Search className="w-4 h-4" />
+                    <span>{buyerLookupLoading ? 'در حال جستجو...' : 'مشاهده کل خریدها و شارژ'}</span>
+                  </button>
+                </div>
+                {buyerLookupError && (
+                  <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2">
+                    ❌ {buyerLookupError}
+                  </p>
+                )}
+              </div>
+
+              {/* Customer Detail & Wallet Charge Panel */}
+              {buyerLookupResult && buyerLookupResult.buyer && (
+                <div className="bg-slate-950 border border-emerald-500/30 rounded-2xl p-4 sm:p-5 space-y-5 shadow-xl">
+                  <div className="flex items-start justify-between flex-wrap gap-3 pb-4 border-b border-slate-800">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-black text-slate-100">
+                          👤 {buyerLookupResult.buyer.name || 'کاربر'}
+                        </span>
+                        <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-cyan-300 font-mono text-[11px]" dir="ltr">
+                          ID: {buyerLookupResult.buyer.chatId}
+                        </span>
+                        {buyerLookupResult.buyer.username && (
+                          <span className="px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-300 font-mono text-[11px]" dir="ltr">
+                            @{buyerLookupResult.buyer.username}
+                          </span>
+                        )}
+                        {!buyerLookupResult.buyer.inBuyersList && (
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 text-[10px]">
+                            حساب با اولین شارژ به طور خودکار ثبت می‌شود
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        کل سوابق ثبت‌شده: <b className="text-slate-200">{buyerLookupResult.summary?.totalOrdersCount || 0}</b> مورد | سرویس‌های تحویلی: <b className="text-emerald-400">{buyerLookupResult.summary?.approvedServicesCount || 0}</b> عدد | جمع خریدها: <b className="text-cyan-300 font-mono">{(buyerLookupResult.summary?.totalSpentToman || 0).toLocaleString()} تومان</b>
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <div className="bg-emerald-500/10 border border-emerald-500/30 px-3.5 py-2 rounded-2xl text-left">
+                        <span className="text-[10px] text-emerald-400 block">موجودی کیف پول فعلی:</span>
+                        <span className="text-base font-black text-emerald-300 font-mono">
+                          {(buyerLookupResult.buyer.balance || 0).toLocaleString()} تومان
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setBuyerLookupResult(null)}
+                        className="p-2 text-slate-400 hover:text-slate-200 bg-slate-900 rounded-xl border border-slate-800"
+                        title="بستن پرونده"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Charge / Deduct Wallet Controls */}
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                      <Wallet className="w-4 h-4 text-emerald-400" />
+                      <span>شارژ یا کسر موجودی پول حساب کاربری مشتری در ربات:</span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {[50000, 100000, 200000, 500000, 1000000].map(preset => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setBuyerChargeAmount(String(preset))}
+                          className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-mono border border-slate-700 transition"
+                        >
+                          +{preset.toLocaleString()} ت
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2.5">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
+                        value={buyerChargeAmount}
+                        onChange={(e) => setBuyerChargeAmount(e.target.value)}
+                        placeholder="مبلغ به تومان (مثلاً 150000)"
+                        className="flex-1 px-4 py-2.5 bg-slate-950 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        disabled={buyerChargeLoading}
+                        onClick={() => handleChargeBuyerWallet(buyerLookupResult.buyer.chatId, 'add')}
+                        className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>{buyerChargeLoading ? 'در حال انجام...' : 'شارژ موجودی پول'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={buyerChargeLoading}
+                        onClick={() => handleChargeBuyerWallet(buyerLookupResult.buyer.chatId, 'sub')}
+                        className="px-4 py-2.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5"
+                      >
+                        <Minus className="w-4 h-4" />
+                        <span>کسر موجودی</span>
+                      </button>
+                    </div>
+
+                    {buyerChargeFeedback && (
+                      <div
+                        className={`text-xs px-3 py-2 rounded-xl border ${
+                          buyerChargeFeedback.type === 'success'
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                        }`}
+                      >
+                        {buyerChargeFeedback.type === 'success' ? '✅ ' : '❌ '}
+                        {buyerChargeFeedback.text}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Full Purchase History of this Customer */}
+                  <div className="space-y-2.5">
+                    <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                      <Receipt className="w-4 h-4 text-cyan-400" />
+                      <span>تمام خریدها، تمدیدها و شارژهای قبلی این مشتری ({(buyerLookupResult.orders?.length || 0) + (buyerLookupResult.matchedPurchases?.length || 0)} مورد):</span>
+                    </h4>
+
+                    {(buyerLookupResult.orders?.length || 0) === 0 && (buyerLookupResult.matchedPurchases?.length || 0) === 0 ? (
+                      <div className="text-center py-6 bg-slate-900/50 rounded-xl border border-slate-800 text-slate-500 text-xs">
+                        هنوز هیچ خرید یا سفارشی برای آیدی عددی {buyerLookupResult.buyer.chatId} ثبت نشده است.
+                      </div>
+                    ) : (
+                      <>
+                        {/* Desktop Table */}
+                        <div className="hidden md:block overflow-x-auto bg-slate-900/60 rounded-2xl border border-slate-800">
+                          <table className="w-full text-right text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                                <th className="py-2.5 px-3">شناسه / تاریخ</th>
+                                <th className="py-2.5 px-3">عنوان و نوع</th>
+                                <th className="py-2.5 px-3">مبلغ مشتری</th>
+                                <th className="py-2.5 px-3">سود شما</th>
+                                <th className="py-2.5 px-3">وضعیت</th>
+                                <th className="py-2.5 px-3 text-left">عملیات</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60">
+                              {(buyerLookupResult.orders || []).map((ord: any) => (
+                                <tr key={ord.id} className="hover:bg-slate-800/40 transition">
+                                  <td className="py-2.5 px-3">
+                                    <span className="font-mono text-[10px] text-slate-400 block">{ord.id}</span>
+                                    <span className="text-[10px] text-slate-500">
+                                      {ord.createdAt ? new Date(ord.createdAt).toLocaleString('fa-IR') : '—'}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <span className="font-bold text-cyan-300 block">{ord.customName || ord.productName || ord.type}</span>
+                                    <span className="text-[10px] text-slate-400">
+                                      {ord.volumeGb ? `${ord.volumeGb} GB` : ''} {ord.durationDays ? `/ ${ord.durationDays} روز` : ''}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 font-mono font-bold text-slate-100">
+                                    {(ord.retailPrice || 0).toLocaleString()} ت
+                                  </td>
+                                  <td className="py-2.5 px-3 font-mono text-emerald-400">
+                                    +{(ord.profit || 0).toLocaleString()} ت
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    {ord.status === 'approved' && <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px]">تایید شده ✅</span>}
+                                    {ord.status === 'pending' && <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 text-[10px]">در انتظار ⏳</span>}
+                                    {ord.status === 'rejected' && <span className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 text-[10px]">رد شده ❌</span>}
+                                  </td>
+                                  <td className="py-2.5 px-3 text-left">
+                                    {ord.status === 'pending' ? (
+                                      <div className="flex items-center gap-1 justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            await handleBotOrderAction(ord.id, 'approve');
+                                            handleLookupBuyer(buyerLookupResult.buyer.chatId);
+                                          }}
+                                          disabled={orderActionLoading === ord.id}
+                                          className="px-2 py-1 bg-emerald-500 text-slate-950 font-bold rounded-lg text-[10px]"
+                                        >
+                                          تایید
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            await handleBotOrderAction(ord.id, 'reject');
+                                            handleLookupBuyer(buyerLookupResult.buyer.chatId);
+                                          }}
+                                          disabled={orderActionLoading === ord.id}
+                                          className="px-2 py-1 bg-rose-500/20 text-rose-300 rounded-lg text-[10px]"
+                                        >
+                                          رد
+                                        </button>
+                                      </div>
+                                    ) : ord.deliveredSubUrl ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(ord.deliveredSubUrl);
+                                          alert('✅ لینک ساب کپی شد:\n' + ord.deliveredSubUrl);
+                                        }}
+                                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] inline-flex items-center gap-1"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                        <span>کپی ساب</span>
+                                      </button>
+                                    ) : null}
+                                  </td>
+                                </tr>
+                              ))}
+                              {(buyerLookupResult.matchedPurchases || []).map((p: any) => {
+                                const subLink = p.panel4SubUrl || p.mroceanSubUrl || p.subUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || '';
+                                return (
+                                  <tr key={p.id} className="hover:bg-slate-800/40 transition">
+                                    <td className="py-2.5 px-3">
+                                      <span className="font-mono text-[10px] text-slate-400 block">{p.id}</span>
+                                      <span className="text-[10px] text-slate-500">
+                                        {p.createdAt ? new Date(p.createdAt).toLocaleString('fa-IR') : '—'}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <span className="font-bold text-indigo-300 block">{p.customName || p.name} (پنل همکار)</span>
+                                      <span className="text-[10px] text-slate-400">{p.volumeGb || 0} GB / {p.durationDays || 0} روز</span>
+                                    </td>
+                                    <td className="py-2.5 px-3 font-mono text-slate-200">{(p.price || 0).toLocaleString()} ت</td>
+                                    <td className="py-2.5 px-3 text-slate-500">—</td>
+                                    <td className="py-2.5 px-3">
+                                      <span className="px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 text-[10px]">
+                                        {p.isCancelled ? 'ابطال‌شده' : (p.disabled ? 'قطع‌شده' : 'سرویس فعال')}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-left">
+                                      {subLink && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(subLink);
+                                            alert('✅ لینک ساب کپی شد:\n' + subLink);
+                                          }}
+                                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] inline-flex items-center gap-1"
+                                        >
+                                          <Copy className="w-3 h-3" />
+                                          <span>کپی ساب</span>
+                                        </button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Mobile & Android Responsive Cards */}
+                        <div className="md:hidden space-y-2.5">
+                          {(buyerLookupResult.orders || []).map((ord: any) => (
+                            <div key={ord.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-3 space-y-2 text-xs">
+                              <div className="flex justify-between items-start gap-2">
+                                <div>
+                                  <p className="font-bold text-cyan-300">{ord.customName || ord.productName || ord.type}</p>
+                                  <p className="text-[10px] text-slate-500 font-mono">{ord.id} • {ord.createdAt ? new Date(ord.createdAt).toLocaleDateString('fa-IR') : ''}</p>
+                                </div>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] ${ord.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400' : ord.status === 'pending' ? 'bg-amber-500/10 text-amber-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                                  {ord.status === 'approved' ? 'موفق ✅' : ord.status === 'pending' ? 'در انتظار ⏳' : 'رد شده ❌'}
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center pt-1 border-t border-slate-800/80">
+                                <span className="font-mono font-bold text-slate-100">{(ord.retailPrice || 0).toLocaleString()} ت</span>
+                                {ord.deliveredSubUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(ord.deliveredSubUrl);
+                                      alert('✅ لینک ساب کپی شد');
+                                    }}
+                                    className="px-2.5 py-1 bg-slate-800 text-slate-200 rounded-lg text-[11px] inline-flex items-center gap-1"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    <span>کپی ساب</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {(buyerLookupResult.matchedPurchases || []).map((p: any) => {
+                            const subLink = p.panel4SubUrl || p.mroceanSubUrl || p.subUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || '';
+                            return (
+                              <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-3 space-y-2 text-xs">
+                                <div className="flex justify-between items-start gap-2">
+                                  <div>
+                                    <p className="font-bold text-indigo-300">{p.customName || p.name}</p>
+                                    <p className="text-[10px] text-slate-500 font-mono">{p.id} • {p.volumeGb || 0} GB</p>
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 text-[10px]">
+                                    {p.isCancelled ? 'ابطال‌شده' : (p.disabled ? 'قطع' : 'فعال')}
+                                  </span>
+                                </div>
+                                {subLink && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(subLink);
+                                      alert('✅ لینک ساب کپی شد');
+                                    }}
+                                    className="w-full py-1.5 bg-slate-800 text-slate-200 rounded-lg text-[11px] flex items-center justify-center gap-1"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    <span>کپی ساب</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Registered Buyers Directory */}
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-300">لیست مشتریان ثبت‌شده در ربات شما:</span>
+                  <div className="relative w-full sm:w-72">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={buyersListSearch}
+                      onChange={(e) => setBuyersListSearch(e.target.value)}
+                      placeholder="فیلتر با آیدی عددی، نام یا یوزرنیم..."
+                      className="w-full pl-3 pr-9 py-2 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                {(() => {
+                  const q = buyersListSearch.trim().toLowerCase();
+                  const filteredBuyers = (botConfig.buyers || []).filter((b: any) => {
+                    if (!q) return true;
+                    return (
+                      String(b.chatId || '').includes(normalizeDigits(q)) ||
+                      String(b.name || '').toLowerCase().includes(q) ||
+                      String(b.username || '').toLowerCase().includes(q)
+                    );
+                  });
+
+                  if (filteredBuyers.length === 0) {
+                    return (
+                      <div className="text-center py-8 bg-slate-950/60 rounded-2xl border border-slate-800/60 text-slate-500 text-xs">
+                        مشتری مطابق با جستجو یافت نشد. می‌توانید از کادر بالا آیدی عددی هر مشتری را وارد کرده و سوابق او را مشاهده یا کیف پولش را شارژ کنید.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <>
+                      <div className="hidden md:block overflow-x-auto bg-slate-950/50 rounded-2xl border border-slate-800">
+                        <table className="w-full text-right text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                              <th className="py-2.5 px-3">نام و یوزرنیم</th>
+                              <th className="py-2.5 px-3">آیدی عددی</th>
+                              <th className="py-2.5 px-3">تعداد خریدها</th>
+                              <th className="py-2.5 px-3">جمع خرید موفق</th>
+                              <th className="py-2.5 px-3">موجودی کیف پول</th>
+                              <th className="py-2.5 px-3 text-left">عملیات</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {filteredBuyers.map((b: any) => (
+                              <tr key={b.chatId} className="hover:bg-slate-800/40 transition">
+                                <td className="py-2.5 px-3">
+                                  <span className="font-bold text-slate-100 block">{b.name || 'کاربر'}</span>
+                                  {b.username && <span className="text-[10px] text-cyan-400 font-mono" dir="ltr">@{b.username}</span>}
+                                </td>
+                                <td className="py-2.5 px-3 font-mono text-slate-300" dir="ltr">{b.chatId}</td>
+                                <td className="py-2.5 px-3 text-slate-300 font-mono">{b.ordersCount || 0} مورد</td>
+                                <td className="py-2.5 px-3 text-cyan-300 font-mono">{(b.totalSpentToman || 0).toLocaleString()} ت</td>
+                                <td className="py-2.5 px-3 font-mono font-bold text-emerald-400">{(b.balance || 0).toLocaleString()} تومان</td>
+                                <td className="py-2.5 px-3 text-left">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleLookupBuyer(b.chatId)}
+                                    className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 rounded-xl text-[11px] font-bold transition"
+                                  >
+                                    سوابق و شارژ کیف پول
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="md:hidden grid grid-cols-1 gap-2.5">
+                        {filteredBuyers.map((b: any) => (
+                          <div key={b.chatId} className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 space-y-2 text-xs">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="font-bold text-slate-100">{b.name || 'کاربر'}</p>
+                                <p className="font-mono text-[11px] text-slate-400" dir="ltr">ID: {b.chatId} {b.username ? `(@${b.username})` : ''}</p>
+                              </div>
+                              <span className="px-2.5 py-1 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono font-bold text-[11px]">
+                                {(b.balance || 0).toLocaleString()} ت
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
+                              <span className="text-[11px] text-slate-400">{b.ordersCount || 0} سفارش • {(b.totalSpentToman || 0).toLocaleString()} ت</span>
+                              <button
+                                type="button"
+                                onClick={() => handleLookupBuyer(b.chatId)}
+                                className="px-3 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-xl text-[11px]"
+                              >
+                                سوابق و شارژ
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+
+            {/* Section 5: Live Orders & Receipts from Reseller Bot Customers */}
+            <div className="bg-slate-900 border border-slate-800 p-4 sm:p-6 rounded-3xl shadow-lg space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
                 <div className="flex items-center gap-2">
                   <Receipt className="w-5 h-5 text-indigo-400" />
                   <h3 className="font-bold text-slate-100 text-sm">
-                    ۴. سفارشات و فیش‌های دریافتی از مشتریان ربات شما ({botConfig.orders?.length || 0})
+                    ۵. کل سفارشات و فیش‌های دریافتی از مشتریان ربات شما ({botConfig.orders?.length || 0})
                   </h3>
                 </div>
-                <button
-                  onClick={() => fetchBotConfig()}
-                  className="p-1.5 bg-slate-800 text-slate-300 rounded-lg hover:text-white transition flex items-center gap-1 text-xs"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>بروزرسانی لیست</span>
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={ordersListSearch}
+                      onChange={(e) => setOrdersListSearch(e.target.value)}
+                      placeholder="جستجو با آیدی عددی، نام یا محصول..."
+                      className="pl-3 pr-9 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 text-xs focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <button
+                    onClick={() => fetchBotConfig()}
+                    className="p-2 bg-slate-800 text-slate-300 rounded-xl hover:text-white transition flex items-center gap-1 text-xs"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>بروزرسانی لیست</span>
+                  </button>
+                </div>
               </div>
 
-              {(!botConfig.orders || botConfig.orders.length === 0) ? (
-                <div className="text-center py-10 bg-slate-950/60 rounded-2xl border border-slate-800/60 text-slate-500 text-xs">
-                  هنوز سفارشی از سوی مشتریان در ربات اختصاصی شما ثبت نشده است. به محض ارسال اولین سفارش یا فیش، در این جدول ظاهر خواهد شد.
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-right text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
-                        <th className="py-2.5 px-3">شناسه / تاریخ</th>
-                        <th className="py-2.5 px-3">مشتری</th>
-                        <th className="py-2.5 px-3">محصول / حجم</th>
-                        <th className="py-2.5 px-3">واریزی مشتری</th>
-                        <th className="py-2.5 px-3">هزینه عمده شما</th>
-                        <th className="py-2.5 px-3">سود شما</th>
-                        <th className="py-2.5 px-3">وضعیت</th>
-                        <th className="py-2.5 px-3 text-left">عملیات</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-vazir">
-                      {botConfig.orders.map((ord: any) => (
-                        <tr key={ord.id} className="hover:bg-slate-800/40 transition">
-                          <td className="py-3 px-3">
-                            <span className="font-mono text-[10px] text-slate-400 block">{ord.id}</span>
-                            <span className="text-[10px] text-slate-500">{new Date(ord.createdAt).toLocaleDateString('fa-IR')}</span>
-                          </td>
-                          <td className="py-3 px-3">
-                            <span className="font-bold text-slate-200 block">{ord.buyerName || 'مشتری'}</span>
-                            <span className="font-mono text-[10px] text-slate-400" dir="ltr">
-                              {ord.buyerUsername ? `@${ord.buyerUsername}` : ord.buyerChatId}
+              {(() => {
+                const q = ordersListSearch.trim().toLowerCase();
+                const filteredOrders = (botConfig.orders || []).filter((ord: any) => {
+                  if (!q) return true;
+                  return (
+                    String(ord.buyerChatId || '').includes(normalizeDigits(q)) ||
+                    String(ord.buyerName || '').toLowerCase().includes(q) ||
+                    String(ord.buyerUsername || '').toLowerCase().includes(q) ||
+                    String(ord.productName || '').toLowerCase().includes(q) ||
+                    String(ord.customName || '').toLowerCase().includes(q) ||
+                    String(ord.id || '').toLowerCase().includes(q)
+                  );
+                });
+
+                if (filteredOrders.length === 0) {
+                  return (
+                    <div className="text-center py-10 bg-slate-950/60 rounded-2xl border border-slate-800/60 text-slate-500 text-xs">
+                      {botConfig.orders?.length ? 'سفارشی مطابق با فیلتر جستجو یافت نشد.' : 'هنوز سفارشی از سوی مشتریان در ربات اختصاصی شما ثبت نشده است.'}
+                    </div>
+                  );
+                }
+
+                return (
+                  <>
+                    <div className="hidden md:block overflow-x-auto">
+                      <table className="w-full text-right text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                            <th className="py-2.5 px-3">شناسه / تاریخ</th>
+                            <th className="py-2.5 px-3">مشتری (آیدی عددی)</th>
+                            <th className="py-2.5 px-3">محصول / حجم</th>
+                            <th className="py-2.5 px-3">واریزی مشتری</th>
+                            <th className="py-2.5 px-3">هزینه عمده شما</th>
+                            <th className="py-2.5 px-3">سود شما</th>
+                            <th className="py-2.5 px-3">وضعیت</th>
+                            <th className="py-2.5 px-3 text-left">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-vazir">
+                          {filteredOrders.map((ord: any) => (
+                            <tr key={ord.id} className="hover:bg-slate-800/40 transition">
+                              <td className="py-3 px-3">
+                                <span className="font-mono text-[10px] text-slate-400 block">{ord.id}</span>
+                                <span className="text-[10px] text-slate-500">{new Date(ord.createdAt).toLocaleDateString('fa-IR')}</span>
+                              </td>
+                              <td className="py-3 px-3">
+                                <span className="font-bold text-slate-200 block">{ord.buyerName || 'مشتری'}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleLookupBuyer(ord.buyerChatId)}
+                                  className="font-mono text-[10px] text-cyan-400 hover:text-cyan-300 underline"
+                                  dir="ltr"
+                                  title="مشاهده پرونده و شارژ این مشتری"
+                                >
+                                  {ord.buyerChatId} {ord.buyerUsername ? `(@${ord.buyerUsername})` : ''}
+                                </button>
+                              </td>
+                              <td className="py-3 px-3 font-bold text-cyan-400">{ord.customName || ord.productName || 'وی‌پی‌ان اختصاصی'}</td>
+                              <td className="py-3 px-3 font-mono font-bold text-slate-100">{ord.retailPrice?.toLocaleString()} تومان</td>
+                              <td className="py-3 px-3 font-mono text-slate-400">{ord.wholesalePrice?.toLocaleString()} تومان</td>
+                              <td className="py-3 px-3 font-mono font-bold text-emerald-400">+{ord.profit?.toLocaleString()} تومان</td>
+                              <td className="py-3 px-3">
+                                {ord.status === 'approved' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px]">
+                                    تحویل داده شد ✅
+                                  </span>
+                                )}
+                                {ord.status === 'pending' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] animate-pulse">
+                                    در انتظار تایید فیش ⏳
+                                  </span>
+                                )}
+                                {ord.status === 'rejected' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/30 text-[10px]">
+                                    رد شده ❌
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-3 text-left">
+                                {ord.status === 'pending' ? (
+                                  <div className="flex items-center gap-1.5 justify-end">
+                                    <button
+                                      onClick={() => handleBotOrderAction(ord.id, 'approve')}
+                                      disabled={orderActionLoading === ord.id}
+                                      className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-[11px] transition shadow"
+                                    >
+                                      {orderActionLoading === ord.id ? 'در حال صدور...' : 'تایید و صدور آنی'}
+                                    </button>
+                                    <button
+                                      onClick={() => handleBotOrderAction(ord.id, 'reject')}
+                                      disabled={orderActionLoading === ord.id}
+                                      className="px-2 py-1 bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 rounded-lg text-[11px] transition"
+                                    >
+                                      رد
+                                    </button>
+                                  </div>
+                                ) : ord.deliveredSubUrl ? (
+                                  <button
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(ord.deliveredSubUrl);
+                                      alert('✅ لینک سابسکریپشن تحویل داده شده کپی شد:\n' + ord.deliveredSubUrl);
+                                    }}
+                                    className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] transition flex items-center gap-1"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    <span>کپی لینک تحویلی</span>
+                                  </button>
+                                ) : null}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="md:hidden space-y-2.5">
+                      {filteredOrders.map((ord: any) => (
+                        <div key={ord.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 space-y-2 text-xs">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-bold text-cyan-400">{ord.customName || ord.productName || 'وی‌پی‌ان اختصاصی'}</p>
+                              <button
+                                type="button"
+                                onClick={() => handleLookupBuyer(ord.buyerChatId)}
+                                className="text-[11px] text-slate-300 underline font-mono"
+                              >
+                                {ord.buyerName || 'مشتری'} ({ord.buyerChatId})
+                              </button>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] ${ord.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400' : ord.status === 'pending' ? 'bg-amber-500/10 text-amber-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                              {ord.status === 'approved' ? 'تحویل شد ✅' : ord.status === 'pending' ? 'در انتظار ⏳' : 'رد شد ❌'}
                             </span>
-                          </td>
-                          <td className="py-3 px-3 font-bold text-cyan-400">{ord.productName || 'وی‌پی‌ان اختصاصی'}</td>
-                          <td className="py-3 px-3 font-mono font-bold text-slate-100">{ord.retailPrice?.toLocaleString()} تومان</td>
-                          <td className="py-3 px-3 font-mono text-slate-400">{ord.wholesalePrice?.toLocaleString()} تومان</td>
-                          <td className="py-3 px-3 font-mono font-bold text-emerald-400">+{ord.profit?.toLocaleString()} تومان</td>
-                          <td className="py-3 px-3">
-                            {ord.status === 'approved' && (
-                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px]">
-                                تحویل داده شد ✅
-                              </span>
-                            )}
-                            {ord.status === 'pending' && (
-                              <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] animate-pulse">
-                                در انتظار تایید فیش ⏳
-                              </span>
-                            )}
-                            {ord.status === 'rejected' && (
-                              <span className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/30 text-[10px]">
-                                رد شده ❌
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 px-3 text-left">
+                          </div>
+                          <div className="flex items-center justify-between text-[11px] text-slate-400">
+                            <span>مبلغ: <b className="text-slate-100 font-mono">{ord.retailPrice?.toLocaleString()} ت</b></span>
+                            <span>سود: <b className="text-emerald-400 font-mono">+{ord.profit?.toLocaleString()} ت</b></span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
+                            <span className="text-[10px] text-slate-500">{new Date(ord.createdAt).toLocaleDateString('fa-IR')}</span>
                             {ord.status === 'pending' ? (
-                              <div className="flex items-center gap-1.5 justify-end">
+                              <div className="flex items-center gap-1.5">
                                 <button
                                   onClick={() => handleBotOrderAction(ord.id, 'approve')}
                                   disabled={orderActionLoading === ord.id}
-                                  className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-[11px] transition shadow"
+                                  className="px-3 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-xl text-[11px]"
                                 >
-                                  {orderActionLoading === ord.id ? 'در حال صدور...' : 'تایید و صدور آنی'}
+                                  {orderActionLoading === ord.id ? '...' : 'تایید و صدور'}
                                 </button>
                                 <button
                                   onClick={() => handleBotOrderAction(ord.id, 'reject')}
                                   disabled={orderActionLoading === ord.id}
-                                  className="px-2 py-1 bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 rounded-lg text-[11px] transition"
+                                  className="px-2.5 py-1.5 bg-rose-500/20 text-rose-300 rounded-xl text-[11px]"
                                 >
                                   رد
                                 </button>
@@ -3096,21 +3773,21 @@ export const SellerPortalView: React.FC<SellerPortalProps> = ({ chatIdParam }) =
                               <button
                                 onClick={() => {
                                   navigator.clipboard.writeText(ord.deliveredSubUrl);
-                                  alert('✅ لینک سابسکریپشن تحویل داده شده کپی شد:\n' + ord.deliveredSubUrl);
+                                  alert('✅ لینک سابسکریپشن کپی شد');
                                 }}
-                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] transition flex items-center gap-1"
+                                className="px-3 py-1 bg-slate-800 text-slate-200 rounded-xl text-[11px] flex items-center gap-1"
                               >
                                 <Copy className="w-3 h-3" />
-                                <span>کپی لینک تحویلی</span>
+                                <span>کپی لینک</span>
                               </button>
                             ) : null}
-                          </td>
-                        </tr>
+                          </div>
+                        </div>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         )}

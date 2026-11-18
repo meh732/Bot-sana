@@ -85889,10 +85889,318 @@ var init_resellerBotManager = __esm({
             reply_markup: { inline_keyboard }
           });
         };
+        const getMergedBuyersList = (seller) => {
+          const botCfg = seller.sellerBot || {};
+          const map = /* @__PURE__ */ new Map();
+          for (const b of botCfg.buyers || []) {
+            const cid = Number(b.chatId);
+            if (!cid || isNaN(cid)) continue;
+            map.set(cid, {
+              chatId: cid,
+              name: b.name || "\u06A9\u0627\u0631\u0628\u0631",
+              username: b.username || "",
+              balance: Number(b.balance) || 0,
+              joinedAt: b.joinedAt || "",
+              testUsed: !!b.testUsed,
+              referralCount: b.referralCount || 0,
+              referralEarnings: b.referralEarnings || 0,
+              ordersCount: 0,
+              approvedServicesCount: 0,
+              totalSpentToman: 0,
+              lastOrderAt: b.joinedAt || ""
+            });
+          }
+          for (const o of botCfg.orders || []) {
+            const cid = Number(o.buyerChatId);
+            if (!cid || isNaN(cid)) continue;
+            let entry = map.get(cid);
+            if (!entry) {
+              entry = {
+                chatId: cid,
+                name: o.buyerName || "\u06A9\u0627\u0631\u0628\u0631",
+                username: o.buyerUsername || "",
+                balance: 0,
+                joinedAt: o.createdAt || "",
+                testUsed: o.type === "free_test",
+                referralCount: 0,
+                referralEarnings: 0,
+                ordersCount: 0,
+                approvedServicesCount: 0,
+                totalSpentToman: 0,
+                lastOrderAt: o.createdAt || ""
+              };
+              map.set(cid, entry);
+            } else {
+              if ((!entry.name || entry.name === "\u06A9\u0627\u0631\u0628\u0631") && o.buyerName) entry.name = o.buyerName;
+              if (!entry.username && o.buyerUsername) entry.username = o.buyerUsername;
+            }
+            entry.ordersCount += 1;
+            if (o.status === "approved") {
+              if (o.type !== "deposit") entry.approvedServicesCount += 1;
+              entry.totalSpentToman += Number(o.retailPrice) || 0;
+            }
+            if (o.createdAt && (!entry.lastOrderAt || new Date(o.createdAt).getTime() > new Date(entry.lastOrderAt).getTime())) {
+              entry.lastOrderAt = o.createdAt;
+            }
+          }
+          return Array.from(map.values()).sort((a, b) => {
+            const ta = a.lastOrderAt ? new Date(a.lastOrderAt).getTime() : 0;
+            const tb = b.lastOrderAt ? new Date(b.lastOrderAt).getTime() : 0;
+            return tb - ta;
+          });
+        };
+        const sendAdminBuyersMenu = async (adminChatId, seller, page = 0, editMsgId) => {
+          const merged = getMergedBuyersList(seller);
+          const pageSize = 12;
+          const totalPages = Math.max(1, Math.ceil(merged.length / pageSize));
+          const safePage = Math.max(0, Math.min(page, totalPages - 1));
+          const slice = merged.slice(safePage * pageSize, (safePage + 1) * pageSize);
+          let textOut = `\u{1F465} <b>\u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0648 \u0627\u0633\u062A\u0639\u0644\u0627\u0645 \u0633\u0648\u0627\u0628\u0642 (${merged.length} \u0646\u0641\u0631):</b>
+
+`;
+          if (merged.length === 0) {
+            textOut += `\u2139\uFE0F \u0647\u0646\u0648\u0632 \u0647\u06CC\u0686 \u06A9\u0627\u0631\u0628\u0631\u06CC \u062F\u0631 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.
+\u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u06CC\u062F \u0627\u0632 \u062F\u06A9\u0645\u0647\u200C\u0647\u0627\u06CC \u0632\u06CC\u0631 \u0628\u0627 \u0648\u0627\u0631\u062F \u06A9\u0631\u062F\u0646 <b>\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC</b> \u06A9\u0627\u0631\u0628\u0631\u060C \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644\u0634 \u0631\u0627 \u0634\u0627\u0631\u0698 \u06A9\u0646\u06CC\u062F \u06CC\u0627 \u0633\u0648\u0627\u0628\u0642 \u0631\u0627 \u0628\u0631\u0631\u0633\u06CC \u0646\u0645\u0627\u06CC\u06CC\u062F:`;
+          } else {
+            textOut += `\u0635\u0641\u062D\u0647 <b>${safePage + 1}</b> \u0627\u0632 <b>${totalPages}</b>
+\u0628\u0631\u0627\u06CC \u0645\u0634\u0627\u0647\u062F\u0647 <b>\u062A\u0645\u0627\u0645\u06CC \u062E\u0631\u06CC\u062F\u0647\u0627\u06CC \u0642\u0628\u0644\u06CC</b> \u06CC\u0627 <b>\u0634\u0627\u0631\u0698 \u0645\u0648\u062C\u0648\u062F\u06CC \u067E\u0648\u0644</b>\u060C \u0645\u0634\u062A\u0631\u06CC \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F \u06CC\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0627\u0648 \u0631\u0627 \u062C\u0633\u062A\u062C\u0648 \u0646\u0645\u0627\u06CC\u06CC\u062F:`;
+          }
+          const inline_keyboard = [
+            [
+              { text: "\u{1F50D} \u062C\u0633\u062A\u062C\u0648 \u0648 \u0633\u0648\u0627\u0628\u0642 \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC", callback_data: "admin_search_buyer_by_id", style: "success" },
+              { text: "\u{1F4B3} \u0634\u0627\u0631\u0698 \u0645\u0633\u062A\u0642\u06CC\u0645 \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC", callback_data: "admin_quick_charge_by_id", style: "primary" }
+            ]
+          ];
+          slice.forEach((b) => {
+            const namePart = b.name && b.name !== "\u06A9\u0627\u0631\u0628\u0631" ? b.name : b.username ? `@${b.username}` : "\u06A9\u0627\u0631\u0628\u0631";
+            const label = `\u{1F464} ${namePart} | ${b.chatId} | ${(b.balance || 0).toLocaleString()} \u062A (${b.ordersCount} \u062E\u0631\u06CC\u062F)`;
+            inline_keyboard.push([
+              { text: label.slice(0, 62), callback_data: `admin_buyer_${b.chatId}`, style: "primary" }
+            ]);
+          });
+          if (totalPages > 1) {
+            const navRow = [];
+            if (safePage > 0) navRow.push({ text: "\u25C0\uFE0F \u0635\u0641\u062D\u0647 \u0642\u0628\u0644", callback_data: `admin_buyers_page_${safePage - 1}`, style: "primary" });
+            if (safePage < totalPages - 1) navRow.push({ text: "\u0635\u0641\u062D\u0647 \u0628\u0639\u062F \u25B6\uFE0F", callback_data: `admin_buyers_page_${safePage + 1}`, style: "primary" });
+            if (navRow.length > 0) inline_keyboard.push(navRow);
+          }
+          inline_keyboard.push([{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "danger" }]);
+          if (editMsgId) {
+            await bot2.editMessageText(textOut, {
+              chat_id: adminChatId,
+              message_id: editMsgId,
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard }
+            }).catch(async () => {
+              await bot2.sendMessage(adminChatId, textOut, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+            });
+          } else {
+            await bot2.sendMessage(adminChatId, textOut, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+          }
+        };
+        const sendBuyerDetailByChatId = async (adminChatId, seller, targetId, page = 0, editMsgId) => {
+          const botCfg = seller.sellerBot || {};
+          const b = (botCfg.buyers || []).find((item) => Number(item.chatId) === targetId);
+          const allOrders = (botCfg.orders || []).filter((o) => Number(o.buyerChatId) === targetId).sort((a, z) => new Date(z.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+          const linkedPurchaseIds = new Set(allOrders.map((o) => o.deliveredPurchaseId).filter(Boolean));
+          const linkedSubUrls = new Set(allOrders.map((o) => o.deliveredSubUrl).filter(Boolean));
+          const extraPurchases = (seller.purchases || []).filter((p) => {
+            if (!p || p.isDeleted) return false;
+            if (linkedPurchaseIds.has(p.id)) return false;
+            const pSub = p.subUrl || p.mroceanSubUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || p.panel4SubUrl;
+            if (pSub && linkedSubUrls.has(pSub)) return false;
+            const hay = `${p.customName || ""} ${p.name || ""} ${p.id || ""}`;
+            return hay.includes(String(targetId));
+          });
+          const history = [];
+          for (const ord of allOrders) {
+            const typeMap = {
+              product: "\u062E\u0631\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633",
+              custom_volume: "\u062D\u062C\u0645 \u062F\u0644\u062E\u0648\u0627\u0647",
+              renew: "\u062A\u0645\u062F\u06CC\u062F \u0633\u0631\u0648\u06CC\u0633",
+              free_test: "\u062A\u0633\u062A \u0631\u0627\u06CC\u06AF\u0627\u0646",
+              deposit: "\u0634\u0627\u0631\u0698 \u06A9\u06CC\u0641 \u067E\u0648\u0644"
+            };
+            const statusMap = {
+              approved: "\u2705 \u0645\u0648\u0641\u0642",
+              pending: "\u23F3 \u062F\u0631 \u0627\u0646\u062A\u0638\u0627\u0631 \u062A\u0627\u06CC\u06CC\u062F",
+              rejected: "\u274C \u0631\u062F \u0634\u062F\u0647"
+            };
+            history.push({
+              kind: "order",
+              id: ord.id,
+              title: ord.customName || ord.productName || typeMap[ord.type] || ord.id,
+              typeLabel: typeMap[ord.type] || ord.type,
+              statusLabel: statusMap[ord.status] || ord.status,
+              status: ord.status,
+              price: Number(ord.retailPrice) || 0,
+              volumeGb: Number(ord.volumeGb) || 0,
+              createdAt: ord.createdAt || "",
+              hasService: ord.type !== "deposit" && !!(ord.deliveredPurchaseId || ord.deliveredSubUrl),
+              order: ord
+            });
+          }
+          for (const p of extraPurchases) {
+            history.push({
+              kind: "purchase",
+              id: p.id,
+              title: p.customName || p.name || p.id,
+              typeLabel: "\u0633\u0631\u0648\u06CC\u0633 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631",
+              statusLabel: p.isCancelled ? "\u{1F6AB} \u0627\u0628\u0637\u0627\u0644\u200C\u0634\u062F\u0647" : p.disabled ? "\u{1F6D1} \u0642\u0637\u0639\u200C\u0634\u062F\u0647" : "\u2705 \u0641\u0639\u0627\u0644",
+              status: "approved",
+              price: Number(p.price) || 0,
+              volumeGb: Number(p.volumeGb) || 0,
+              createdAt: p.createdAt || "",
+              hasService: true
+            });
+          }
+          history.sort((a, z) => new Date(z.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+          const displayName = b?.name || allOrders.find((o) => o.buyerName)?.buyerName || "\u06A9\u0627\u0631\u0628\u0631";
+          const displayUser = b?.username || allOrders.find((o) => o.buyerUsername)?.buyerUsername || "";
+          const walletBalance = Number(b?.balance) || 0;
+          const totalApprovedCount = history.filter((h) => h.status === "approved" && h.kind === "order" && h.order?.type !== "deposit").length + extraPurchases.length;
+          const totalSpent = allOrders.filter((o) => o.status === "approved").reduce((acc, o) => acc + (Number(o.retailPrice) || 0), 0);
+          const pageSize = 8;
+          const totalPages = Math.max(1, Math.ceil(history.length / pageSize));
+          const safePage = Math.max(0, Math.min(page, totalPages - 1));
+          const slice = history.slice(safePage * pageSize, (safePage + 1) * pageSize);
+          let info = `\u{1F464} <b>\u067E\u0631\u0648\u0646\u062F\u0647 \u06A9\u0627\u0645\u0644 \u0645\u0634\u062A\u0631\u06CC (\u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC):</b>
+
+\u{1F194} \u0634\u0646\u0627\u0633\u0647 \u0639\u062F\u062F\u06CC: <code>${targetId}</code>
+\u{1F464} \u0646\u0627\u0645: <b>${escapeHtml(displayName)}</b> ${displayUser ? `(@${escapeHtml(displayUser)})` : ""}
+\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0641\u0639\u0644\u06CC: <b>${walletBalance.toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
+\u{1F9FE} \u06A9\u0644 \u0633\u0648\u0627\u0628\u0642 \u0648 \u062E\u0631\u06CC\u062F\u0647\u0627\u06CC \u062B\u0628\u062A\u200C\u0634\u062F\u0647: <b>${history.length} \u0645\u0648\u0631\u062F</b> (${totalApprovedCount} \u0633\u0631\u0648\u06CC\u0633)
+\u{1F4B5} \u062C\u0645\u0639 \u06A9\u0644 \u067E\u0631\u062F\u0627\u062E\u062A\u06CC\u200C\u0647\u0627\u06CC \u062A\u0627\u06CC\u06CC\u062F\u0634\u062F\u0647: <b>${totalSpent.toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
+` + (!b ? `\u2139\uFE0F <i>\u0627\u06CC\u0646 \u0634\u0646\u0627\u0633\u0647 \u0647\u0646\u0648\u0632 \u0627\u0633\u062A\u0627\u0631\u062A \u0646\u0632\u062F\u0647 \u06CC\u0627 \u0642\u0628\u0644\u0627\u064B \u062F\u0631 \u0644\u06CC\u0633\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0628\u0648\u062F\u061B \u0628\u0627 \u0632\u062F\u0646 \u062F\u06A9\u0645\u0647 \u0634\u0627\u0631\u0698\u060C \u062D\u0633\u0627\u0628\u0634 \u0628\u0647 \u0635\u0648\u0631\u062A \u062E\u0648\u062F\u06A9\u0627\u0631 \u0627\u06CC\u062C\u0627\u062F \u0648 \u0634\u0627\u0631\u0698 \u0645\u06CC\u200C\u0634\u0648\u062F.</i>
+` : "") + `
+\u{1F4DC} <b>\u0633\u0648\u0627\u0628\u0642 \u062E\u0631\u06CC\u062F\u0647\u0627 (\u0635\u0641\u062D\u0647 ${safePage + 1} \u0627\u0632 ${totalPages}):</b>
+`;
+          if (slice.length === 0) {
+            info += `<i>\u0647\u06CC\u0686 \u062E\u0631\u06CC\u062F \u06CC\u0627 \u062A\u0631\u0627\u06A9\u0646\u0634\u06CC \u0628\u0631\u0627\u06CC \u0627\u06CC\u0646 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.</i>`;
+          } else {
+            slice.forEach((h, idx) => {
+              const num = safePage * pageSize + idx + 1;
+              const dateStr = h.createdAt ? new Date(h.createdAt).toLocaleDateString("fa-IR") : "\u2014";
+              info += `
+${num}. <b>${escapeHtml(h.title)}</b> [${h.statusLabel}]
+   \u{1F4B3} ${h.price.toLocaleString()} \u062A | \u{1F4C5} ${dateStr} | \u{1F194} <code>${escapeHtml(h.id)}</code>`;
+            });
+          }
+          const inline_keyboard = [
+            [
+              { text: "\u2795 \u0634\u0627\u0631\u0698 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644", callback_data: `admin_charge_add_${targetId}`, style: "success" },
+              { text: "\u2796 \u06A9\u0633\u0631 \u0627\u0632 \u06A9\u06CC\u0641 \u067E\u0648\u0644", callback_data: `admin_charge_sub_${targetId}`, style: "danger" }
+            ]
+          ];
+          slice.forEach((h) => {
+            if (h.hasService) {
+              inline_keyboard.push([
+                {
+                  text: `\u{1F50D} \u0645\u0634\u0627\u0647\u062F\u0647/\u062A\u0645\u062F\u06CC\u062F: ${h.title}`.slice(0, 56),
+                  callback_data: `view_srv_${h.id}`,
+                  style: "primary"
+                }
+              ]);
+            } else if (h.kind === "order" && h.status === "pending") {
+              inline_keyboard.push([
+                { text: `\u2705 \u062A\u0627\u06CC\u06CC\u062F (${h.title.slice(0, 22)})`, callback_data: `child_approve_${h.id}`, style: "success" },
+                { text: `\u274C \u0631\u062F`, callback_data: `child_reject_${h.id}`, style: "danger" }
+              ]);
+            }
+          });
+          if (totalPages > 1) {
+            const navRow = [];
+            if (safePage > 0) navRow.push({ text: "\u25C0\uFE0F \u0635\u0641\u062D\u0647 \u0642\u0628\u0644", callback_data: `admin_buyer_page_${targetId}_${safePage - 1}`, style: "primary" });
+            if (safePage < totalPages - 1) navRow.push({ text: "\u0635\u0641\u062D\u0647 \u0628\u0639\u062F \u25B6\uFE0F", callback_data: `admin_buyer_page_${targetId}_${safePage + 1}`, style: "primary" });
+            if (navRow.length > 0) inline_keyboard.push(navRow);
+          }
+          inline_keyboard.push([
+            { text: "\u{1F50D} \u062C\u0633\u062A\u062C\u0648\u06CC \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u062F\u06CC\u06AF\u0631", callback_data: "admin_search_buyer_by_id", style: "primary" },
+            { text: "\u{1F519} \u0644\u06CC\u0633\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646", callback_data: "admin_buyers_menu", style: "danger" }
+          ]);
+          if (editMsgId) {
+            await bot2.editMessageText(info, {
+              chat_id: adminChatId,
+              message_id: editMsgId,
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard }
+            }).catch(async () => {
+              await bot2.sendMessage(adminChatId, info, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+            });
+          } else {
+            await bot2.sendMessage(adminChatId, info, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+          }
+        };
+        const sendAllConfigsMenu = async (adminChatId, seller, page = 0, editMsgId) => {
+          const botCfg = seller.sellerBot || {};
+          const purchases = (seller.purchases || []).filter((p) => !p.isDeleted).slice().reverse();
+          if (purchases.length === 0) {
+            const emptyMsg = "\u2139\uFE0F \u0647\u0646\u0648\u0632 \u0647\u06CC\u0686 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u06CC \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.";
+            const kbd = {
+              inline_keyboard: [
+                [{ text: "\u{1F50D} \u062C\u0633\u062A\u062C\u0648\u06CC \u0633\u0648\u0627\u0628\u0642 \u062E\u0631\u06CC\u062F \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC", callback_data: "admin_search_buyer_by_id", style: "success" }],
+                [{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "danger" }]
+              ]
+            };
+            if (editMsgId) {
+              await bot2.editMessageText(emptyMsg, { chat_id: adminChatId, message_id: editMsgId, reply_markup: kbd }).catch(async () => {
+                await bot2.sendMessage(adminChatId, emptyMsg, { reply_markup: kbd });
+              });
+            } else {
+              await bot2.sendMessage(adminChatId, emptyMsg, { reply_markup: kbd });
+            }
+            return;
+          }
+          const ordersByPurchaseId = /* @__PURE__ */ new Map();
+          for (const o of botCfg.orders || []) {
+            if (o.deliveredPurchaseId) ordersByPurchaseId.set(o.deliveredPurchaseId, o);
+          }
+          const pageSize = 12;
+          const totalPages = Math.max(1, Math.ceil(purchases.length / pageSize));
+          const safePage = Math.max(0, Math.min(page, totalPages - 1));
+          const slice = purchases.slice(safePage * pageSize, (safePage + 1) * pageSize);
+          const msg = `\u{1F4CB} <b>\u06A9\u0644 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u200C\u0647\u0627 \u0648 \u062E\u0631\u06CC\u062F\u0647\u0627\u06CC \u062B\u0628\u062A\u200C\u0634\u062F\u0647 (${purchases.length} \u0645\u0648\u0631\u062F):</b>
+\u0635\u0641\u062D\u0647 <b>${safePage + 1}</b> \u0627\u0632 <b>${totalPages}</b>
+
+\u062C\u0647\u062A \u0645\u0634\u0627\u0647\u062F\u0647 \u0644\u06CC\u0646\u06A9\u060C \u0628\u0627\u0631\u06A9\u062F\u060C \u062D\u062C\u0645 \u0645\u0635\u0631\u0641\u06CC \u0648 \u062A\u0645\u062F\u06CC\u062F \u0631\u0648\u06CC \u0647\u0631 \u0645\u0648\u0631\u062F \u06A9\u0644\u06CC\u06A9 \u06A9\u0646\u06CC\u062F \u06CC\u0627 \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0645\u0634\u062A\u0631\u06CC \u062C\u0633\u062A\u062C\u0648 \u0646\u0645\u0627\u06CC\u06CC\u062F:`;
+          const inline_keyboard = [
+            [{ text: "\u{1F50D} \u062C\u0633\u062A\u062C\u0648 \u0648 \u0633\u0648\u0627\u0628\u0642 \u06A9\u0627\u0645\u0644 \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0645\u0634\u062A\u0631\u06CC", callback_data: "admin_search_buyer_by_id", style: "success" }]
+          ];
+          slice.forEach((p) => {
+            const linkedOrd = ordersByPurchaseId.get(p.id);
+            const buyerTag = linkedOrd ? ` | ID:${linkedOrd.buyerChatId}` : "";
+            inline_keyboard.push([
+              {
+                text: `\u{1F511} ${p.customName || p.name || p.id} (${p.volumeGb || 0}GB${buyerTag})`.slice(0, 60),
+                callback_data: `view_srv_${p.id}`,
+                style: "primary"
+              }
+            ]);
+          });
+          if (totalPages > 1) {
+            const navRow = [];
+            if (safePage > 0) navRow.push({ text: "\u25C0\uFE0F \u0635\u0641\u062D\u0647 \u0642\u0628\u0644", callback_data: `admin_all_configs_page_${safePage - 1}`, style: "primary" });
+            if (safePage < totalPages - 1) navRow.push({ text: "\u0635\u0641\u062D\u0647 \u0628\u0639\u062F \u25B6\uFE0F", callback_data: `admin_all_configs_page_${safePage + 1}`, style: "primary" });
+            if (navRow.length > 0) inline_keyboard.push(navRow);
+          }
+          inline_keyboard.push([{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "danger" }]);
+          if (editMsgId) {
+            await bot2.editMessageText(msg, {
+              chat_id: adminChatId,
+              message_id: editMsgId,
+              parse_mode: "HTML",
+              reply_markup: { inline_keyboard }
+            }).catch(async () => {
+              await bot2.sendMessage(adminChatId, msg, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+            });
+          } else {
+            await bot2.sendMessage(adminChatId, msg, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+          }
+        };
         const sendAdminPanelMenu = async (adminChatId, seller, editMsgId) => {
           const botCfg = seller.sellerBot || {};
           const pendingOrders = (botCfg.orders || []).filter((o) => o.status === "pending");
-          const totalBuyers = (botCfg.buyers || []).length;
+          const totalBuyers = getMergedBuyersList(seller).length;
           const totalOrders = (botCfg.orders || []).filter((o) => o.type !== "deposit" && o.status === "approved").length;
           const isUnlimited = isSellerUnlimitedLimit(seller);
           const debtVal = seller.debt || 0;
@@ -85922,7 +86230,7 @@ var init_resellerBotManager = __esm({
 \u2022 \u{1F4C9} <b>\u0628\u062F\u0647\u06CC \u0641\u0639\u0644\u06CC \u0647\u0645\u06A9\u0627\u0631: ${debtVal.toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
 \u2022 \u{1F50B} <b>\u0627\u0639\u062A\u0628\u0627\u0631 \u062E\u0631\u06CC\u062F \u0628\u0627\u0642\u06CC\u0645\u0627\u0646\u062F\u0647: ${creditDisplay}</b>
 
-\u0627\u0632 \u062F\u06A9\u0645\u0647\u200C\u0647\u0627\u06CC \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0632\u06CC\u0631 \u062C\u0647\u062A \u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u062F\u0648\u0645\u060C \u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC\u060C \u0642\u0641\u0644 \u06A9\u0627\u0646\u0627\u0644\u060C \u0642\u06CC\u0645\u062A\u200C\u06AF\u0630\u0627\u0631\u06CC \u0648 \u0627\u0645\u06A9\u0627\u0646\u0627\u062A \u06A9\u0627\u0645\u0644 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 \u062E\u0648\u062F \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u06A9\u0646\u06CC\u062F:`;
+\u0627\u0632 \u062F\u06A9\u0645\u0647\u200C\u0647\u0627\u06CC \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0632\u06CC\u0631 \u062C\u0647\u062A \u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u062F\u0648\u0645\u060C \u0627\u0633\u062A\u0639\u0644\u0627\u0645 \u0633\u0648\u0627\u0628\u0642 \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC\u060C \u0634\u0627\u0631\u0698 \u06A9\u06CC\u0641 \u067E\u0648\u0644\u060C \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC\u060C \u0642\u0641\u0644 \u06A9\u0627\u0646\u0627\u0644\u060C \u0642\u06CC\u0645\u062A\u200C\u06AF\u0630\u0627\u0631\u06CC \u0648 \u0627\u0645\u06A9\u0627\u0646\u0627\u062A \u06A9\u0627\u0645\u0644 \u067E\u0646\u0644 \u0647\u0645\u06A9\u0627\u0631 \u062E\u0648\u062F \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u06A9\u0646\u06CC\u062F:`;
           const inline_keyboard = [];
           if (pendingOrders.length > 0) {
             inline_keyboard.push([
@@ -85935,7 +86243,10 @@ var init_resellerBotManager = __esm({
           }
           inline_keyboard.push([
             { text: "\u{1F465} \u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0648 \u0634\u0627\u0631\u0698 \u062F\u0633\u062A\u06CC", callback_data: "admin_buyers_menu", style: "primary" },
-            { text: "\u{1F4CB} \u0627\u0633\u062A\u0639\u0644\u0627\u0645\u060C \u062A\u0645\u062F\u06CC\u062F \u0648 \u0627\u0628\u0637\u0627\u0644 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u200C\u0647\u0627", callback_data: "admin_all_configs", style: "primary" }
+            { text: "\u{1F4CB} \u06A9\u0644 \u062E\u0631\u06CC\u062F\u0647\u0627 \u0648 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u200C\u0647\u0627", callback_data: "admin_all_configs", style: "primary" }
+          ]);
+          inline_keyboard.push([
+            { text: "\u{1F50D} \u0633\u0648\u0627\u0628\u0642 \u062E\u0631\u06CC\u062F \u0648 \u0634\u0627\u0631\u0698 \u0645\u0634\u062A\u0631\u06CC \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC", callback_data: "admin_search_buyer_by_id", style: "success" }
           ]);
           inline_keyboard.push([
             { text: "\u{1F4E2} \u0627\u0631\u0633\u0627\u0644 \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u0628\u0647 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u0631\u0628\u0627\u062A", callback_data: "admin_broadcast_start", style: "primary" },
@@ -86731,40 +87042,69 @@ ${refLink}`
                 await sendAdminPanelMenu(buyerChatId, seller);
                 return;
               }
+              if (session.action === "admin_search_buyer_by_id") {
+                const cleanDigits = normalizeDigitsToEnglish2(text).replace(/[^0-9]/g, "");
+                const targetId = Number(cleanDigits);
+                if (!cleanDigits || isNaN(targetId) || targetId <= 0) {
+                  await bot2.sendMessage(buyerChatId, "\u274C \u0644\u0637\u0641\u0627\u064B \u06CC\u06A9 <b>\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0645\u0639\u062A\u0628\u0631 \u062A\u0644\u06AF\u0631\u0627\u0645</b> (\u0641\u0642\u0637 \u0639\u062F\u062F\u060C \u0645\u062B\u0644\u0627\u064B <code>123456789</code>) \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F:", {
+                    parse_mode: "HTML"
+                  });
+                  return;
+                }
+                this.userSessionStates.delete(sessionKey);
+                await bot2.sendMessage(buyerChatId, `\u{1F50D} \u067E\u0631\u0648\u0646\u062F\u0647 \u0645\u0634\u062A\u0631\u06CC <code>${targetId}</code> \u0628\u0627\u0631\u06AF\u0630\u0627\u0631\u06CC \u0634\u062F:`, {
+                  parse_mode: "HTML",
+                  reply_markup: getMainKeyboard(seller, true)
+                });
+                await sendBuyerDetailByChatId(buyerChatId, seller, targetId, 0);
+                return;
+              }
+              if (session.action === "admin_quick_charge_buyer_id") {
+                const cleanDigits = normalizeDigitsToEnglish2(text).replace(/[^0-9]/g, "");
+                const targetId = Number(cleanDigits);
+                if (!cleanDigits || isNaN(targetId) || targetId <= 0) {
+                  await bot2.sendMessage(buyerChatId, "\u274C \u0644\u0637\u0641\u0627\u064B \u06CC\u06A9 <b>\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0645\u0639\u062A\u0628\u0631 \u062A\u0644\u06AF\u0631\u0627\u0645</b> (\u0641\u0642\u0637 \u0639\u062F\u062F\u060C \u0645\u062B\u0644\u0627\u064B <code>123456789</code>) \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F:", {
+                    parse_mode: "HTML"
+                  });
+                  return;
+                }
+                const existingBuyer = (botCfg.buyers || []).find((b) => Number(b.chatId) === targetId);
+                this.userSessionStates.set(sessionKey, {
+                  action: "admin_charge_buyer_amount",
+                  data: { targetBuyerChatId: targetId, mode: "add" }
+                });
+                await bot2.sendMessage(
+                  buyerChatId,
+                  `\u{1F4B3} <b>\u0634\u0627\u0631\u0698 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC <code>${targetId}</code></b>
+` + (existingBuyer ? `\u{1F464} \u0646\u0627\u0645: <b>${escapeHtml(existingBuyer.name || "\u06A9\u0627\u0631\u0628\u0631")}</b> | \u0645\u0648\u062C\u0648\u062F\u06CC \u0641\u0639\u0644\u06CC: <b>${(existingBuyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
+
+` : "\u2139\uFE0F <i>\u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u062F\u0631 \u0635\u0648\u0631\u062A \u0646\u0628\u0648\u062F\u0646\u060C \u0628\u0647 \u0635\u0648\u0631\u062A \u062E\u0648\u062F\u06A9\u0627\u0631 \u0627\u06CC\u062C\u0627\u062F \u0648 \u0634\u0627\u0631\u0698 \u0645\u06CC\u200C\u0634\u0648\u062F.</i>\n\n") + `\u2795 \u0644\u0637\u0641\u0627\u064B \u0645\u0628\u0644\u063A \u0627\u0641\u0632\u0627\u06CC\u0634 \u0645\u0648\u062C\u0648\u062F\u06CC \u0631\u0627 \u0628\u0647 <b>\u062A\u0648\u0645\u0627\u0646</b> \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
+                  { parse_mode: "HTML" }
+                );
+                return;
+              }
               if (session.action === "admin_charge_buyer_amount" && session.data?.targetBuyerChatId) {
                 const targetId = Number(session.data.targetBuyerChatId);
                 const mode = session.data.mode || "add";
-                const amount = parseAmountInput(text);
+                const amount = parseAmountInput(normalizeDigitsToEnglish2(text));
                 if (amount === null || amount <= 0) {
                   await bot2.sendMessage(buyerChatId, "\u274C \u0644\u0637\u0641\u0627\u064B \u0645\u0628\u0644\u063A \u0645\u0639\u062A\u0628\u0631 \u0628\u0647 \u062A\u0648\u0645\u0627\u0646 \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F:");
                   return;
                 }
-                const targetBuyer = (botCfg.buyers || []).find((b) => b.chatId === targetId);
-                if (!targetBuyer) {
+                const chargeRes = await this.chargeBuyerWallet(sellerChatId, targetId, amount, mode);
+                if (!chargeRes.success || !chargeRes.buyer) {
                   this.userSessionStates.delete(sessionKey);
-                  await bot2.sendMessage(buyerChatId, "\u274C \u0645\u0634\u062A\u0631\u06CC \u06CC\u0627\u0641\u062A \u0646\u0634\u062F.");
+                  await bot2.sendMessage(buyerChatId, `\u274C ${chargeRes.message || "\u062E\u0637\u0627 \u062F\u0631 \u0634\u0627\u0631\u0698 \u0645\u0648\u062C\u0648\u062F\u06CC \u0645\u0634\u062A\u0631\u06CC."}`);
                   return;
                 }
-                if (mode === "add") {
-                  targetBuyer.balance = (targetBuyer.balance || 0) + amount;
-                } else {
-                  targetBuyer.balance = Math.max(0, (targetBuyer.balance || 0) - amount);
-                }
-                db.saveUser(seller);
                 this.userSessionStates.delete(sessionKey);
+                const freshSeller = db.getUser(sellerChatId) || seller;
                 await bot2.sendMessage(
                   buyerChatId,
-                  `\u2705 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC <code>${targetId}</code> (${escapeHtml(targetBuyer.name || "")}) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0628\u0647 <b>${(targetBuyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b> \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0634\u062F.`,
-                  { parse_mode: "HTML", reply_markup: getMainKeyboard(seller, true) }
+                  `\u2705 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC <code>${targetId}</code> (${escapeHtml(chargeRes.buyer.name || "")}) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0628\u0647 <b>${(chargeRes.buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b> \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0634\u062F.`,
+                  { parse_mode: "HTML", reply_markup: getMainKeyboard(freshSeller, true) }
                 );
-                await bot2.sendMessage(
-                  targetId,
-                  mode === "add" ? `\u{1F389} <b>\u062D\u0633\u0627\u0628 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0634\u0645\u0627 \u062A\u0648\u0633\u0637 \u0645\u062F\u06CC\u0631\u06CC\u062A \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0628\u0647 \u0645\u0628\u0644\u063A ${amount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0634\u0627\u0631\u0698 \u0634\u062F!</b>
-\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u062C\u062F\u06CC\u062F \u0634\u0645\u0627: <b>${(targetBuyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>` : `\u2139\uFE0F \u0645\u0628\u0644\u063A ${amount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0627\u0632 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0634\u0645\u0627 \u06A9\u0633\u0631 \u06AF\u0631\u062F\u06CC\u062F.
-\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u0641\u0639\u0644\u06CC: <b>${(targetBuyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>`,
-                  { parse_mode: "HTML" }
-                ).catch(() => {
-                });
+                await sendBuyerDetailByChatId(buyerChatId, freshSeller, targetId, 0);
                 return;
               }
               if (session.action === "seller_pay_debt_amount") {
@@ -88479,66 +88819,75 @@ ${fulfillRes.message}`,
               }
               return;
             }
-            if (data === "admin_buyers_menu") {
+            if (data === "admin_buyers_menu" || data.startsWith("admin_buyers_page_")) {
+              if (!isFromAdmin) return;
+              const page = data.startsWith("admin_buyers_page_") ? Math.max(0, parseInt(data.replace("admin_buyers_page_", ""), 10) || 0) : 0;
+              await bot2.answerCallbackQuery(query.id).catch(() => {
+              });
+              await sendAdminBuyersMenu(buyerChatId, seller, page, data.startsWith("admin_buyers_page_") ? msgId : void 0);
+              return;
+            }
+            if (data === "admin_search_buyer_by_id") {
               if (!isFromAdmin) return;
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
-              const buyers = botCfg.buyers || [];
-              if (buyers.length === 0) {
-                await bot2.sendMessage(buyerChatId, "\u2139\uFE0F \u0647\u0646\u0648\u0632 \u0647\u06CC\u0686 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0648\u0627\u0631\u062F \u0631\u0628\u0627\u062A \u0634\u0645\u0627 \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.");
-                return;
-              }
-              let textOut = `\u{1F465} <b>\u0644\u06CC\u0633\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646 \u0631\u0628\u0627\u062A \u0634\u0645\u0627 (${buyers.length} \u0646\u0641\u0631):</b>
+              this.userSessionStates.set(sessionKey, { action: "admin_search_buyer_by_id" });
+              await bot2.sendMessage(
+                buyerChatId,
+                `\u{1F50D} <b>\u062C\u0633\u062A\u062C\u0648 \u0648 \u0645\u0634\u0627\u0647\u062F\u0647 \u06A9\u0644 \u062E\u0631\u06CC\u062F\u0647\u0627\u06CC \u0642\u0628\u0644\u06CC \u0648 \u0634\u0627\u0631\u0698 \u0645\u0634\u062A\u0631\u06CC \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC:</b>
 
-\u062C\u0647\u062A \u0634\u0627\u0631\u0698 \u062F\u0633\u062A\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u06CC\u0627 \u0645\u0634\u0627\u0647\u062F\u0647 \u0633\u0631\u0648\u06CC\u0633\u200C\u0647\u0627\u06CC \u0647\u0631 \u0645\u0634\u062A\u0631\u06CC\u060C \u0631\u0648\u06CC \u062F\u06A9\u0645\u0647 \u0645\u0631\u0628\u0648\u0637 \u0628\u0647 \u0627\u0648 \u06A9\u0644\u06CC\u06A9 \u06A9\u0646\u06CC\u062F:
-
-`;
-              const inline_keyboard = [];
-              buyers.slice(-20).reverse().forEach((b) => {
-                const label = `\u{1F464} ${b.name || b.chatId} (${(b.balance || 0).toLocaleString()} \u062A)`;
-                inline_keyboard.push([
-                  { text: label, callback_data: `admin_buyer_${b.chatId}`, style: "primary" }
-                ]);
+\u0644\u0637\u0641\u0627\u064B <b>\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645 \u0645\u0634\u062A\u0631\u06CC</b> (\u0645\u062B\u0644\u0627\u064B <code>123456789</code>) \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", style: "danger" }]],
+                    resize_keyboard: true
+                  }
+                }
+              );
+              return;
+            }
+            if (data === "admin_quick_charge_by_id") {
+              if (!isFromAdmin) return;
+              await bot2.answerCallbackQuery(query.id).catch(() => {
               });
-              inline_keyboard.push([{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "danger" }]);
-              await bot2.sendMessage(buyerChatId, textOut, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+              this.userSessionStates.set(sessionKey, { action: "admin_quick_charge_buyer_id" });
+              await bot2.sendMessage(
+                buyerChatId,
+                `\u{1F4B3} <b>\u0634\u0627\u0631\u0698 \u0645\u0633\u062A\u0642\u06CC\u0645 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC \u0628\u0627 \u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC:</b>
+
+\u0644\u0637\u0641\u0627\u064B <b>\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645 \u0645\u0634\u062A\u0631\u06CC</b> (\u0645\u062B\u0644\u0627\u064B <code>123456789</code>) \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", style: "danger" }]],
+                    resize_keyboard: true
+                  }
+                }
+              );
+              return;
+            }
+            if (data.startsWith("admin_buyer_page_")) {
+              if (!isFromAdmin) return;
+              const rest = data.replace("admin_buyer_page_", "");
+              const parts = rest.split("_");
+              const targetId = Number(parts[0]);
+              const page = Math.max(0, parseInt(parts[1] || "0", 10) || 0);
+              await bot2.answerCallbackQuery(query.id).catch(() => {
+              });
+              await sendBuyerDetailByChatId(buyerChatId, seller, targetId, page, msgId);
               return;
             }
             if (data.startsWith("admin_buyer_")) {
               if (!isFromAdmin) return;
               const targetId = Number(data.replace("admin_buyer_", ""));
-              const b = (botCfg.buyers || []).find((item) => item.chatId === targetId);
-              if (!b) {
-                await bot2.answerCallbackQuery(query.id, { text: "\u0645\u0634\u062A\u0631\u06CC \u06CC\u0627\u0641\u062A \u0646\u0634\u062F." });
+              if (!targetId || isNaN(targetId)) {
+                await bot2.answerCallbackQuery(query.id, { text: "\u0622\u06CC\u062F\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u0627\u0633\u062A." });
                 return;
               }
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
-              const buyerOrders = (botCfg.orders || []).filter((o) => o.buyerChatId === targetId && o.status === "approved" && o.type !== "deposit");
-              const info = `\u{1F464} <b>\u0645\u062F\u06CC\u0631\u06CC\u062A \u0645\u0634\u062A\u0631\u06CC \u062F\u0631 \u0631\u0628\u0627\u062A \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0634\u0645\u0627:</b>
-
-\u{1F194} \u0634\u0646\u0627\u0633\u0647 \u0639\u062F\u062F\u06CC: <code>${b.chatId}</code>
-\u{1F464} \u0646\u0627\u0645: <b>${escapeHtml(b.name || "\u06A9\u0627\u0631\u0628\u0631")}</b> (@${escapeHtml(b.username || "\u0628\u062F\u0648\u0646_\u0622\u06CC\u062F\u06CC")})
-\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u062F\u0631 \u0631\u0628\u0627\u062A \u0634\u0645\u0627: <b>${(b.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>
-\u{1F4E6} \u062A\u0639\u062F\u0627\u062F \u0633\u0631\u0648\u06CC\u0633\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644: <b>${buyerOrders.length} \u0639\u062F\u062F</b>
-`;
-              const inline_keyboard = [
-                [
-                  { text: "\u2795 \u0634\u0627\u0631\u0698 \u062F\u0633\u062A\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC", callback_data: `admin_charge_add_${b.chatId}`, style: "success" },
-                  { text: "\u2796 \u06A9\u0633\u0631 \u0627\u0632 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC", callback_data: `admin_charge_sub_${b.chatId}`, style: "danger" }
-                ]
-              ];
-              buyerOrders.slice(-5).forEach((ord) => {
-                inline_keyboard.push([
-                  {
-                    text: `\u{1F50D} \u0633\u0631\u0648\u06CC\u0633: ${ord.customName || ord.productName || ord.id}`,
-                    callback_data: `view_srv_${ord.id}`,
-                    style: "primary"
-                  }
-                ]);
-              });
-              inline_keyboard.push([{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0644\u06CC\u0633\u062A \u0645\u0634\u062A\u0631\u06CC\u0627\u0646", callback_data: "admin_buyers_menu", style: "danger" }]);
-              await bot2.sendMessage(buyerChatId, info, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+              await sendBuyerDetailByChatId(buyerChatId, seller, targetId, 0);
               return;
             }
             if (data.startsWith("admin_charge_add_") || data.startsWith("admin_charge_sub_")) {
@@ -88554,34 +88903,22 @@ ${fulfillRes.message}`,
               await bot2.sendMessage(
                 buyerChatId,
                 isAdd ? `\u2795 \u0644\u0637\u0641\u0627\u064B \u0645\u0628\u0644\u063A\u06CC \u06A9\u0647 \u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u06CC\u062F \u0628\u0647 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC <code>${targetId}</code> <b>\u0627\u0636\u0627\u0641\u0647</b> \u0634\u0648\u062F \u0631\u0627 \u0628\u0647 \u062A\u0648\u0645\u0627\u0646 \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F:` : `\u2796 \u0644\u0637\u0641\u0627\u064B \u0645\u0628\u0644\u063A\u06CC \u06A9\u0647 \u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u06CC\u062F \u0627\u0632 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC <code>${targetId}</code> <b>\u06A9\u0633\u0631</b> \u0634\u0648\u062F \u0631\u0627 \u0628\u0647 \u062A\u0648\u0645\u0627\u0646 \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F:`,
-                { parse_mode: "HTML" }
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", style: "danger" }]],
+                    resize_keyboard: true
+                  }
+                }
               );
               return;
             }
-            if (data === "admin_all_configs") {
+            if (data === "admin_all_configs" || data.startsWith("admin_all_configs_page_")) {
               if (!isFromAdmin) return;
+              const page = data.startsWith("admin_all_configs_page_") ? Math.max(0, parseInt(data.replace("admin_all_configs_page_", ""), 10) || 0) : 0;
               await bot2.answerCallbackQuery(query.id).catch(() => {
               });
-              const purchases = (seller.purchases || []).filter((p) => !p.isDeleted);
-              if (purchases.length === 0) {
-                await bot2.sendMessage(buyerChatId, "\u2139\uFE0F \u0647\u0646\u0648\u0632 \u0647\u06CC\u0686 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u06CC \u062B\u0628\u062A \u0646\u0634\u062F\u0647 \u0627\u0633\u062A.");
-                return;
-              }
-              let msg = `\u{1F4CB} <b>\u0644\u06CC\u0633\u062A \u0622\u062E\u0631\u06CC\u0646 \u06A9\u0627\u0646\u0641\u06CC\u06AF\u200C\u0647\u0627\u06CC \u0634\u0645\u0627 (${purchases.length} \u0645\u0648\u0631\u062F):</b>
-
-\u062C\u0647\u062A \u0645\u0634\u0627\u0647\u062F\u0647 \u0644\u06CC\u0646\u06A9\u060C \u0628\u0627\u0631\u06A9\u062F\u060C \u062D\u062C\u0645 \u0645\u0635\u0631\u0641\u06CC \u0648 \u062A\u0645\u062F\u06CC\u062F \u0647\u0631 \u06A9\u0627\u0646\u0641\u06CC\u06AF \u0631\u0648\u06CC \u0622\u0646 \u06A9\u0644\u06CC\u06A9 \u06A9\u0646\u06CC\u062F:`;
-              const inline_keyboard = [];
-              purchases.slice(-15).reverse().forEach((p) => {
-                inline_keyboard.push([
-                  {
-                    text: `\u{1F511} ${p.customName || p.name || p.id} (${p.volumeGb || 0}GB)`,
-                    callback_data: `view_srv_${p.id}`,
-                    style: "primary"
-                  }
-                ]);
-              });
-              inline_keyboard.push([{ text: "\u{1F519} \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u067E\u0646\u0644 \u0645\u062F\u06CC\u0631\u06CC\u062A", callback_data: "admin_main", style: "danger" }]);
-              await bot2.sendMessage(buyerChatId, msg, { parse_mode: "HTML", reply_markup: { inline_keyboard } });
+              await sendAllConfigsMenu(buyerChatId, seller, page, data.startsWith("admin_all_configs_page_") ? msgId : void 0);
               return;
             }
             if (data === "admin_card_settings") {
@@ -89045,6 +89382,70 @@ ${fulfillRes.message}`,
           }
         }
         return { success: true, message: "\u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0631\u062F \u0634\u062F \u0648 \u0628\u0647 \u062E\u0631\u06CC\u062F\u0627\u0631 \u0627\u0637\u0644\u0627\u0639 \u062F\u0627\u062F\u0647 \u0634\u062F." };
+      }
+      /**
+       * Charge or deduct a Bot 2 customer's wallet balance by numeric ID (auto-creating buyer record if absent)
+       */
+      async chargeBuyerWallet(sellerChatId, buyerChatId, amount, mode = "add") {
+        const seller = db.getUser(sellerChatId);
+        if (!seller || !seller.isSeller) {
+          return { success: false, message: "\u062D\u0633\u0627\u0628 \u0647\u0645\u06A9\u0627\u0631 \u0645\u0639\u062A\u0628\u0631 \u0646\u06CC\u0633\u062A." };
+        }
+        const cleanBuyerId = Number(buyerChatId);
+        const cleanAmount = Math.round(Number(amount));
+        if (!cleanBuyerId || isNaN(cleanBuyerId) || cleanBuyerId <= 0) {
+          return { success: false, message: "\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0645\u0634\u062A\u0631\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u0627\u0633\u062A." };
+        }
+        if (!cleanAmount || isNaN(cleanAmount) || cleanAmount <= 0) {
+          return { success: false, message: "\u0645\u0628\u0644\u063A \u0628\u0627\u06CC\u062F \u0639\u062F\u062F\u06CC \u0628\u0632\u0631\u06AF\u062A\u0631 \u0627\u0632 \u0635\u0641\u0631 (\u0628\u0647 \u062A\u0648\u0645\u0627\u0646) \u0628\u0627\u0634\u062F." };
+        }
+        if (!seller.sellerBot) {
+          seller.sellerBot = { enabled: false, botToken: "", botName: "" };
+        }
+        if (!Array.isArray(seller.sellerBot.buyers)) {
+          seller.sellerBot.buyers = [];
+        }
+        let buyer = seller.sellerBot.buyers.find((b) => Number(b.chatId) === cleanBuyerId);
+        if (!buyer) {
+          const prevOrder = (seller.sellerBot.orders || []).find((o) => Number(o.buyerChatId) === cleanBuyerId);
+          buyer = {
+            chatId: cleanBuyerId,
+            username: prevOrder?.buyerUsername || "",
+            name: prevOrder?.buyerName || "\u06A9\u0627\u0631\u0628\u0631",
+            joinedAt: prevOrder?.createdAt || (/* @__PURE__ */ new Date()).toISOString(),
+            balance: 0,
+            referralCount: 0,
+            referralEarnings: 0
+          };
+          seller.sellerBot.buyers.push(buyer);
+        }
+        if (mode === "add") {
+          buyer.balance = (Number(buyer.balance) || 0) + cleanAmount;
+        } else {
+          buyer.balance = Math.max(0, (Number(buyer.balance) || 0) - cleanAmount);
+        }
+        db.saveUser(seller);
+        db.saveImmediate();
+        const notifyMsg = mode === "add" ? `\u{1F389} <b>\u062D\u0633\u0627\u0628 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0634\u0645\u0627 \u062A\u0648\u0633\u0637 \u0645\u062F\u06CC\u0631\u06CC\u062A \u0641\u0631\u0648\u0634\u06AF\u0627\u0647 \u0628\u0647 \u0645\u0628\u0644\u063A ${cleanAmount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0634\u0627\u0631\u0698 \u0634\u062F!</b>
+\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u062C\u062F\u06CC\u062F \u0634\u0645\u0627: <b>${(buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>` : `\u2139\uFE0F \u0645\u0628\u0644\u063A ${cleanAmount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0627\u0632 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0634\u0645\u0627 \u06A9\u0633\u0631 \u06AF\u0631\u062F\u06CC\u062F.
+\u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u0641\u0639\u0644\u06CC: <b>${(buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>`;
+        const record = this.activeBots.get(sellerChatId);
+        if (record?.bot) {
+          await record.bot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: "HTML" }).catch(() => {
+          });
+        } else if (seller.sellerBot.botToken && isValidTelegramBotToken(seller.sellerBot.botToken)) {
+          try {
+            const tempBot = new import_node_telegram_bot_api.default(seller.sellerBot.botToken, { polling: false });
+            await tempBot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: "HTML" }).catch(() => {
+            });
+          } catch (e) {
+          }
+        }
+        return {
+          success: true,
+          message: mode === "add" ? `\u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC ${cleanBuyerId} \u0628\u0647 \u0645\u0628\u0644\u063A ${cleanAmount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0634\u0627\u0631\u0698 \u0634\u062F. \u0645\u0648\u062C\u0648\u062F\u06CC \u0641\u0639\u0644\u06CC: ${(buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646.` : `\u0645\u0628\u0644\u063A ${cleanAmount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0627\u0632 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0645\u0634\u062A\u0631\u06CC ${cleanBuyerId} \u06A9\u0633\u0631 \u0634\u062F. \u0645\u0648\u062C\u0648\u062F\u06CC \u0641\u0639\u0644\u06CC: ${(buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646.`,
+          buyer
+        };
       }
     };
     resellerBotManager = new ResellerBotManager();
@@ -98419,6 +98820,24 @@ async function startServer() {
       const reportMonthly = getUserAccountingReport(user, "monthly");
       const reportAll = getUserAccountingReport(user, "all");
       const sellerApiKey = ensureSellerApiKey(user, true);
+      const botOrdersByPurchaseId = /* @__PURE__ */ new Map();
+      const botOrdersBySubUrl = /* @__PURE__ */ new Map();
+      for (const ord of user.sellerBot?.orders || []) {
+        if (ord.deliveredPurchaseId) botOrdersByPurchaseId.set(ord.deliveredPurchaseId, ord);
+        if (ord.deliveredSubUrl) botOrdersBySubUrl.set(ord.deliveredSubUrl, ord);
+      }
+      const enrichedPurchases = (user.purchases || []).filter((p) => !p.isDeleted).map((p) => {
+        const pSub = p.subUrl || p.mroceanSubUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || p.panel4SubUrl;
+        const matchedOrd = botOrdersByPurchaseId.get(p.id) || (pSub ? botOrdersBySubUrl.get(pSub) : void 0);
+        return {
+          ...p,
+          buyerChatId: matchedOrd?.buyerChatId ?? p.buyerChatId ?? void 0,
+          buyerName: matchedOrd?.buyerName ?? void 0,
+          buyerUsername: matchedOrd?.buyerUsername ?? void 0,
+          orderId: matchedOrd?.id ?? void 0,
+          retailPrice: matchedOrd?.retailPrice ?? void 0
+        };
+      });
       res.json({
         success: true,
         seller: {
@@ -98437,7 +98856,7 @@ async function startServer() {
           sellerDiscount: user.sellerDiscount || 0,
           customDisplayPrices: user.customDisplayPrices || {},
           showCustomPricesOnly: user.showCustomPricesOnly ?? true,
-          purchases: (user.purchases || []).filter((p) => !p.isDeleted),
+          purchases: enrichedPurchases,
           transactions: user.transactions || []
         },
         accounting: {
@@ -99047,11 +99466,68 @@ async function startServer() {
       const rawSavedBotName = (user.sellerBot?.botName || "").trim();
       const isSellerIdentityName = !rawSavedBotName || rawSavedBotName === user.username || rawSavedBotName === `@${user.username}` || rawSavedBotName === user.name || rawSavedBotName === user.portalUsername || rawSavedBotName === String(chatId) || rawSavedBotName === `Seller_${chatId}` || rawSavedBotName === `\u0641\u0631\u0648\u0634\u06AF\u0627\u0647 ${chatId}`;
       const cleanBotName = isSellerIdentityName ? user.sellerBot?.botFirstName || "" : rawSavedBotName;
+      const buildMergedBuyers = () => {
+        const map = /* @__PURE__ */ new Map();
+        for (const b of user.sellerBot?.buyers || []) {
+          const cid = Number(b.chatId);
+          if (!cid || isNaN(cid)) continue;
+          map.set(cid, {
+            ...b,
+            chatId: cid,
+            balance: Number(b.balance) || 0,
+            ordersCount: 0,
+            approvedServicesCount: 0,
+            totalSpentToman: 0,
+            lastOrderAt: b.joinedAt || ""
+          });
+        }
+        for (const o of user.sellerBot?.orders || []) {
+          const cid = Number(o.buyerChatId);
+          if (!cid || isNaN(cid)) continue;
+          let entry = map.get(cid);
+          if (!entry) {
+            entry = {
+              chatId: cid,
+              name: o.buyerName || "\u06A9\u0627\u0631\u0628\u0631",
+              username: o.buyerUsername || "",
+              balance: 0,
+              joinedAt: o.createdAt || "",
+              ordersCount: 0,
+              approvedServicesCount: 0,
+              totalSpentToman: 0,
+              lastOrderAt: o.createdAt || ""
+            };
+            map.set(cid, entry);
+          } else {
+            if ((!entry.name || entry.name === "\u06A9\u0627\u0631\u0628\u0631") && o.buyerName) entry.name = o.buyerName;
+            if (!entry.username && o.buyerUsername) entry.username = o.buyerUsername;
+          }
+          entry.ordersCount += 1;
+          if (o.status === "approved") {
+            if (o.type !== "deposit") entry.approvedServicesCount += 1;
+            entry.totalSpentToman += Number(o.retailPrice) || 0;
+          }
+          if (o.createdAt && (!entry.lastOrderAt || new Date(o.createdAt).getTime() > new Date(entry.lastOrderAt).getTime())) {
+            entry.lastOrderAt = o.createdAt;
+          }
+        }
+        return Array.from(map.values()).sort((a, b) => {
+          const ta = a.lastOrderAt ? new Date(a.lastOrderAt).getTime() : 0;
+          const tb = b.lastOrderAt ? new Date(b.lastOrderAt).getTime() : 0;
+          return tb - ta;
+        });
+      };
+      const mergedBuyers = buildMergedBuyers();
+      const sortedOrders = [...user.sellerBot?.orders || []].sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
       res.json({
         success: true,
         sellerBot: user.sellerBot ? {
           ...user.sellerBot,
-          botName: cleanBotName
+          botName: cleanBotName,
+          orders: sortedOrders,
+          buyers: mergedBuyers
         } : {
           enabled: false,
           botToken: "",
@@ -99065,7 +99541,9 @@ async function startServer() {
           cardNumber: "",
           cardHolder: "",
           autoDeliverAfterPayment: false,
-          freeTestEnabled: true
+          freeTestEnabled: true,
+          orders: [],
+          buyers: []
         },
         status,
         products,
@@ -99257,6 +99735,81 @@ async function startServer() {
       }
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
+    }
+  });
+  api.get("/seller-portal/bot-buyer-lookup/:chatId/:buyerChatId", (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: "\u062D\u0633\u0627\u0628 \u0647\u0645\u06A9\u0627\u0631 \u0645\u0639\u062A\u0628\u0631 \u0646\u06CC\u0633\u062A." });
+      }
+      const rawBuyerId = String(req.params.buyerChatId || "").replace(/[۰-۹]/g, (d) => String("\u06F0\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7\u06F8\u06F9".indexOf(d))).replace(/[^0-9]/g, "");
+      const buyerChatId = Number(rawBuyerId);
+      if (!rawBuyerId || isNaN(buyerChatId) || buyerChatId <= 0) {
+        return res.status(400).json({ success: false, message: "\u0622\u06CC\u062F\u06CC \u0639\u062F\u062F\u06CC \u0645\u0634\u062A\u0631\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u0627\u0633\u062A." });
+      }
+      const botOrders = (user.sellerBot?.orders || []).filter((o) => Number(o.buyerChatId) === buyerChatId).sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      const existingBuyer = (user.sellerBot?.buyers || []).find((b) => Number(b.chatId) === buyerChatId);
+      const linkedPurchaseIds = new Set(botOrders.map((o) => o.deliveredPurchaseId).filter(Boolean));
+      const linkedSubUrls = new Set(botOrders.map((o) => o.deliveredSubUrl).filter(Boolean));
+      const matchedPurchases = (user.purchases || []).filter((p) => {
+        if (!p || p.isDeleted) return false;
+        if (linkedPurchaseIds.has(p.id)) return false;
+        const pSub = p.subUrl || p.mroceanSubUrl || p.sanaeiSubUrl || p.rebeccaSubUrl || p.panel4SubUrl;
+        if (pSub && linkedSubUrls.has(pSub)) return false;
+        const hay = `${p.customName || ""} ${p.name || ""} ${p.id || ""}`;
+        return hay.includes(String(buyerChatId));
+      }).sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      const totalSpentToman = botOrders.filter((o) => o.status === "approved").reduce((acc, o) => acc + (Number(o.retailPrice) || 0), 0);
+      const approvedServicesCount = botOrders.filter((o) => o.status === "approved" && o.type !== "deposit").length + matchedPurchases.length;
+      res.json({
+        success: true,
+        buyer: {
+          chatId: buyerChatId,
+          name: existingBuyer?.name || botOrders.find((o) => o.buyerName)?.buyerName || "\u06A9\u0627\u0631\u0628\u0631",
+          username: existingBuyer?.username || botOrders.find((o) => o.buyerUsername)?.buyerUsername || "",
+          balance: Number(existingBuyer?.balance) || 0,
+          joinedAt: existingBuyer?.joinedAt || botOrders[botOrders.length - 1]?.createdAt || "",
+          inBuyersList: !!existingBuyer,
+          referralCount: existingBuyer?.referralCount || 0,
+          referralEarnings: existingBuyer?.referralEarnings || 0
+        },
+        orders: botOrders,
+        matchedPurchases,
+        summary: {
+          totalOrdersCount: botOrders.length + matchedPurchases.length,
+          approvedServicesCount,
+          totalSpentToman
+        }
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "\u062E\u0637\u0627 \u062F\u0631 \u0627\u0633\u062A\u0639\u0644\u0627\u0645 \u067E\u0631\u0648\u0646\u062F\u0647 \u0645\u0634\u062A\u0631\u06CC: " + (e.message || String(e)) });
+    }
+  });
+  api.post("/seller-portal/bot-buyer-charge/:chatId", async (req, res) => {
+    try {
+      const user = resolveSeller(req.params.chatId);
+      if (!user || !user.isSeller) {
+        return res.status(404).json({ success: false, message: "\u062D\u0633\u0627\u0628 \u0647\u0645\u06A9\u0627\u0631 \u0645\u0639\u062A\u0628\u0631 \u0646\u06CC\u0633\u062A." });
+      }
+      const rawBuyerId = String(req.body?.buyerChatId ?? "").replace(/[۰-۹]/g, (d) => String("\u06F0\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7\u06F8\u06F9".indexOf(d))).replace(/[^0-9]/g, "");
+      const buyerChatId = Number(rawBuyerId);
+      const rawAmount = String(req.body?.amount ?? "").replace(/[۰-۹]/g, (d) => String("\u06F0\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7\u06F8\u06F9".indexOf(d))).replace(/[^0-9]/g, "");
+      const amount = Number(rawAmount);
+      const mode = req.body?.mode === "sub" ? "sub" : "add";
+      const result = await resellerBotManager.chargeBuyerWallet(user.chatId, buyerChatId, amount, mode);
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+      const freshUser = db.getUser(user.chatId);
+      return res.json({
+        success: true,
+        message: result.message,
+        buyer: result.buyer,
+        buyers: freshUser?.sellerBot?.buyers || []
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "\u062E\u0637\u0627 \u062F\u0631 \u0634\u0627\u0631\u0698 \u0645\u0648\u062C\u0648\u062F\u06CC \u0645\u0634\u062A\u0631\u06CC: " + (e.message || String(e)) });
     }
   });
   const extractResellerApiKey = (req) => {
