@@ -18,20 +18,44 @@ export class RebeccaClient {
   private lastPanelUser: string = '';
   private lastPanelPass: string = '';
   private lastPanelApiKey: string = '';
+  private workingServicesPath: string = '';
+  private workingInboundsPath: string = '';
+  private cachedInbounds: RebeccaInboundItem[] | null = null;
+  private cachedInboundsTime: number = 0;
+  private inflightInboundsPromise: Promise<RebeccaInboundItem[]> | null = null;
+  private inflightAuthPromise: Promise<{ baseURL: string; headers: Record<string, string> }> | null = null;
+  private failureCooldownUntil: number = 0;
+  private lastCooldownLogTime: number = 0;
 
   constructor() {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     this.client = axios.create({
-      timeout: 15000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
       },
       httpsAgent: new https.Agent({
         rejectUnauthorized: false,
-        keepAlive: true
+        keepAlive: true,
+        maxSockets: 15,
+        maxFreeSockets: 5,
+        timeout: 10000
       })
     });
+  }
+
+  public invalidateCaches() {
+    this.cachedInbounds = null;
+    this.cachedInboundsTime = 0;
+    this.failureCooldownUntil = 0;
+  }
+
+  private isNetworkTimeoutOrRefused(err: any): boolean {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    return ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN'].includes(code) ||
+      msg.includes('timeout') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT');
   }
 
   private formatBaseUrl(rawUrl?: string): string {
@@ -81,6 +105,9 @@ export class RebeccaClient {
       console.log('[Rebecca] Panel credentials changed. Cleared token cache.');
       this.token = '';
       this.tokenExpiryTime = 0;
+      this.workingServicesPath = '';
+      this.workingInboundsPath = '';
+      this.invalidateCaches();
       this.lastPanelUrl = panel.url || '';
       this.lastPanelUser = panel.username || '';
       this.lastPanelPass = panel.password || '';
@@ -105,92 +132,116 @@ export class RebeccaClient {
       };
     }
 
-    // 2. Token authentication via /api/admin/token (OAuth2 password flow standard in Marzban/Rebecca)
+    // 2. Token authentication via /api/admin/token (deduplicated)
     const now = Date.now();
     if (!this.token || now >= this.tokenExpiryTime) {
-      console.log(`[Rebecca] Authenticating with username/password at: ${baseURL}/api/admin/token`);
-      let loginSuccess = false;
-      let lastError = '';
-
-      // Try form-urlencoded first (FastAPI OAuth2 standard)
-      try {
-        const params = new URLSearchParams();
-        params.append('grant_type', 'password');
-        params.append('username', panel.username || '');
-        params.append('password', panel.password || '');
-
-        const res = await this.client.post(`${baseURL}/api/admin/token`, params, {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          validateStatus: () => true,
-          timeout: 10000
-        });
-
-        if (res.data && res.data.access_token) {
-          this.token = res.data.access_token;
-          // Token valid for 24h default or 1 hour
-          this.tokenExpiryTime = now + 23 * 60 * 60 * 1000;
-          loginSuccess = true;
-          console.log('[Rebecca Success] Logged in via /api/admin/token (Form mode)');
-        } else {
-          lastError = res.data?.detail || res.data?.msg || res.data?.message || `Status: ${res.status}`;
-        }
-      } catch (e: any) {
-        lastError = e.message;
+      if (this.inflightAuthPromise) {
+        return this.inflightAuthPromise;
       }
 
-      // Try JSON payload if Form failed
-      if (!loginSuccess) {
+      this.inflightAuthPromise = (async () => {
         try {
-          const res = await this.client.post(`${baseURL}/api/admin/token`, {
-            username: panel.username,
-            password: panel.password
-          }, {
-            headers: { 'Content-Type': 'application/json' },
-            validateStatus: () => true,
-            timeout: 10000
-          });
+          console.log(`[Rebecca] Authenticating with username/password at: ${baseURL}/api/admin/token`);
+          let loginSuccess = false;
+          let lastError = '';
 
-          if (res.data && res.data.access_token) {
-            this.token = res.data.access_token;
-            this.tokenExpiryTime = now + 23 * 60 * 60 * 1000;
-            loginSuccess = true;
-            console.log('[Rebecca Success] Logged in via /api/admin/token (JSON mode)');
-          } else {
-            lastError = res.data?.detail || res.data?.msg || res.data?.message || lastError;
+          // Try form-urlencoded first (FastAPI OAuth2 standard)
+          try {
+            const params = new URLSearchParams();
+            params.append('grant_type', 'password');
+            params.append('username', panel.username || '');
+            params.append('password', panel.password || '');
+
+            const res = await this.client.post(`${baseURL}/api/admin/token`, params, {
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              validateStatus: () => true,
+              timeout: 6000
+            });
+
+            if (res.data && res.data.access_token) {
+              this.token = res.data.access_token;
+              this.tokenExpiryTime = Date.now() + 23 * 60 * 60 * 1000;
+              loginSuccess = true;
+              console.log('[Rebecca Success] Logged in via /api/admin/token (Form mode)');
+            } else {
+              lastError = res.data?.detail || res.data?.msg || res.data?.message || `Status: ${res.status}`;
+            }
+          } catch (e: any) {
+            lastError = e.message;
+            if (this.isNetworkTimeoutOrRefused(e)) {
+              this.failureCooldownUntil = Date.now() + 30000;
+              throw new Error(`عدم پاسخگویی پنل ربکا (Timeout/Connection): ${lastError}`);
+            }
           }
-        } catch (e: any) {
-          lastError = e.message;
-        }
-      }
 
-      // Try /api/token fallback
-      if (!loginSuccess) {
-        try {
-          const params = new URLSearchParams();
-          params.append('grant_type', 'password');
-          params.append('username', panel.username || '');
-          params.append('password', panel.password || '');
+          // Try JSON payload if Form failed
+          if (!loginSuccess) {
+            try {
+              const res = await this.client.post(`${baseURL}/api/admin/token`, {
+                username: panel.username,
+                password: panel.password
+              }, {
+                headers: { 'Content-Type': 'application/json' },
+                validateStatus: () => true,
+                timeout: 6000
+              });
 
-          const res = await this.client.post(`${baseURL}/api/token`, params, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            validateStatus: () => true,
-            timeout: 10000
-          });
-
-          if (res.data && res.data.access_token) {
-            this.token = res.data.access_token;
-            this.tokenExpiryTime = now + 23 * 60 * 60 * 1000;
-            loginSuccess = true;
-            console.log('[Rebecca Success] Logged in via /api/token');
+              if (res.data && res.data.access_token) {
+                this.token = res.data.access_token;
+                this.tokenExpiryTime = Date.now() + 23 * 60 * 60 * 1000;
+                loginSuccess = true;
+                console.log('[Rebecca Success] Logged in via /api/admin/token (JSON mode)');
+              } else {
+                lastError = res.data?.detail || res.data?.msg || res.data?.message || lastError;
+              }
+            } catch (e: any) {
+              lastError = e.message;
+            }
           }
-        } catch (e: any) {
-          // ignore
-        }
-      }
 
-      if (!loginSuccess) {
-        throw new Error(`خطا در ورود به پنل ربکا: ${lastError || 'نام کاربری یا رمز عبور اشتباه است.'}`);
-      }
+          // Try /api/token fallback
+          if (!loginSuccess) {
+            try {
+              const params = new URLSearchParams();
+              params.append('grant_type', 'password');
+              params.append('username', panel.username || '');
+              params.append('password', panel.password || '');
+
+              const res = await this.client.post(`${baseURL}/api/token`, params, {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                validateStatus: () => true,
+                timeout: 6000
+              });
+
+              if (res.data && res.data.access_token) {
+                this.token = res.data.access_token;
+                this.tokenExpiryTime = Date.now() + 23 * 60 * 60 * 1000;
+                loginSuccess = true;
+                console.log('[Rebecca Success] Logged in via /api/token');
+              }
+            } catch (e: any) {
+              // ignore
+            }
+          }
+
+          if (!loginSuccess) {
+            throw new Error(`خطا در ورود به پنل ربکا: ${lastError || 'نام کاربری یا رمز عبور اشتباه است.'}`);
+          }
+
+          return {
+            baseURL,
+            headers: {
+              'Authorization': `Bearer ${this.token}`,
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            }
+          };
+        } finally {
+          this.inflightAuthPromise = null;
+        }
+      })();
+
+      return this.inflightAuthPromise;
     }
 
     return {
@@ -204,6 +255,7 @@ export class RebeccaClient {
   }
 
   public async testConnection(overrideConfig?: any): Promise<{ success: boolean; message: string; details?: any; services?: any[] }> {
+    this.invalidateCaches();
     try {
       const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
       
@@ -278,22 +330,26 @@ export class RebeccaClient {
       const state = db.getState();
       const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
       if (!panel.url) return [];
+      if (!overrideConfig && Date.now() < this.failureCooldownUntil) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
-      const servicePaths = [
+      const defaultServicePaths = [
         '/api/services',
         '/api/v2/services',
         '/api/v1/services',
         '/api/admins/current',
         '/api/admins/current/links'
       ];
+      const servicePaths = this.workingServicesPath
+        ? Array.from(new Set([this.workingServicesPath, ...defaultServicePaths]))
+        : defaultServicePaths;
 
       for (const p of servicePaths) {
         try {
           const res = await this.client.get(`${baseURL}${p}`, {
             headers,
             validateStatus: () => true,
-            timeout: 8000
+            timeout: 4500
           });
 
           if (res.status >= 200 && res.status < 300 && res.data) {
@@ -312,9 +368,18 @@ export class RebeccaClient {
             } else if (data.result && Array.isArray(data.result)) {
               items = data.result;
             }
-            if (items.length > 0) return items;
+            if (items.length > 0) {
+              this.workingServicesPath = p;
+              this.failureCooldownUntil = 0;
+              return items;
+            }
           }
-        } catch (e) {}
+        } catch (e: any) {
+          if (this.isNetworkTimeoutOrRefused(e)) {
+            this.failureCooldownUntil = Date.now() + 30000;
+            return [];
+          }
+        }
       }
 
       return [];
@@ -325,55 +390,80 @@ export class RebeccaClient {
   }
 
   public async getInbounds(overrideConfig?: any): Promise<RebeccaInboundItem[]> {
-    try {
-      const state = db.getState();
-      const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
-      if (!panel.url || panel.enabled === false) return [];
-      if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
+    const now = Date.now();
+    if (!overrideConfig && this.cachedInbounds && (now - this.cachedInboundsTime < 30000)) {
+      return this.cachedInbounds;
+    }
+    if (!overrideConfig && now < this.failureCooldownUntil) {
+      return this.cachedInbounds || [];
+    }
+    if (!overrideConfig && this.inflightInboundsPromise) {
+      return this.inflightInboundsPromise;
+    }
 
-      const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
-      const inboundsList: RebeccaInboundItem[] = [];
+    const runFetch = async (): Promise<RebeccaInboundItem[]> => {
+      try {
+        const state = db.getState();
+        const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
+        if (!panel.url || panel.enabled === false) return [];
+        if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
 
-      // 1. First check services (/api/services or /api/admins/current)
-      const services = await this.getServices(overrideConfig).catch(() => []);
-      if (services && services.length > 0) {
-        for (const s of services) {
-          const tag = s.name || s.title || s.remark || s.tag || s.service_name || `Service #${s.id}`;
-          const servicePort = Number(s.id) || undefined;
-          inboundsList.push({
-            tag: String(tag),
-            protocol: s.protocol || 'Service',
-            port: servicePort
-          });
+        const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
+        const inboundsList: RebeccaInboundItem[] = [];
+
+        // 1. First check services (/api/services or /api/admins/current)
+        const services = await this.getServices(overrideConfig).catch(() => []);
+        if (services && services.length > 0) {
+          for (const s of services) {
+            const tag = s.name || s.title || s.remark || s.tag || s.service_name || `Service #${s.id}`;
+            const servicePort = Number(s.id) || undefined;
+            inboundsList.push({
+              tag: String(tag),
+              protocol: s.protocol || 'Service',
+              port: servicePort
+            });
+          }
         }
-      }
 
-      // 2. Also check /api/inbounds endpoints
-      const inboundsPaths = [
-        '/api/inbounds',
-        '/api/v1/inbounds',
-        '/api/v2/inbounds',
-        '/api/hosts',
-        '/api/nodes',
-        '/api/system',
-        '/api/inbound/list',
-        '/api/inbounds/list',
-        '/panel/api/inbounds/list',
-        '/xui/api/inbounds/list',
-        '/api/admin/inbounds',
-        '/api/admin/hosts'
-      ];
+        if (Date.now() < this.failureCooldownUntil) {
+          return this.cachedInbounds || inboundsList;
+        }
 
-      for (const ep of inboundsPaths) {
-        try {
-          const res = await this.client.get(`${baseURL}${ep}`, {
-            headers,
-            validateStatus: () => true,
-            timeout: 8000
-          });
+        // 2. Also check /api/inbounds endpoints (prioritizing cached working path + strict 8s deadline)
+        const defaultInboundsPaths = [
+          '/api/inbounds',
+          '/api/v1/inbounds',
+          '/api/v2/inbounds',
+          '/api/hosts',
+          '/api/nodes',
+          '/api/system',
+          '/api/inbound/list',
+          '/api/inbounds/list',
+          '/panel/api/inbounds/list',
+          '/xui/api/inbounds/list',
+          '/api/admin/inbounds',
+          '/api/admin/hosts'
+        ];
+        const inboundsPaths = this.workingInboundsPath
+          ? Array.from(new Set([this.workingInboundsPath, ...defaultInboundsPaths]))
+          : defaultInboundsPaths;
 
-          if (res.status === 200 && res.data) {
-            const data = res.data;
+        const deadline = Date.now() + 8000;
+        for (const ep of inboundsPaths) {
+          if (Date.now() >= deadline) {
+            this.failureCooldownUntil = Date.now() + 30000;
+            break;
+          }
+          try {
+            const res = await this.client.get(`${baseURL}${ep}`, {
+              headers,
+              validateStatus: () => true,
+              timeout: 4500
+            });
+
+            if (res.status === 200 && res.data) {
+              this.workingInboundsPath = ep;
+              const data = res.data;
             if (typeof data === 'object' && !Array.isArray(data)) {
               // First check nested array fields
               const possibleArrays = [data.obj, data.data, data.items, data.inbounds, data.hosts, data.nodes, data.services, data.result];
@@ -430,14 +520,44 @@ export class RebeccaClient {
               }
             }
           }
-        } catch (e) {}
-      }
+          } catch (e: any) {
+            if (this.isNetworkTimeoutOrRefused(e)) {
+              this.failureCooldownUntil = Date.now() + 30000;
+              break;
+            }
+          }
+        }
 
-      return inboundsList;
-    } catch (e: any) {
-      console.warn('[Rebecca] getInbounds note:', e.message);
-      return [];
+        if (inboundsList.length > 0 && !overrideConfig) {
+          this.failureCooldownUntil = 0;
+        }
+        if (!overrideConfig) {
+          this.cachedInbounds = inboundsList;
+          this.cachedInboundsTime = Date.now();
+        }
+        return inboundsList;
+      } catch (e: any) {
+        if (this.isNetworkTimeoutOrRefused(e)) {
+          this.failureCooldownUntil = Date.now() + 30000;
+          if (Date.now() - this.lastCooldownLogTime > 60000) {
+            this.lastCooldownLogTime = Date.now();
+            console.warn('[Rebecca] Panel unreachable/timeout; pausing probes for 30s:', e.message);
+          }
+        } else {
+          console.warn('[Rebecca] getInbounds note:', e.message);
+        }
+        return this.cachedInbounds || [];
+      }
+    };
+
+    if (overrideConfig) {
+      return runFetch();
     }
+
+    this.inflightInboundsPromise = runFetch().finally(() => {
+      this.inflightInboundsPromise = null;
+    });
+    return this.inflightInboundsPromise;
   }
 
   public async addClient(
@@ -951,6 +1071,7 @@ export class RebeccaClient {
       const panel = state.rebeccaPanel || {};
       if (!panel.url || panel.enabled === false) return [];
       if (panel.url.includes('test-rebecca.com') || panel.url.includes('example.com')) return [];
+      if (Date.now() < this.failureCooldownUntil) return [];
 
       const { baseURL, headers } = await this.getAuthHeaders();
       // Try Rebecca 0.3.0 endpoint first: /api/v2/users
@@ -969,6 +1090,7 @@ export class RebeccaClient {
       }
 
       if (res.status === 200 && res.data) {
+        this.failureCooldownUntil = 0;
         const rawUsers: any[] = Array.isArray(res.data.users) ? res.data.users : (Array.isArray(res.data) ? res.data : []);
         
         return rawUsers.map((u: any) => {
@@ -1001,7 +1123,15 @@ export class RebeccaClient {
       }
       return [];
     } catch (e: any) {
-      console.warn('[Rebecca] getAllClientsWithTraffic note:', e.message);
+      if (this.isNetworkTimeoutOrRefused(e)) {
+        this.failureCooldownUntil = Date.now() + 30000;
+        if (Date.now() - this.lastCooldownLogTime > 60000) {
+          this.lastCooldownLogTime = Date.now();
+          console.warn('[Rebecca] getAllClientsWithTraffic timeout/unreachable; pausing 30s:', e.message);
+        }
+      } else {
+        console.warn('[Rebecca] getAllClientsWithTraffic note:', e.message);
+      }
       return [];
     }
   }

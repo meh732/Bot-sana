@@ -51,19 +51,33 @@ export class MrOceanClient {
   private lastPanelUser: string = '';
   private lastPanelPass: string = '';
   private isAuthenticating: boolean = false;
+  private cachedDashboard: MrOceanDashboardData | null = null;
+  private cachedDashboardTime: number = 0;
+  private inflightDashboardPromise: Promise<MrOceanDashboardData> | null = null;
+  private failureCooldownUntil: number = 0;
 
   constructor() {
     this.client = axios.create({
-      timeout: 15000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
       },
       httpsAgent: new https.Agent({
         rejectUnauthorized: false,
-        keepAlive: true
+        keepAlive: true,
+        maxSockets: 15,
+        maxFreeSockets: 5,
+        timeout: 10000
       })
     });
+  }
+
+  private isNetworkTimeoutOrRefused(err: any): boolean {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    return ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN'].includes(code) ||
+      msg.includes('timeout') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT');
   }
 
   private formatBaseUrl(rawUrl?: string): string {
@@ -259,33 +273,69 @@ export class MrOceanClient {
     }
   }
 
-  public async getDashboard(overrideConfig?: any): Promise<MrOceanDashboardData> {
-    const auth = await this.authenticate(overrideConfig);
-    const dashRes = await this.client.get(`${auth.apiBase}`, {
-      headers: {
-        'Cookie': auth.cookie,
-        'Accept': 'application/json'
-      },
-      validateStatus: () => true
-    });
+  public async getDashboard(overrideConfig?: any, forceRefresh: boolean = false): Promise<MrOceanDashboardData> {
+    const now = Date.now();
+    if (!overrideConfig && !forceRefresh && this.cachedDashboard && (now - this.cachedDashboardTime < 20000)) {
+      return this.cachedDashboard;
+    }
+    if (!overrideConfig && !forceRefresh && now < this.failureCooldownUntil && this.cachedDashboard) {
+      return this.cachedDashboard;
+    }
+    if (!overrideConfig && !forceRefresh && this.inflightDashboardPromise) {
+      return this.inflightDashboardPromise;
+    }
 
-    if (dashRes.status === 401) {
-      console.log('[MrOcean] Session expired on dashboard fetch. Re-authenticating...');
-      const reAuth = await this.authenticate(overrideConfig, true);
-      const retryRes = await this.client.get(`${reAuth.apiBase}`, {
-        headers: {
-          'Cookie': reAuth.cookie,
-          'Accept': 'application/json'
+    const runFetch = async (): Promise<MrOceanDashboardData> => {
+      try {
+        const auth = await this.authenticate(overrideConfig);
+        const dashRes = await this.client.get(`${auth.apiBase}`, {
+          headers: {
+            'Cookie': auth.cookie,
+            'Accept': 'application/json'
+          },
+          validateStatus: () => true,
+          timeout: 8000
+        });
+
+        let finalData: MrOceanDashboardData;
+        if (dashRes.status === 401) {
+          console.log('[MrOcean] Session expired on dashboard fetch. Re-authenticating...');
+          const reAuth = await this.authenticate(overrideConfig, true);
+          const retryRes = await this.client.get(`${reAuth.apiBase}`, {
+            headers: {
+              'Cookie': reAuth.cookie,
+              'Accept': 'application/json'
+            },
+            timeout: 8000
+          });
+          finalData = retryRes.data?.dashboard || retryRes.data;
+        } else if (dashRes.status !== 200) {
+          throw new Error(`خطا در بازخوانی داشبورد مستر اوشن: کد ${dashRes.status}`);
+        } else {
+          finalData = dashRes.data?.dashboard || dashRes.data;
         }
+
+        if (!overrideConfig && finalData) {
+          this.cachedDashboard = finalData;
+          this.cachedDashboardTime = Date.now();
+          this.failureCooldownUntil = 0;
+        }
+        return finalData;
+      } catch (err: any) {
+        if (this.isNetworkTimeoutOrRefused(err)) {
+          this.failureCooldownUntil = Date.now() + 25000;
+        }
+        throw err;
+      }
+    };
+
+    if (!overrideConfig && !forceRefresh) {
+      this.inflightDashboardPromise = runFetch().finally(() => {
+        this.inflightDashboardPromise = null;
       });
-      return retryRes.data?.dashboard || retryRes.data;
+      return this.inflightDashboardPromise;
     }
-
-    if (dashRes.status !== 200) {
-      throw new Error(`خطا در بازخوانی داشبورد مستر اوشن: کد ${dashRes.status}`);
-    }
-
-    return dashRes.data?.dashboard || dashRes.data;
+    return runFetch();
   }
 
   public async testConnection(overrideConfig?: any): Promise<{
@@ -293,9 +343,11 @@ export class MrOceanClient {
     message: string;
     dashboard?: MrOceanDashboardData;
   }> {
+    this.failureCooldownUntil = 0;
+    this.cachedDashboard = null;
     try {
       const auth = await this.authenticate(overrideConfig, true);
-      const dashboard = await this.getDashboard(overrideConfig);
+      const dashboard = await this.getDashboard(overrideConfig, true);
 
       const title = dashboard.title || `سرویس نمایندگی شناسه ${dashboard.serviceId || auth.serviceId}`;
       const totalUsers = dashboard.usersTotal !== undefined ? dashboard.usersTotal : (dashboard.users?.length || 0);
@@ -565,6 +617,9 @@ export class MrOceanClient {
     try {
       const state = db.getState();
       if (!state.mroceanPanel?.url && !state.mroceanPanel?.username) {
+        return [];
+      }
+      if (Date.now() < this.failureCooldownUntil) {
         return [];
       }
       const dashboard = await this.getDashboard();

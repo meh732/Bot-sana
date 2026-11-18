@@ -12,20 +12,43 @@ class XuiClient {
   private lastPanelUser: string = '';
   private lastPanelPass: string = '';
   private lastPanelApiKey: string = '';
+  private lastLoggedApiKeyBaseUrl: string = '';
+  private cachedInbounds: any[] | null = null;
+  private cachedInboundsTime: number = 0;
+  private inflightInboundsPromise: Promise<any[]> | null = null;
+  private inflightAuthPromise: Promise<{ baseURL: string; headers: Record<string, string> }> | null = null;
+  private failureCooldownUntil: number = 0;
+  private lastCooldownLogTime: number = 0;
 
   constructor() {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     this.client = axios.create({
-      timeout: 15000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
       },
       httpsAgent: new https.Agent({ 
         rejectUnauthorized: false,
-        keepAlive: true
-      }), // Ignore self-signed certificates
+        keepAlive: true,
+        maxSockets: 15,
+        maxFreeSockets: 5,
+        timeout: 10000
+      }), // Ignore self-signed certificates with bounded connection pool
     });
+  }
+
+  public invalidateCaches() {
+    this.cachedInbounds = null;
+    this.cachedInboundsTime = 0;
+    this.failureCooldownUntil = 0;
+  }
+
+  private isNetworkTimeoutOrRefused(err: any): boolean {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    return ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN'].includes(code) ||
+      msg.includes('timeout') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT');
   }
 
   private async getAuthOptions(panelOverride?: any) {
@@ -50,6 +73,8 @@ class XuiClient {
       console.log('[X-UI] Panel connection configurations changed. Cleared cookie session cache.');
       this.cookie = '';
       this.workingApiPrefix = '';
+      this.lastLoggedApiKeyBaseUrl = '';
+      this.invalidateCaches();
       this.lastPanelUrl = panel.url || '';
       this.lastPanelUser = panel.username || '';
       this.lastPanelPass = panel.password || '';
@@ -69,7 +94,6 @@ class XuiClient {
     const commonSuffixes = ['/panel', '/api', '/panel/api'];
     for (const suffix of commonSuffixes) {
         if (baseURL.toLowerCase().endsWith(suffix)) {
-            console.log(`[X-UI] Normalizing URL: removed trailing ${suffix} from ${baseURL}`);
             baseURL = baseURL.slice(0, -suffix.length);
         }
     }
@@ -77,7 +101,10 @@ class XuiClient {
     // 1. Prioritize API Key login if provided
     if (hasApiKey) {
       const apiKey = panel.apiKey.trim();
-      console.log(`[X-UI] Authenticating using API Key with baseURL: ${baseURL}`);
+      if (this.lastLoggedApiKeyBaseUrl !== baseURL) {
+        this.lastLoggedApiKeyBaseUrl = baseURL;
+        console.log(`[X-UI] Authenticating using API Key with baseURL: ${baseURL}`);
+      }
       return { 
         baseURL, 
         headers: { 
@@ -91,62 +118,83 @@ class XuiClient {
       };
     }
 
-    // 2. Fall back to Session Cookie (login) authentication
+    // 2. Fall back to Session Cookie (login) authentication (deduplicated to avoid login storms)
     if (!this.cookie) {
-      console.log(`[X-UI] No session cookie. Trying login credentials at: ${baseURL}`);
-      const loginPaths = ['/login', '/panel/login'];
-      let loginSuccess = false;
-      let lastLoginError = '';
+      if (this.inflightAuthPromise) {
+        return this.inflightAuthPromise;
+      }
 
-      for (const loginPath of loginPaths) {
+      this.inflightAuthPromise = (async () => {
         try {
-          console.log(`[X-UI Attempt] Login probe: ${baseURL}${loginPath}`);
-          
-          // Try JSON
-          let res = await this.client.post(`${baseURL}${loginPath}`, { 
-            username: panel.username, 
-            password: panel.password 
-          }, { 
-            headers: { 'Content-Type': 'application/json' }, 
-            validateStatus: () => true 
-          });
-          
-          // Try Form if JSON failed
-          if (!res.data?.success) {
-            const params = new URLSearchParams();
-            params.append('username', panel.username || '');
-            params.append('password', panel.password || '');
-            res = await this.client.post(`${baseURL}${loginPath}`, params, { 
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, 
-              validateStatus: () => true 
-            });
-          }
+          console.log(`[X-UI] No session cookie. Trying login credentials at: ${baseURL}`);
+          const loginPaths = ['/login', '/panel/login'];
+          let loginSuccess = false;
+          let lastLoginError = '';
 
-          if (res.data?.success) {
-            loginSuccess = true;
-            // Extract the set-cookie header robustly case-insensitively
-            const keys = Object.keys(res.headers);
-            const cookieKey = keys.find(k => k.toLowerCase() === 'set-cookie');
-            const cookiesHeader = cookieKey ? res.headers[cookieKey] : undefined;
-            
-            if (cookiesHeader) {
-                const cookies = Array.isArray(cookiesHeader) ? cookiesHeader : [cookiesHeader];
-                this.cookie = cookies.map(c => c.split(';')[0]).join('; ');
-                console.log(`[X-UI Success] Logged in with session cookie via ${loginPath}`);
-            } else {
-                console.log(`[X-UI Success] Logged in via ${loginPath} but no set-cookie header found.`);
+          for (const loginPath of loginPaths) {
+            try {
+              // Try JSON
+              let res = await this.client.post(`${baseURL}${loginPath}`, { 
+                username: panel.username, 
+                password: panel.password 
+              }, { 
+                headers: { 'Content-Type': 'application/json' }, 
+                validateStatus: () => true,
+                timeout: 6000
+              });
+              
+              // Try Form if JSON failed
+              if (!res.data?.success) {
+                const params = new URLSearchParams();
+                params.append('username', panel.username || '');
+                params.append('password', panel.password || '');
+                res = await this.client.post(`${baseURL}${loginPath}`, params, { 
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, 
+                  validateStatus: () => true,
+                  timeout: 6000
+                });
+              }
+
+              if (res.data?.success) {
+                loginSuccess = true;
+                const keys = Object.keys(res.headers);
+                const cookieKey = keys.find(k => k.toLowerCase() === 'set-cookie');
+                const cookiesHeader = cookieKey ? res.headers[cookieKey] : undefined;
+                
+                if (cookiesHeader) {
+                    const cookies = Array.isArray(cookiesHeader) ? cookiesHeader : [cookiesHeader];
+                    this.cookie = cookies.map(c => c.split(';')[0]).join('; ');
+                    console.log(`[X-UI Success] Logged in with session cookie via ${loginPath}`);
+                }
+                break;
+              }
+              lastLoginError = res.data?.msg || 'نام کاربری یا رمز عبور اشتباه است.';
+            } catch (e: any) {
+              lastLoginError = e.message;
+              if (this.isNetworkTimeoutOrRefused(e)) {
+                this.failureCooldownUntil = Date.now() + 25000;
+                break;
+              }
             }
-            break;
           }
-          lastLoginError = res.data?.msg || 'نام کاربری یا رمز عبور اشتباه است.';
-        } catch (e: any) {
-          lastLoginError = e.message;
-        }
-      }
 
-      if (!loginSuccess) {
-        throw new Error(lastLoginError || 'خطا در ورود به پنل. لطفا آدرس و مشخصات را بررسی کنید.');
-      }
+          if (!loginSuccess) {
+            throw new Error(lastLoginError || 'خطا در ورود به پنل. لطفا آدرس و مشخصات را بررسی کنید.');
+          }
+
+          return {
+            baseURL,
+            headers: {
+              'Cookie': this.cookie,
+              'Accept': 'application/json, text/plain, */*'
+            }
+          };
+        } finally {
+          this.inflightAuthPromise = null;
+        }
+      })();
+
+      return this.inflightAuthPromise;
     }
     
     return {
@@ -218,6 +266,7 @@ class XuiClient {
   }
 
   public async testXuiDirect(panelOverride?: any) {
+    this.invalidateCaches();
     try {
       const opts = await this.getAuthOptions(panelOverride);
       const paths = [
@@ -262,56 +311,109 @@ class XuiClient {
     }
   }
 
-  public async getXuiInboundsDirect(): Promise<any[]> {
-    try {
-      const state = db.getState();
-      const panel = (state.panel?.panelType !== 'rebecca' ? state.panel : {}) || {};
-      const hasApiKey = panel.apiKey && panel.apiKey.trim() !== '';
-      const hasUserPass = (panel.username && panel.username.trim() !== '') && (panel.password && panel.password.trim() !== '');
-      if (!panel.url || (!hasApiKey && !hasUserPass)) {
-        return [];
-      }
+  public async getXuiInboundsDirect(forceRefresh: boolean = false): Promise<any[]> {
+    const now = Date.now();
+    if (!forceRefresh && this.cachedInbounds && (now - this.cachedInboundsTime < 30000)) {
+      return this.cachedInbounds;
+    }
 
-      const opts = await this.getAuthOptions();
-      const paths = [
-        '/panel/api/inbounds/list',
-        '/api/inbounds/list',
-        '/xui/api/inbounds/list',
-        '/panel/inbounds/list',
-        '/xui/api/inbound/list',
-        '/api/inbound/list',
-        '/api/inbounds',
-        '/api/v1/inbounds'
-      ];
-      
-      for (const path of paths) {
-        try {
-          const res = await this.client.get(`${opts.baseURL}${path}`, {
-            headers: opts.headers,
-            validateStatus: () => true,
-            timeout: 8000
-          });
-          if (res.status === 200 && res.data) {
-            const data = res.data;
-            const items = Array.isArray(data) ? data : (data.obj || data.data || data.items || data.inbounds || data.result);
-            if (Array.isArray(items) && items.length > 0) {
-              const idx = path.indexOf('/inbounds');
-              if (idx !== -1) {
-                this.workingApiPrefix = path.substring(0, idx);
-                console.log(`[X-UI] Successfully fetched inbounds. Cached working API prefix: ${this.workingApiPrefix}`);
+    if (!forceRefresh && now < this.failureCooldownUntil) {
+      return this.cachedInbounds || [];
+    }
+
+    if (this.inflightInboundsPromise) {
+      return this.inflightInboundsPromise;
+    }
+
+    this.inflightInboundsPromise = (async () => {
+      try {
+        const state = db.getState();
+        const panel = (state.panel?.panelType !== 'rebecca' ? state.panel : {}) || {};
+        const hasApiKey = panel.apiKey && panel.apiKey.trim() !== '';
+        const hasUserPass = (panel.username && panel.username.trim() !== '') && (panel.password && panel.password.trim() !== '');
+        if (!panel.url || (!hasApiKey && !hasUserPass)) {
+          return [];
+        }
+
+        const opts = await this.getAuthOptions();
+        const defaultPaths = [
+          '/panel/api/inbounds/list',
+          '/api/inbounds/list',
+          '/xui/api/inbounds/list',
+          '/panel/inbounds/list',
+          '/xui/api/inbound/list',
+          '/api/inbound/list',
+          '/api/inbounds',
+          '/api/v1/inbounds'
+        ];
+        const prioritizedPaths = this.workingApiPrefix
+          ? [
+              `${this.workingApiPrefix}/inbounds/list`,
+              `${this.workingApiPrefix}/inbound/list`,
+              `${this.workingApiPrefix}/inbounds`,
+              ...defaultPaths
+            ]
+          : defaultPaths;
+        const paths = Array.from(new Set(prioritizedPaths));
+
+        const deadline = Date.now() + 9000;
+        let networkFailed = false;
+
+        for (const p of paths) {
+          if (Date.now() >= deadline) {
+            networkFailed = true;
+            break;
+          }
+          try {
+            const res = await this.client.get(`${opts.baseURL}${p}`, {
+              headers: opts.headers,
+              validateStatus: () => true,
+              timeout: 4500
+            });
+            if (res.status === 200 && res.data) {
+              const data = res.data;
+              const items = Array.isArray(data) ? data : (data.obj || data.data || data.items || data.inbounds || data.result);
+              if (Array.isArray(items) && items.length > 0) {
+                const idx = p.indexOf('/inbounds');
+                if (idx !== -1) {
+                  this.workingApiPrefix = p.substring(0, idx);
+                }
+                this.cachedInbounds = items;
+                this.cachedInboundsTime = Date.now();
+                this.failureCooldownUntil = 0;
+                return items;
               }
-              return items;
+            } else if (res.status === 401 || res.status === 403) {
+              this.cookie = '';
+            }
+          } catch (e: any) {
+            if (this.isNetworkTimeoutOrRefused(e)) {
+              networkFailed = true;
+              break; // Panel host unreachable/timing out — don't hammer 7 more paths sequentially
             }
           }
-        } catch (e) {
-          // Continue
         }
+
+        if (networkFailed) {
+          this.failureCooldownUntil = Date.now() + 30000;
+          if (Date.now() - this.lastCooldownLogTime > 60000) {
+            this.lastCooldownLogTime = Date.now();
+            console.warn(`[X-UI] Panel unreachable/timeout at ${opts.baseURL}. Pausing retries for 30s to keep server lightweight.`);
+          }
+        }
+        return this.cachedInbounds || [];
+      } catch (e: any) {
+        this.cookie = '';
+        if (this.isNetworkTimeoutOrRefused(e)) {
+          this.failureCooldownUntil = Date.now() + 30000;
+        }
+        return this.cachedInbounds || [];
+      } finally {
+        this.inflightInboundsPromise = null;
       }
-      return [];
-    } catch (e: any) {
-      this.cookie = ''; 
-      return [];
-    }
+    })();
+
+    return this.inflightInboundsPromise;
   }
 
   public async getInbounds(): Promise<any[]> {

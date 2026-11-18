@@ -483,9 +483,15 @@ class Database {
       sanitized.coupons = [];
     }
 
-    // Sanitize pendingPayments
+    // Sanitize pendingPayments & prune abandoned entries older than 14 days
     if (!Array.isArray(sanitized.pendingPayments)) {
       sanitized.pendingPayments = [];
+    } else {
+      const maxPendingAgeMs = 14 * 24 * 60 * 60 * 1000;
+      const nowTs = Date.now();
+      sanitized.pendingPayments = sanitized.pendingPayments
+        .filter((p: any) => p && p.id && (!p.timestamp || nowTs - Number(p.timestamp) <= maxPendingAgeMs))
+        .slice(-200);
     }
 
     // Sanitize panel4 to prevent losing credentials or storing masked passwords
@@ -698,6 +704,16 @@ class Database {
   }
 
   public updateState(partial: Partial<AppState>) {
+    if (Array.isArray(partial.pendingPayments)) {
+      const maxPendingAgeMs = 14 * 24 * 60 * 60 * 1000;
+      const nowTs = Date.now();
+      partial = {
+        ...partial,
+        pendingPayments: partial.pendingPayments
+          .filter((p: any) => p && p.id && (!p.timestamp || nowTs - Number(p.timestamp) <= maxPendingAgeMs))
+          .slice(-200)
+      };
+    }
     this.state = { ...this.state, ...partial };
     if (partial.users) {
       this.rebuildUserMap();

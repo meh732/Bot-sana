@@ -321,9 +321,12 @@ export class MultiPanelService {
   }
 
   private withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+    let timer: NodeJS.Timeout;
     return Promise.race([
-      promise.catch(() => fallback),
-      new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))
+      promise.catch(() => fallback).finally(() => clearTimeout(timer)),
+      new Promise<T>(resolve => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      })
     ]);
   }
 

@@ -3,6 +3,15 @@ import { Save, RefreshCw, Send, Plus, Trash2, BatteryCharging, Settings2, Users 
 import { SellerPortalView } from './SellerPortalView';
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'settings' | 'products' | 'users' | 'sellers'>('settings');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   const isSellerPortalPath = typeof window !== 'undefined' && (
     window.location.pathname.includes('/seller') || 
     window.location.search.includes('id=') || 
@@ -12,15 +21,6 @@ export default function App() {
   if (isSellerPortalPath) {
     return <SellerPortalView />;
   }
-
-  const [activeTab, setActiveTab] = useState<'settings' | 'products' | 'users' | 'sellers'>('settings');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('sidebar_collapsed') === 'true';
-    } catch {
-      return false;
-    }
-  });
 
   const toggleSidebar = () => {
     setSidebarCollapsed(prev => {

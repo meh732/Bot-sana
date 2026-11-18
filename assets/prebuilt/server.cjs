@@ -28039,6 +28039,10 @@ var init_db = __esm({
         }
         if (!Array.isArray(sanitized.pendingPayments)) {
           sanitized.pendingPayments = [];
+        } else {
+          const maxPendingAgeMs = 14 * 24 * 60 * 60 * 1e3;
+          const nowTs = Date.now();
+          sanitized.pendingPayments = sanitized.pendingPayments.filter((p) => p && p.id && (!p.timestamp || nowTs - Number(p.timestamp) <= maxPendingAgeMs)).slice(-200);
         }
         const rawP4 = rawState && typeof rawState.panel4 === "object" && rawState.panel4 !== null ? rawState.panel4 : {};
         const defP4 = defaultState.panel4 || {};
@@ -28213,6 +28217,14 @@ var init_db = __esm({
         return this.state;
       }
       updateState(partial) {
+        if (Array.isArray(partial.pendingPayments)) {
+          const maxPendingAgeMs = 14 * 24 * 60 * 60 * 1e3;
+          const nowTs = Date.now();
+          partial = {
+            ...partial,
+            pendingPayments: partial.pendingPayments.filter((p) => p && p.id && (!p.timestamp || nowTs - Number(p.timestamp) <= maxPendingAgeMs)).slice(-200)
+          };
+        }
         this.state = { ...this.state, ...partial };
         if (partial.users) {
           this.rebuildUserMap();
@@ -79250,18 +79262,39 @@ var init_rebecca = __esm({
         this.lastPanelUser = "";
         this.lastPanelPass = "";
         this.lastPanelApiKey = "";
+        this.workingServicesPath = "";
+        this.workingInboundsPath = "";
+        this.cachedInbounds = null;
+        this.cachedInboundsTime = 0;
+        this.inflightInboundsPromise = null;
+        this.inflightAuthPromise = null;
+        this.failureCooldownUntil = 0;
+        this.lastCooldownLogTime = 0;
         process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
         this.client = axios_default.create({
-          timeout: 15e3,
+          timeout: 1e4,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*"
           },
           httpsAgent: new import_https2.default.Agent({
             rejectUnauthorized: false,
-            keepAlive: true
+            keepAlive: true,
+            maxSockets: 15,
+            maxFreeSockets: 5,
+            timeout: 1e4
           })
         });
+      }
+      invalidateCaches() {
+        this.cachedInbounds = null;
+        this.cachedInboundsTime = 0;
+        this.failureCooldownUntil = 0;
+      }
+      isNetworkTimeoutOrRefused(err) {
+        const code = String(err?.code || "");
+        const msg = String(err?.message || "");
+        return ["ECONNREFUSED", "ETIMEDOUT", "ECONNABORTED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(code) || msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("ETIMEDOUT");
       }
       formatBaseUrl(rawUrl) {
         if (!rawUrl) return "";
@@ -79297,6 +79330,9 @@ var init_rebecca = __esm({
           console.log("[Rebecca] Panel credentials changed. Cleared token cache.");
           this.token = "";
           this.tokenExpiryTime = 0;
+          this.workingServicesPath = "";
+          this.workingInboundsPath = "";
+          this.invalidateCaches();
           this.lastPanelUrl = panel.url || "";
           this.lastPanelUser = panel.username || "";
           this.lastPanelPass = panel.password || "";
@@ -79320,75 +79356,97 @@ var init_rebecca = __esm({
         }
         const now = Date.now();
         if (!this.token || now >= this.tokenExpiryTime) {
-          console.log(`[Rebecca] Authenticating with username/password at: ${baseURL}/api/admin/token`);
-          let loginSuccess = false;
-          let lastError = "";
-          try {
-            const params = new URLSearchParams();
-            params.append("grant_type", "password");
-            params.append("username", panel.username || "");
-            params.append("password", panel.password || "");
-            const res = await this.client.post(`${baseURL}/api/admin/token`, params, {
-              headers: { "Content-Type": "application/x-www-form-urlencoded" },
-              validateStatus: () => true,
-              timeout: 1e4
-            });
-            if (res.data && res.data.access_token) {
-              this.token = res.data.access_token;
-              this.tokenExpiryTime = now + 23 * 60 * 60 * 1e3;
-              loginSuccess = true;
-              console.log("[Rebecca Success] Logged in via /api/admin/token (Form mode)");
-            } else {
-              lastError = res.data?.detail || res.data?.msg || res.data?.message || `Status: ${res.status}`;
-            }
-          } catch (e) {
-            lastError = e.message;
+          if (this.inflightAuthPromise) {
+            return this.inflightAuthPromise;
           }
-          if (!loginSuccess) {
+          this.inflightAuthPromise = (async () => {
             try {
-              const res = await this.client.post(`${baseURL}/api/admin/token`, {
-                username: panel.username,
-                password: panel.password
-              }, {
-                headers: { "Content-Type": "application/json" },
-                validateStatus: () => true,
-                timeout: 1e4
-              });
-              if (res.data && res.data.access_token) {
-                this.token = res.data.access_token;
-                this.tokenExpiryTime = now + 23 * 60 * 60 * 1e3;
-                loginSuccess = true;
-                console.log("[Rebecca Success] Logged in via /api/admin/token (JSON mode)");
-              } else {
-                lastError = res.data?.detail || res.data?.msg || res.data?.message || lastError;
+              console.log(`[Rebecca] Authenticating with username/password at: ${baseURL}/api/admin/token`);
+              let loginSuccess = false;
+              let lastError = "";
+              try {
+                const params = new URLSearchParams();
+                params.append("grant_type", "password");
+                params.append("username", panel.username || "");
+                params.append("password", panel.password || "");
+                const res = await this.client.post(`${baseURL}/api/admin/token`, params, {
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  validateStatus: () => true,
+                  timeout: 6e3
+                });
+                if (res.data && res.data.access_token) {
+                  this.token = res.data.access_token;
+                  this.tokenExpiryTime = Date.now() + 23 * 60 * 60 * 1e3;
+                  loginSuccess = true;
+                  console.log("[Rebecca Success] Logged in via /api/admin/token (Form mode)");
+                } else {
+                  lastError = res.data?.detail || res.data?.msg || res.data?.message || `Status: ${res.status}`;
+                }
+              } catch (e) {
+                lastError = e.message;
+                if (this.isNetworkTimeoutOrRefused(e)) {
+                  this.failureCooldownUntil = Date.now() + 3e4;
+                  throw new Error(`\u0639\u062F\u0645 \u067E\u0627\u0633\u062E\u06AF\u0648\u06CC\u06CC \u067E\u0646\u0644 \u0631\u0628\u06A9\u0627 (Timeout/Connection): ${lastError}`);
+                }
               }
-            } catch (e) {
-              lastError = e.message;
-            }
-          }
-          if (!loginSuccess) {
-            try {
-              const params = new URLSearchParams();
-              params.append("grant_type", "password");
-              params.append("username", panel.username || "");
-              params.append("password", panel.password || "");
-              const res = await this.client.post(`${baseURL}/api/token`, params, {
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                validateStatus: () => true,
-                timeout: 1e4
-              });
-              if (res.data && res.data.access_token) {
-                this.token = res.data.access_token;
-                this.tokenExpiryTime = now + 23 * 60 * 60 * 1e3;
-                loginSuccess = true;
-                console.log("[Rebecca Success] Logged in via /api/token");
+              if (!loginSuccess) {
+                try {
+                  const res = await this.client.post(`${baseURL}/api/admin/token`, {
+                    username: panel.username,
+                    password: panel.password
+                  }, {
+                    headers: { "Content-Type": "application/json" },
+                    validateStatus: () => true,
+                    timeout: 6e3
+                  });
+                  if (res.data && res.data.access_token) {
+                    this.token = res.data.access_token;
+                    this.tokenExpiryTime = Date.now() + 23 * 60 * 60 * 1e3;
+                    loginSuccess = true;
+                    console.log("[Rebecca Success] Logged in via /api/admin/token (JSON mode)");
+                  } else {
+                    lastError = res.data?.detail || res.data?.msg || res.data?.message || lastError;
+                  }
+                } catch (e) {
+                  lastError = e.message;
+                }
               }
-            } catch (e) {
+              if (!loginSuccess) {
+                try {
+                  const params = new URLSearchParams();
+                  params.append("grant_type", "password");
+                  params.append("username", panel.username || "");
+                  params.append("password", panel.password || "");
+                  const res = await this.client.post(`${baseURL}/api/token`, params, {
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                    validateStatus: () => true,
+                    timeout: 6e3
+                  });
+                  if (res.data && res.data.access_token) {
+                    this.token = res.data.access_token;
+                    this.tokenExpiryTime = Date.now() + 23 * 60 * 60 * 1e3;
+                    loginSuccess = true;
+                    console.log("[Rebecca Success] Logged in via /api/token");
+                  }
+                } catch (e) {
+                }
+              }
+              if (!loginSuccess) {
+                throw new Error(`\u062E\u0637\u0627 \u062F\u0631 \u0648\u0631\u0648\u062F \u0628\u0647 \u067E\u0646\u0644 \u0631\u0628\u06A9\u0627: ${lastError || "\u0646\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u06CC \u06CC\u0627 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0627\u0634\u062A\u0628\u0627\u0647 \u0627\u0633\u062A."}`);
+              }
+              return {
+                baseURL,
+                headers: {
+                  "Authorization": `Bearer ${this.token}`,
+                  "Accept": "application/json",
+                  "Content-Type": "application/json"
+                }
+              };
+            } finally {
+              this.inflightAuthPromise = null;
             }
-          }
-          if (!loginSuccess) {
-            throw new Error(`\u062E\u0637\u0627 \u062F\u0631 \u0648\u0631\u0648\u062F \u0628\u0647 \u067E\u0646\u0644 \u0631\u0628\u06A9\u0627: ${lastError || "\u0646\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u06CC \u06CC\u0627 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0627\u0634\u062A\u0628\u0627\u0647 \u0627\u0633\u062A."}`);
-          }
+          })();
+          return this.inflightAuthPromise;
         }
         return {
           baseURL,
@@ -79400,6 +79458,7 @@ var init_rebecca = __esm({
         };
       }
       async testConnection(overrideConfig) {
+        this.invalidateCaches();
         try {
           const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
           let services = [];
@@ -79465,20 +79524,22 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
           const state = db.getState();
           const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
           if (!panel.url) return [];
+          if (!overrideConfig && Date.now() < this.failureCooldownUntil) return [];
           const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
-          const servicePaths = [
+          const defaultServicePaths = [
             "/api/services",
             "/api/v2/services",
             "/api/v1/services",
             "/api/admins/current",
             "/api/admins/current/links"
           ];
+          const servicePaths = this.workingServicesPath ? Array.from(/* @__PURE__ */ new Set([this.workingServicesPath, ...defaultServicePaths])) : defaultServicePaths;
           for (const p of servicePaths) {
             try {
               const res = await this.client.get(`${baseURL}${p}`, {
                 headers,
                 validateStatus: () => true,
-                timeout: 8e3
+                timeout: 4500
               });
               if (res.status >= 200 && res.status < 300 && res.data) {
                 const data = res.data;
@@ -79496,9 +79557,17 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
                 } else if (data.result && Array.isArray(data.result)) {
                   items = data.result;
                 }
-                if (items.length > 0) return items;
+                if (items.length > 0) {
+                  this.workingServicesPath = p;
+                  this.failureCooldownUntil = 0;
+                  return items;
+                }
               }
             } catch (e) {
+              if (this.isNetworkTimeoutOrRefused(e)) {
+                this.failureCooldownUntil = Date.now() + 3e4;
+                return [];
+              }
             }
           }
           return [];
@@ -79508,77 +79577,81 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
         }
       }
       async getInbounds(overrideConfig) {
-        try {
-          const state = db.getState();
-          const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
-          if (!panel.url || panel.enabled === false) return [];
-          if (panel.url.includes("test-rebecca.com") || panel.url.includes("example.com")) return [];
-          const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
-          const inboundsList = [];
-          const services = await this.getServices(overrideConfig).catch(() => []);
-          if (services && services.length > 0) {
-            for (const s of services) {
-              const tag = s.name || s.title || s.remark || s.tag || s.service_name || `Service #${s.id}`;
-              const servicePort = Number(s.id) || void 0;
-              inboundsList.push({
-                tag: String(tag),
-                protocol: s.protocol || "Service",
-                port: servicePort
-              });
+        const now = Date.now();
+        if (!overrideConfig && this.cachedInbounds && now - this.cachedInboundsTime < 3e4) {
+          return this.cachedInbounds;
+        }
+        if (!overrideConfig && now < this.failureCooldownUntil) {
+          return this.cachedInbounds || [];
+        }
+        if (!overrideConfig && this.inflightInboundsPromise) {
+          return this.inflightInboundsPromise;
+        }
+        const runFetch = async () => {
+          try {
+            const state = db.getState();
+            const panel = overrideConfig || state.rebeccaPanel || state.panel || state.panel4 || {};
+            if (!panel.url || panel.enabled === false) return [];
+            if (panel.url.includes("test-rebecca.com") || panel.url.includes("example.com")) return [];
+            const { baseURL, headers } = await this.getAuthHeaders(overrideConfig);
+            const inboundsList = [];
+            const services = await this.getServices(overrideConfig).catch(() => []);
+            if (services && services.length > 0) {
+              for (const s of services) {
+                const tag = s.name || s.title || s.remark || s.tag || s.service_name || `Service #${s.id}`;
+                const servicePort = Number(s.id) || void 0;
+                inboundsList.push({
+                  tag: String(tag),
+                  protocol: s.protocol || "Service",
+                  port: servicePort
+                });
+              }
             }
-          }
-          const inboundsPaths = [
-            "/api/inbounds",
-            "/api/v1/inbounds",
-            "/api/v2/inbounds",
-            "/api/hosts",
-            "/api/nodes",
-            "/api/system",
-            "/api/inbound/list",
-            "/api/inbounds/list",
-            "/panel/api/inbounds/list",
-            "/xui/api/inbounds/list",
-            "/api/admin/inbounds",
-            "/api/admin/hosts"
-          ];
-          for (const ep of inboundsPaths) {
-            try {
-              const res = await this.client.get(`${baseURL}${ep}`, {
-                headers,
-                validateStatus: () => true,
-                timeout: 8e3
-              });
-              if (res.status === 200 && res.data) {
-                const data = res.data;
-                if (typeof data === "object" && !Array.isArray(data)) {
-                  const possibleArrays = [data.obj, data.data, data.items, data.inbounds, data.hosts, data.nodes, data.services, data.result];
-                  let foundArray = false;
-                  for (const arr of possibleArrays) {
-                    if (Array.isArray(arr) && arr.length > 0) {
-                      foundArray = true;
-                      for (const item of arr) {
-                        const tag = typeof item === "string" ? item : item.tag || item.remark || item.name || item.title || item.host || item.address || item.serviceName || item.protocol || String(item.id || "");
-                        if (tag && !inboundsList.some((i) => i.tag === tag)) {
-                          inboundsList.push({
-                            tag,
-                            protocol: typeof item === "object" && item.protocol ? item.protocol : "vless",
-                            network: typeof item === "object" ? item.network : void 0,
-                            tls: typeof item === "object" ? item.tls : void 0,
-                            port: typeof item === "object" ? item.port : void 0
-                          });
-                        }
-                      }
-                    }
-                  }
-                  if (!foundArray) {
-                    for (const [key, val] of Object.entries(data)) {
-                      if (Array.isArray(val)) {
-                        for (const item of val) {
-                          const tag = typeof item === "string" ? item : item.tag || item.remark || item.name || item.title || key;
+            if (Date.now() < this.failureCooldownUntil) {
+              return this.cachedInbounds || inboundsList;
+            }
+            const defaultInboundsPaths = [
+              "/api/inbounds",
+              "/api/v1/inbounds",
+              "/api/v2/inbounds",
+              "/api/hosts",
+              "/api/nodes",
+              "/api/system",
+              "/api/inbound/list",
+              "/api/inbounds/list",
+              "/panel/api/inbounds/list",
+              "/xui/api/inbounds/list",
+              "/api/admin/inbounds",
+              "/api/admin/hosts"
+            ];
+            const inboundsPaths = this.workingInboundsPath ? Array.from(/* @__PURE__ */ new Set([this.workingInboundsPath, ...defaultInboundsPaths])) : defaultInboundsPaths;
+            const deadline = Date.now() + 8e3;
+            for (const ep of inboundsPaths) {
+              if (Date.now() >= deadline) {
+                this.failureCooldownUntil = Date.now() + 3e4;
+                break;
+              }
+              try {
+                const res = await this.client.get(`${baseURL}${ep}`, {
+                  headers,
+                  validateStatus: () => true,
+                  timeout: 4500
+                });
+                if (res.status === 200 && res.data) {
+                  this.workingInboundsPath = ep;
+                  const data = res.data;
+                  if (typeof data === "object" && !Array.isArray(data)) {
+                    const possibleArrays = [data.obj, data.data, data.items, data.inbounds, data.hosts, data.nodes, data.services, data.result];
+                    let foundArray = false;
+                    for (const arr of possibleArrays) {
+                      if (Array.isArray(arr) && arr.length > 0) {
+                        foundArray = true;
+                        for (const item of arr) {
+                          const tag = typeof item === "string" ? item : item.tag || item.remark || item.name || item.title || item.host || item.address || item.serviceName || item.protocol || String(item.id || "");
                           if (tag && !inboundsList.some((i) => i.tag === tag)) {
                             inboundsList.push({
                               tag,
-                              protocol: typeof item === "object" && item.protocol ? item.protocol : key,
+                              protocol: typeof item === "object" && item.protocol ? item.protocol : "vless",
                               network: typeof item === "object" ? item.network : void 0,
                               tls: typeof item === "object" ? item.tls : void 0,
                               port: typeof item === "object" ? item.port : void 0
@@ -79587,30 +79660,74 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
                         }
                       }
                     }
-                  }
-                } else if (Array.isArray(data)) {
-                  for (const item of data) {
-                    const tag = typeof item === "string" ? item : item.tag || item.name || item.remark || item.title || item.host || String(item.id || "");
-                    if (tag && !inboundsList.some((i) => i.tag === tag)) {
-                      inboundsList.push({
-                        tag,
-                        protocol: typeof item === "object" && item.protocol ? item.protocol : "vless",
-                        network: typeof item === "object" ? item.network : void 0,
-                        tls: typeof item === "object" ? item.tls : void 0,
-                        port: typeof item === "object" ? item.port : void 0
-                      });
+                    if (!foundArray) {
+                      for (const [key, val] of Object.entries(data)) {
+                        if (Array.isArray(val)) {
+                          for (const item of val) {
+                            const tag = typeof item === "string" ? item : item.tag || item.remark || item.name || item.title || key;
+                            if (tag && !inboundsList.some((i) => i.tag === tag)) {
+                              inboundsList.push({
+                                tag,
+                                protocol: typeof item === "object" && item.protocol ? item.protocol : key,
+                                network: typeof item === "object" ? item.network : void 0,
+                                tls: typeof item === "object" ? item.tls : void 0,
+                                port: typeof item === "object" ? item.port : void 0
+                              });
+                            }
+                          }
+                        }
+                      }
+                    }
+                  } else if (Array.isArray(data)) {
+                    for (const item of data) {
+                      const tag = typeof item === "string" ? item : item.tag || item.name || item.remark || item.title || item.host || String(item.id || "");
+                      if (tag && !inboundsList.some((i) => i.tag === tag)) {
+                        inboundsList.push({
+                          tag,
+                          protocol: typeof item === "object" && item.protocol ? item.protocol : "vless",
+                          network: typeof item === "object" ? item.network : void 0,
+                          tls: typeof item === "object" ? item.tls : void 0,
+                          port: typeof item === "object" ? item.port : void 0
+                        });
+                      }
                     }
                   }
                 }
+              } catch (e) {
+                if (this.isNetworkTimeoutOrRefused(e)) {
+                  this.failureCooldownUntil = Date.now() + 3e4;
+                  break;
+                }
               }
-            } catch (e) {
             }
+            if (inboundsList.length > 0 && !overrideConfig) {
+              this.failureCooldownUntil = 0;
+            }
+            if (!overrideConfig) {
+              this.cachedInbounds = inboundsList;
+              this.cachedInboundsTime = Date.now();
+            }
+            return inboundsList;
+          } catch (e) {
+            if (this.isNetworkTimeoutOrRefused(e)) {
+              this.failureCooldownUntil = Date.now() + 3e4;
+              if (Date.now() - this.lastCooldownLogTime > 6e4) {
+                this.lastCooldownLogTime = Date.now();
+                console.warn("[Rebecca] Panel unreachable/timeout; pausing probes for 30s:", e.message);
+              }
+            } else {
+              console.warn("[Rebecca] getInbounds note:", e.message);
+            }
+            return this.cachedInbounds || [];
           }
-          return inboundsList;
-        } catch (e) {
-          console.warn("[Rebecca] getInbounds note:", e.message);
-          return [];
+        };
+        if (overrideConfig) {
+          return runFetch();
         }
+        this.inflightInboundsPromise = runFetch().finally(() => {
+          this.inflightInboundsPromise = null;
+        });
+        return this.inflightInboundsPromise;
       }
       async addClient(username, volumeGb, durationDays, inboundTagsOrServiceId, limitIp, telegramId, group, note) {
         const { baseURL, headers } = await this.getAuthHeaders();
@@ -80035,6 +80152,7 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
           const panel = state.rebeccaPanel || {};
           if (!panel.url || panel.enabled === false) return [];
           if (panel.url.includes("test-rebecca.com") || panel.url.includes("example.com")) return [];
+          if (Date.now() < this.failureCooldownUntil) return [];
           const { baseURL, headers } = await this.getAuthHeaders();
           let res = await this.client.get(`${baseURL}/api/v2/users?limit=1000`, {
             headers,
@@ -80049,6 +80167,7 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
             });
           }
           if (res.status === 200 && res.data) {
+            this.failureCooldownUntil = 0;
             const rawUsers = Array.isArray(res.data.users) ? res.data.users : Array.isArray(res.data) ? res.data : [];
             return rawUsers.map((u) => {
               const usedTraffic = Number(u.used_traffic !== void 0 ? u.used_traffic : u.usedTraffic !== void 0 ? u.usedTraffic : u.traffic?.used || 0) || 0;
@@ -80079,7 +80198,15 @@ ${serviceNames || "\u0647\u06CC\u0686 \u0633\u0631\u0648\u06CC\u0633\u06CC \u062
           }
           return [];
         } catch (e) {
-          console.warn("[Rebecca] getAllClientsWithTraffic note:", e.message);
+          if (this.isNetworkTimeoutOrRefused(e)) {
+            this.failureCooldownUntil = Date.now() + 3e4;
+            if (Date.now() - this.lastCooldownLogTime > 6e4) {
+              this.lastCooldownLogTime = Date.now();
+              console.warn("[Rebecca] getAllClientsWithTraffic timeout/unreachable; pausing 30s:", e.message);
+            }
+          } else {
+            console.warn("[Rebecca] getAllClientsWithTraffic note:", e.message);
+          }
           return [];
         }
       }
@@ -80171,19 +80298,39 @@ var init_xui = __esm({
         this.lastPanelUser = "";
         this.lastPanelPass = "";
         this.lastPanelApiKey = "";
+        this.lastLoggedApiKeyBaseUrl = "";
+        this.cachedInbounds = null;
+        this.cachedInboundsTime = 0;
+        this.inflightInboundsPromise = null;
+        this.inflightAuthPromise = null;
+        this.failureCooldownUntil = 0;
+        this.lastCooldownLogTime = 0;
         process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
         this.client = axios_default.create({
-          timeout: 15e3,
+          timeout: 1e4,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*"
           },
           httpsAgent: new import_https3.default.Agent({
             rejectUnauthorized: false,
-            keepAlive: true
+            keepAlive: true,
+            maxSockets: 15,
+            maxFreeSockets: 5,
+            timeout: 1e4
           })
-          // Ignore self-signed certificates
+          // Ignore self-signed certificates with bounded connection pool
         });
+      }
+      invalidateCaches() {
+        this.cachedInbounds = null;
+        this.cachedInboundsTime = 0;
+        this.failureCooldownUntil = 0;
+      }
+      isNetworkTimeoutOrRefused(err) {
+        const code = String(err?.code || "");
+        const msg = String(err?.message || "");
+        return ["ECONNREFUSED", "ETIMEDOUT", "ECONNABORTED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(code) || msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("ETIMEDOUT");
       }
       async getAuthOptions(panelOverride) {
         const state = db.getState();
@@ -80197,6 +80344,8 @@ var init_xui = __esm({
           console.log("[X-UI] Panel connection configurations changed. Cleared cookie session cache.");
           this.cookie = "";
           this.workingApiPrefix = "";
+          this.lastLoggedApiKeyBaseUrl = "";
+          this.invalidateCaches();
           this.lastPanelUrl = panel.url || "";
           this.lastPanelUser = panel.username || "";
           this.lastPanelPass = panel.password || "";
@@ -80210,13 +80359,15 @@ var init_xui = __esm({
         const commonSuffixes = ["/panel", "/api", "/panel/api"];
         for (const suffix of commonSuffixes) {
           if (baseURL.toLowerCase().endsWith(suffix)) {
-            console.log(`[X-UI] Normalizing URL: removed trailing ${suffix} from ${baseURL}`);
             baseURL = baseURL.slice(0, -suffix.length);
           }
         }
         if (hasApiKey) {
           const apiKey = panel.apiKey.trim();
-          console.log(`[X-UI] Authenticating using API Key with baseURL: ${baseURL}`);
+          if (this.lastLoggedApiKeyBaseUrl !== baseURL) {
+            this.lastLoggedApiKeyBaseUrl = baseURL;
+            console.log(`[X-UI] Authenticating using API Key with baseURL: ${baseURL}`);
+          }
           return {
             baseURL,
             headers: {
@@ -80230,51 +80381,71 @@ var init_xui = __esm({
           };
         }
         if (!this.cookie) {
-          console.log(`[X-UI] No session cookie. Trying login credentials at: ${baseURL}`);
-          const loginPaths = ["/login", "/panel/login"];
-          let loginSuccess = false;
-          let lastLoginError = "";
-          for (const loginPath of loginPaths) {
+          if (this.inflightAuthPromise) {
+            return this.inflightAuthPromise;
+          }
+          this.inflightAuthPromise = (async () => {
             try {
-              console.log(`[X-UI Attempt] Login probe: ${baseURL}${loginPath}`);
-              let res = await this.client.post(`${baseURL}${loginPath}`, {
-                username: panel.username,
-                password: panel.password
-              }, {
-                headers: { "Content-Type": "application/json" },
-                validateStatus: () => true
-              });
-              if (!res.data?.success) {
-                const params = new URLSearchParams();
-                params.append("username", panel.username || "");
-                params.append("password", panel.password || "");
-                res = await this.client.post(`${baseURL}${loginPath}`, params, {
-                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                  validateStatus: () => true
-                });
-              }
-              if (res.data?.success) {
-                loginSuccess = true;
-                const keys = Object.keys(res.headers);
-                const cookieKey = keys.find((k) => k.toLowerCase() === "set-cookie");
-                const cookiesHeader = cookieKey ? res.headers[cookieKey] : void 0;
-                if (cookiesHeader) {
-                  const cookies = Array.isArray(cookiesHeader) ? cookiesHeader : [cookiesHeader];
-                  this.cookie = cookies.map((c) => c.split(";")[0]).join("; ");
-                  console.log(`[X-UI Success] Logged in with session cookie via ${loginPath}`);
-                } else {
-                  console.log(`[X-UI Success] Logged in via ${loginPath} but no set-cookie header found.`);
+              console.log(`[X-UI] No session cookie. Trying login credentials at: ${baseURL}`);
+              const loginPaths = ["/login", "/panel/login"];
+              let loginSuccess = false;
+              let lastLoginError = "";
+              for (const loginPath of loginPaths) {
+                try {
+                  let res = await this.client.post(`${baseURL}${loginPath}`, {
+                    username: panel.username,
+                    password: panel.password
+                  }, {
+                    headers: { "Content-Type": "application/json" },
+                    validateStatus: () => true,
+                    timeout: 6e3
+                  });
+                  if (!res.data?.success) {
+                    const params = new URLSearchParams();
+                    params.append("username", panel.username || "");
+                    params.append("password", panel.password || "");
+                    res = await this.client.post(`${baseURL}${loginPath}`, params, {
+                      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                      validateStatus: () => true,
+                      timeout: 6e3
+                    });
+                  }
+                  if (res.data?.success) {
+                    loginSuccess = true;
+                    const keys = Object.keys(res.headers);
+                    const cookieKey = keys.find((k) => k.toLowerCase() === "set-cookie");
+                    const cookiesHeader = cookieKey ? res.headers[cookieKey] : void 0;
+                    if (cookiesHeader) {
+                      const cookies = Array.isArray(cookiesHeader) ? cookiesHeader : [cookiesHeader];
+                      this.cookie = cookies.map((c) => c.split(";")[0]).join("; ");
+                      console.log(`[X-UI Success] Logged in with session cookie via ${loginPath}`);
+                    }
+                    break;
+                  }
+                  lastLoginError = res.data?.msg || "\u0646\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u06CC \u06CC\u0627 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0627\u0634\u062A\u0628\u0627\u0647 \u0627\u0633\u062A.";
+                } catch (e) {
+                  lastLoginError = e.message;
+                  if (this.isNetworkTimeoutOrRefused(e)) {
+                    this.failureCooldownUntil = Date.now() + 25e3;
+                    break;
+                  }
                 }
-                break;
               }
-              lastLoginError = res.data?.msg || "\u0646\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u06CC \u06CC\u0627 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0627\u0634\u062A\u0628\u0627\u0647 \u0627\u0633\u062A.";
-            } catch (e) {
-              lastLoginError = e.message;
+              if (!loginSuccess) {
+                throw new Error(lastLoginError || "\u062E\u0637\u0627 \u062F\u0631 \u0648\u0631\u0648\u062F \u0628\u0647 \u067E\u0646\u0644. \u0644\u0637\u0641\u0627 \u0622\u062F\u0631\u0633 \u0648 \u0645\u0634\u062E\u0635\u0627\u062A \u0631\u0627 \u0628\u0631\u0631\u0633\u06CC \u06A9\u0646\u06CC\u062F.");
+              }
+              return {
+                baseURL,
+                headers: {
+                  "Cookie": this.cookie,
+                  "Accept": "application/json, text/plain, */*"
+                }
+              };
+            } finally {
+              this.inflightAuthPromise = null;
             }
-          }
-          if (!loginSuccess) {
-            throw new Error(lastLoginError || "\u062E\u0637\u0627 \u062F\u0631 \u0648\u0631\u0648\u062F \u0628\u0647 \u067E\u0646\u0644. \u0644\u0637\u0641\u0627 \u0622\u062F\u0631\u0633 \u0648 \u0645\u0634\u062E\u0635\u0627\u062A \u0631\u0627 \u0628\u0631\u0631\u0633\u06CC \u06A9\u0646\u06CC\u062F.");
-          }
+          })();
+          return this.inflightAuthPromise;
         }
         return {
           baseURL,
@@ -80340,6 +80511,7 @@ var init_xui = __esm({
         }
       }
       async testXuiDirect(panelOverride) {
+        this.invalidateCaches();
         try {
           const opts = await this.getAuthOptions(panelOverride);
           const paths = [
@@ -80380,53 +80552,99 @@ var init_xui = __esm({
           return { success: false, message: e.message };
         }
       }
-      async getXuiInboundsDirect() {
-        try {
-          const state = db.getState();
-          const panel = (state.panel?.panelType !== "rebecca" ? state.panel : {}) || {};
-          const hasApiKey = panel.apiKey && panel.apiKey.trim() !== "";
-          const hasUserPass = panel.username && panel.username.trim() !== "" && (panel.password && panel.password.trim() !== "");
-          if (!panel.url || !hasApiKey && !hasUserPass) {
-            return [];
-          }
-          const opts = await this.getAuthOptions();
-          const paths = [
-            "/panel/api/inbounds/list",
-            "/api/inbounds/list",
-            "/xui/api/inbounds/list",
-            "/panel/inbounds/list",
-            "/xui/api/inbound/list",
-            "/api/inbound/list",
-            "/api/inbounds",
-            "/api/v1/inbounds"
-          ];
-          for (const path5 of paths) {
-            try {
-              const res = await this.client.get(`${opts.baseURL}${path5}`, {
-                headers: opts.headers,
-                validateStatus: () => true,
-                timeout: 8e3
-              });
-              if (res.status === 200 && res.data) {
-                const data = res.data;
-                const items = Array.isArray(data) ? data : data.obj || data.data || data.items || data.inbounds || data.result;
-                if (Array.isArray(items) && items.length > 0) {
-                  const idx = path5.indexOf("/inbounds");
-                  if (idx !== -1) {
-                    this.workingApiPrefix = path5.substring(0, idx);
-                    console.log(`[X-UI] Successfully fetched inbounds. Cached working API prefix: ${this.workingApiPrefix}`);
+      async getXuiInboundsDirect(forceRefresh = false) {
+        const now = Date.now();
+        if (!forceRefresh && this.cachedInbounds && now - this.cachedInboundsTime < 3e4) {
+          return this.cachedInbounds;
+        }
+        if (!forceRefresh && now < this.failureCooldownUntil) {
+          return this.cachedInbounds || [];
+        }
+        if (this.inflightInboundsPromise) {
+          return this.inflightInboundsPromise;
+        }
+        this.inflightInboundsPromise = (async () => {
+          try {
+            const state = db.getState();
+            const panel = (state.panel?.panelType !== "rebecca" ? state.panel : {}) || {};
+            const hasApiKey = panel.apiKey && panel.apiKey.trim() !== "";
+            const hasUserPass = panel.username && panel.username.trim() !== "" && (panel.password && panel.password.trim() !== "");
+            if (!panel.url || !hasApiKey && !hasUserPass) {
+              return [];
+            }
+            const opts = await this.getAuthOptions();
+            const defaultPaths = [
+              "/panel/api/inbounds/list",
+              "/api/inbounds/list",
+              "/xui/api/inbounds/list",
+              "/panel/inbounds/list",
+              "/xui/api/inbound/list",
+              "/api/inbound/list",
+              "/api/inbounds",
+              "/api/v1/inbounds"
+            ];
+            const prioritizedPaths = this.workingApiPrefix ? [
+              `${this.workingApiPrefix}/inbounds/list`,
+              `${this.workingApiPrefix}/inbound/list`,
+              `${this.workingApiPrefix}/inbounds`,
+              ...defaultPaths
+            ] : defaultPaths;
+            const paths = Array.from(new Set(prioritizedPaths));
+            const deadline = Date.now() + 9e3;
+            let networkFailed = false;
+            for (const p of paths) {
+              if (Date.now() >= deadline) {
+                networkFailed = true;
+                break;
+              }
+              try {
+                const res = await this.client.get(`${opts.baseURL}${p}`, {
+                  headers: opts.headers,
+                  validateStatus: () => true,
+                  timeout: 4500
+                });
+                if (res.status === 200 && res.data) {
+                  const data = res.data;
+                  const items = Array.isArray(data) ? data : data.obj || data.data || data.items || data.inbounds || data.result;
+                  if (Array.isArray(items) && items.length > 0) {
+                    const idx = p.indexOf("/inbounds");
+                    if (idx !== -1) {
+                      this.workingApiPrefix = p.substring(0, idx);
+                    }
+                    this.cachedInbounds = items;
+                    this.cachedInboundsTime = Date.now();
+                    this.failureCooldownUntil = 0;
+                    return items;
                   }
-                  return items;
+                } else if (res.status === 401 || res.status === 403) {
+                  this.cookie = "";
+                }
+              } catch (e) {
+                if (this.isNetworkTimeoutOrRefused(e)) {
+                  networkFailed = true;
+                  break;
                 }
               }
-            } catch (e) {
             }
+            if (networkFailed) {
+              this.failureCooldownUntil = Date.now() + 3e4;
+              if (Date.now() - this.lastCooldownLogTime > 6e4) {
+                this.lastCooldownLogTime = Date.now();
+                console.warn(`[X-UI] Panel unreachable/timeout at ${opts.baseURL}. Pausing retries for 30s to keep server lightweight.`);
+              }
+            }
+            return this.cachedInbounds || [];
+          } catch (e) {
+            this.cookie = "";
+            if (this.isNetworkTimeoutOrRefused(e)) {
+              this.failureCooldownUntil = Date.now() + 3e4;
+            }
+            return this.cachedInbounds || [];
+          } finally {
+            this.inflightInboundsPromise = null;
           }
-          return [];
-        } catch (e) {
-          this.cookie = "";
-          return [];
-        }
+        })();
+        return this.inflightInboundsPromise;
       }
       async getInbounds() {
         try {
@@ -81514,17 +81732,29 @@ var init_mrocean = __esm({
         this.lastPanelUser = "";
         this.lastPanelPass = "";
         this.isAuthenticating = false;
+        this.cachedDashboard = null;
+        this.cachedDashboardTime = 0;
+        this.inflightDashboardPromise = null;
+        this.failureCooldownUntil = 0;
         this.client = axios_default.create({
-          timeout: 15e3,
+          timeout: 1e4,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*"
           },
           httpsAgent: new import_https4.default.Agent({
             rejectUnauthorized: false,
-            keepAlive: true
+            keepAlive: true,
+            maxSockets: 15,
+            maxFreeSockets: 5,
+            timeout: 1e4
           })
         });
+      }
+      isNetworkTimeoutOrRefused(err) {
+        const code = String(err?.code || "");
+        const msg = String(err?.message || "");
+        return ["ECONNREFUSED", "ETIMEDOUT", "ECONNABORTED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(code) || msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("ETIMEDOUT");
       }
       formatBaseUrl(rawUrl) {
         if (!rawUrl) return "https://panel.mrocean.ir";
@@ -81682,35 +81912,72 @@ var init_mrocean = __esm({
           this.isAuthenticating = false;
         }
       }
-      async getDashboard(overrideConfig) {
-        const auth = await this.authenticate(overrideConfig);
-        const dashRes = await this.client.get(`${auth.apiBase}`, {
-          headers: {
-            "Cookie": auth.cookie,
-            "Accept": "application/json"
-          },
-          validateStatus: () => true
-        });
-        if (dashRes.status === 401) {
-          console.log("[MrOcean] Session expired on dashboard fetch. Re-authenticating...");
-          const reAuth = await this.authenticate(overrideConfig, true);
-          const retryRes = await this.client.get(`${reAuth.apiBase}`, {
-            headers: {
-              "Cookie": reAuth.cookie,
-              "Accept": "application/json"
+      async getDashboard(overrideConfig, forceRefresh = false) {
+        const now = Date.now();
+        if (!overrideConfig && !forceRefresh && this.cachedDashboard && now - this.cachedDashboardTime < 2e4) {
+          return this.cachedDashboard;
+        }
+        if (!overrideConfig && !forceRefresh && now < this.failureCooldownUntil && this.cachedDashboard) {
+          return this.cachedDashboard;
+        }
+        if (!overrideConfig && !forceRefresh && this.inflightDashboardPromise) {
+          return this.inflightDashboardPromise;
+        }
+        const runFetch = async () => {
+          try {
+            const auth = await this.authenticate(overrideConfig);
+            const dashRes = await this.client.get(`${auth.apiBase}`, {
+              headers: {
+                "Cookie": auth.cookie,
+                "Accept": "application/json"
+              },
+              validateStatus: () => true,
+              timeout: 8e3
+            });
+            let finalData;
+            if (dashRes.status === 401) {
+              console.log("[MrOcean] Session expired on dashboard fetch. Re-authenticating...");
+              const reAuth = await this.authenticate(overrideConfig, true);
+              const retryRes = await this.client.get(`${reAuth.apiBase}`, {
+                headers: {
+                  "Cookie": reAuth.cookie,
+                  "Accept": "application/json"
+                },
+                timeout: 8e3
+              });
+              finalData = retryRes.data?.dashboard || retryRes.data;
+            } else if (dashRes.status !== 200) {
+              throw new Error(`\u062E\u0637\u0627 \u062F\u0631 \u0628\u0627\u0632\u062E\u0648\u0627\u0646\u06CC \u062F\u0627\u0634\u0628\u0648\u0631\u062F \u0645\u0633\u062A\u0631 \u0627\u0648\u0634\u0646: \u06A9\u062F ${dashRes.status}`);
+            } else {
+              finalData = dashRes.data?.dashboard || dashRes.data;
             }
+            if (!overrideConfig && finalData) {
+              this.cachedDashboard = finalData;
+              this.cachedDashboardTime = Date.now();
+              this.failureCooldownUntil = 0;
+            }
+            return finalData;
+          } catch (err) {
+            if (this.isNetworkTimeoutOrRefused(err)) {
+              this.failureCooldownUntil = Date.now() + 25e3;
+            }
+            throw err;
+          }
+        };
+        if (!overrideConfig && !forceRefresh) {
+          this.inflightDashboardPromise = runFetch().finally(() => {
+            this.inflightDashboardPromise = null;
           });
-          return retryRes.data?.dashboard || retryRes.data;
+          return this.inflightDashboardPromise;
         }
-        if (dashRes.status !== 200) {
-          throw new Error(`\u062E\u0637\u0627 \u062F\u0631 \u0628\u0627\u0632\u062E\u0648\u0627\u0646\u06CC \u062F\u0627\u0634\u0628\u0648\u0631\u062F \u0645\u0633\u062A\u0631 \u0627\u0648\u0634\u0646: \u06A9\u062F ${dashRes.status}`);
-        }
-        return dashRes.data?.dashboard || dashRes.data;
+        return runFetch();
       }
       async testConnection(overrideConfig) {
+        this.failureCooldownUntil = 0;
+        this.cachedDashboard = null;
         try {
           const auth = await this.authenticate(overrideConfig, true);
-          const dashboard = await this.getDashboard(overrideConfig);
+          const dashboard = await this.getDashboard(overrideConfig, true);
           const title = dashboard.title || `\u0633\u0631\u0648\u06CC\u0633 \u0646\u0645\u0627\u06CC\u0646\u062F\u06AF\u06CC \u0634\u0646\u0627\u0633\u0647 ${dashboard.serviceId || auth.serviceId}`;
           const totalUsers = dashboard.usersTotal !== void 0 ? dashboard.usersTotal : dashboard.users?.length || 0;
           const limitUsers = dashboard.usersLimit || 50;
@@ -81935,6 +82202,9 @@ var init_mrocean = __esm({
           if (!state.mroceanPanel?.url && !state.mroceanPanel?.username) {
             return [];
           }
+          if (Date.now() < this.failureCooldownUntil) {
+            return [];
+          }
           const dashboard = await this.getDashboard();
           if (!dashboard || !Array.isArray(dashboard.users)) {
             return [];
@@ -82033,18 +82303,31 @@ var init_panel4 = __esm({
         this.lastPanelUser = "";
         this.lastPanelPass = "";
         this.lastPanelApiKey = "";
+        this.inflightAuthPromise = null;
+        this.cachedInbounds = null;
+        this.cachedInboundsTime = 0;
+        this.inflightInboundsPromise = null;
+        this.failureCooldownUntil = 0;
         process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
         this.client = axios_default.create({
-          timeout: 15e3,
+          timeout: 1e4,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*"
           },
           httpsAgent: new import_https5.default.Agent({
             rejectUnauthorized: false,
-            keepAlive: true
+            keepAlive: true,
+            maxSockets: 15,
+            maxFreeSockets: 5,
+            timeout: 1e4
           })
         });
+      }
+      isNetworkTimeoutOrRefused(err) {
+        const code = String(err?.code || "");
+        const msg = String(err?.message || "");
+        return ["ECONNREFUSED", "ETIMEDOUT", "ECONNABORTED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(code) || msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("ETIMEDOUT");
       }
       sanitizeUsername(rawInput) {
         let clean = String(rawInput || "").trim().replace(/[۰-۹]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1728)).replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1632)).toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
@@ -82170,73 +82453,100 @@ var init_panel4 = __esm({
         if (hasUserPass) {
           const isExpired = !this.cookie || this.tokenExpiryTime > 0 && now >= this.tokenExpiryTime;
           if (forceRefresh || isExpired) {
-            this.cookie = "";
-            const loginPaths = ["/api/admins/token", "/login", "/panel/login"];
-            let loginSuccess = false;
-            let lastLoginError = "";
-            for (const path5 of loginPaths) {
-              try {
-                const params = new URLSearchParams();
-                params.append("grant_type", "password");
-                params.append("username", normUser);
-                params.append("password", normPass);
-                let res = await this.client.post(`${baseURL}${path5}`, params, {
-                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                  validateStatus: () => true,
-                  timeout: 1e4
-                });
-                if (res.data?.token || res.data?.access_token) {
-                  const tok = res.data.token || res.data.access_token;
-                  this.cookie = tok;
-                  this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
-                  if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
-                  loginSuccess = true;
-                  break;
-                }
-                res = await this.client.post(`${baseURL}${path5}`, {
-                  username: normUser,
-                  password: normPass
-                }, {
-                  headers: { "Content-Type": "application/json" },
-                  validateStatus: () => true,
-                  timeout: 1e4
-                });
-                if (res.data?.token || res.data?.access_token) {
-                  const tok = res.data.token || res.data.access_token;
-                  this.cookie = tok;
-                  this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
-                  if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
-                  loginSuccess = true;
-                  break;
-                } else if (res.data?.success || res.status === 200) {
-                  const rawCookies = res.headers["set-cookie"];
-                  if (rawCookies && rawCookies.length > 0) {
-                    this.cookie = rawCookies.map((c) => c.split(";")[0]).join("; ");
-                    this.tokenExpiryTime = Date.now() + 12 * 3600 * 1e3;
+            if (!forceRefresh && this.inflightAuthPromise) {
+              return this.inflightAuthPromise;
+            }
+            const doLogin = async () => {
+              this.cookie = "";
+              const loginPaths = ["/api/admins/token", "/login", "/panel/login"];
+              let loginSuccess = false;
+              let lastLoginError = "";
+              for (const path5 of loginPaths) {
+                try {
+                  const params = new URLSearchParams();
+                  params.append("grant_type", "password");
+                  params.append("username", normUser);
+                  params.append("password", normPass);
+                  let res = await this.client.post(`${baseURL}${path5}`, params, {
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                    validateStatus: () => true,
+                    timeout: 6e3
+                  });
+                  if (res.data?.token || res.data?.access_token) {
+                    const tok = res.data.token || res.data.access_token;
+                    this.cookie = tok;
+                    this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
+                    if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
                     loginSuccess = true;
                     break;
                   }
+                  res = await this.client.post(`${baseURL}${path5}`, {
+                    username: normUser,
+                    password: normPass
+                  }, {
+                    headers: { "Content-Type": "application/json" },
+                    validateStatus: () => true,
+                    timeout: 6e3
+                  });
+                  if (res.data?.token || res.data?.access_token) {
+                    const tok = res.data.token || res.data.access_token;
+                    this.cookie = tok;
+                    this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
+                    if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
+                    loginSuccess = true;
+                    break;
+                  } else if (res.data?.success || res.status === 200) {
+                    const rawCookies = res.headers["set-cookie"];
+                    if (rawCookies && rawCookies.length > 0) {
+                      this.cookie = rawCookies.map((c) => c.split(";")[0]).join("; ");
+                      this.tokenExpiryTime = Date.now() + 12 * 3600 * 1e3;
+                      loginSuccess = true;
+                      break;
+                    }
+                  }
+                } catch (e) {
+                  lastLoginError = e.message;
+                  if (this.isNetworkTimeoutOrRefused(e)) {
+                    this.failureCooldownUntil = Date.now() + 25e3;
+                    break;
+                  }
                 }
-              } catch (e) {
-                lastLoginError = e.message;
               }
-            }
-            if (!loginSuccess && !this.cookie) {
-              const fallbackKey = normApiKey || this.discoveredApiKey;
-              if (fallbackKey) {
-                const isJwt2 = fallbackKey.includes(".");
-                const headers2 = {
-                  "Accept": "application/json"
-                };
-                if (isJwt2) {
-                  headers2["Authorization"] = fallbackKey.startsWith("Bearer ") ? fallbackKey : `Bearer ${fallbackKey}`;
-                } else {
-                  headers2["X-API-Key"] = fallbackKey;
+              if (!loginSuccess && !this.cookie) {
+                const fallbackKey = normApiKey || this.discoveredApiKey;
+                if (fallbackKey) {
+                  const isJwt3 = fallbackKey.includes(".");
+                  const headers3 = {
+                    "Accept": "application/json"
+                  };
+                  if (isJwt3) {
+                    headers3["Authorization"] = fallbackKey.startsWith("Bearer ") ? fallbackKey : `Bearer ${fallbackKey}`;
+                  } else {
+                    headers3["X-API-Key"] = fallbackKey;
+                  }
+                  return { baseURL, headers: headers3 };
                 }
-                return { baseURL, headers: headers2 };
+                throw new Error(`\u0639\u062F\u0645 \u0645\u0648\u0641\u0642\u06CC\u062A \u062F\u0631 \u0648\u0631\u0648\u062F \u0628\u0647 \u067E\u0646\u0644 \u06F4. \u0644\u0637\u0641\u0627\u064B \u0622\u062F\u0631\u0633\u060C \u0646\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0648 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0631\u0627 \u0628\u0631\u0631\u0633\u06CC \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F: ${lastLoginError}`);
               }
-              throw new Error(`\u0639\u062F\u0645 \u0645\u0648\u0641\u0642\u06CC\u062A \u062F\u0631 \u0648\u0631\u0648\u062F \u0628\u0647 \u067E\u0646\u0644 \u06F4. \u0644\u0637\u0641\u0627\u064B \u0622\u062F\u0631\u0633\u060C \u0646\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u06CC \u0648 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0631\u0627 \u0628\u0631\u0631\u0633\u06CC \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F: ${lastLoginError}`);
+              const isJwt2 = this.cookie.includes(".") || this.cookie.startsWith("Bearer ");
+              const authHeader2 = this.cookie.startsWith("Bearer ") ? this.cookie : this.cookie.includes(".") ? `Bearer ${this.cookie}` : this.cookie;
+              const headers2 = {
+                "Accept": "application/json"
+              };
+              if (isJwt2) {
+                headers2["Authorization"] = authHeader2;
+              } else {
+                headers2["Cookie"] = this.cookie;
+              }
+              return { baseURL, headers: headers2 };
+            };
+            if (!forceRefresh) {
+              this.inflightAuthPromise = doLogin().finally(() => {
+                this.inflightAuthPromise = null;
+              });
+              return this.inflightAuthPromise;
             }
+            return doLogin();
           }
           const isJwt = this.cookie.includes(".") || this.cookie.startsWith("Bearer ");
           const authHeader = this.cookie.startsWith("Bearer ") ? this.cookie : this.cookie.includes(".") ? `Bearer ${this.cookie}` : this.cookie;
@@ -82296,6 +82606,8 @@ var init_panel4 = __esm({
         return res;
       }
       async testConnection(panelOverride) {
+        this.failureCooldownUntil = 0;
+        this.cachedInbounds = null;
         try {
           const inbounds = await this.getInbounds(panelOverride, true);
           if (!inbounds || inbounds.length === 0) {
@@ -82318,128 +82630,156 @@ var init_panel4 = __esm({
         }
       }
       async getInbounds(panelOverride, forceRefreshAuth = false) {
-        try {
-          const state = db.getState();
-          const savedPanel = state.panel4 || {};
-          const panel = panelOverride ? { ...savedPanel, ...panelOverride } : savedPanel;
-          const urlToUse = panel.url || "https://app.solidlayerco.com";
-          if (!urlToUse || panel.enabled === false) return [];
-          if (urlToUse.includes("test-") || urlToUse.includes("example.com")) return [];
-          if (forceRefreshAuth) {
-            await this.getAuthOptions(panelOverride, true);
-          }
-          const inboundsList = [];
-          const servicePaths = ["/api/services", "/api/admins/current"];
-          for (const sp of servicePaths) {
-            try {
-              const res = await this.requestWithRetry((auth) => ({
-                method: "GET",
-                url: `${auth.baseURL}${sp}`,
-                headers: auth.headers,
-                timeout: 8e3
-              }), panelOverride);
-              if (res.status === 200 && res.data) {
-                const data = res.data;
-                if (sp === "/api/admins/current") {
-                  this.captureAdminMetadata(data);
-                }
-                const items = Array.isArray(data) ? data : data.items || data.services || data.data || data.obj || data.result;
-                if (Array.isArray(items) && items.length > 0) {
-                  for (const s of items) {
-                    const id = s.id !== void 0 ? s.id : s.service_id || s.tag || s.name;
-                    const remark = s.name || s.title || s.remark || s.tag || `Service #${id}`;
-                    if (id !== void 0 && !inboundsList.some((i) => String(i.id) === String(id))) {
-                      inboundsList.push({
-                        id,
-                        remark,
-                        protocol: s.protocol || "Service",
-                        enable: s.enable !== false,
-                        ...s
-                      });
+        const now = Date.now();
+        if (!panelOverride && !forceRefreshAuth && this.cachedInbounds && now - this.cachedInboundsTime < 25e3) {
+          return this.cachedInbounds;
+        }
+        if (!panelOverride && !forceRefreshAuth && now < this.failureCooldownUntil) {
+          return this.cachedInbounds || [];
+        }
+        if (!panelOverride && !forceRefreshAuth && this.inflightInboundsPromise) {
+          return this.inflightInboundsPromise;
+        }
+        const runFetch = async () => {
+          try {
+            const state = db.getState();
+            const savedPanel = state.panel4 || {};
+            const panel = panelOverride ? { ...savedPanel, ...panelOverride } : savedPanel;
+            const urlToUse = panel.url || "https://app.solidlayerco.com";
+            if (!urlToUse || panel.enabled === false) return [];
+            if (urlToUse.includes("test-") || urlToUse.includes("example.com")) return [];
+            if (forceRefreshAuth) {
+              await this.getAuthOptions(panelOverride, true);
+            }
+            const inboundsList = [];
+            const servicePaths = ["/api/services", "/api/admins/current"];
+            for (const sp of servicePaths) {
+              try {
+                const res = await this.requestWithRetry((auth) => ({
+                  method: "GET",
+                  url: `${auth.baseURL}${sp}`,
+                  headers: auth.headers,
+                  timeout: 8e3
+                }), panelOverride);
+                if (res.status === 200 && res.data) {
+                  const data = res.data;
+                  if (sp === "/api/admins/current") {
+                    this.captureAdminMetadata(data);
+                  }
+                  const items = Array.isArray(data) ? data : data.items || data.services || data.data || data.obj || data.result;
+                  if (Array.isArray(items) && items.length > 0) {
+                    for (const s of items) {
+                      const id = s.id !== void 0 ? s.id : s.service_id || s.tag || s.name;
+                      const remark = s.name || s.title || s.remark || s.tag || `Service #${id}`;
+                      if (id !== void 0 && !inboundsList.some((i) => String(i.id) === String(id))) {
+                        inboundsList.push({
+                          id,
+                          remark,
+                          protocol: s.protocol || "Service",
+                          enable: s.enable !== false,
+                          ...s
+                        });
+                      }
+                    }
+                    if (inboundsList.length > 0) {
+                      this.cachedServices = inboundsList;
+                      return inboundsList;
                     }
                   }
-                  if (inboundsList.length > 0) {
-                    this.cachedServices = inboundsList;
-                    return inboundsList;
-                  }
                 }
+              } catch (e) {
               }
-            } catch (e) {
             }
-          }
-          if (this.cachedServices.length > 0) {
-            return this.cachedServices;
-          }
-          const prefixes = this.workingApiPrefix ? [this.workingApiPrefix] : [
-            "/panel/api/inbounds",
-            "/api/inbounds",
-            "/inbounds"
-          ];
-          for (const prefix of prefixes) {
-            try {
-              let res = await this.requestWithRetry((auth) => ({
-                method: "GET",
-                url: `${auth.baseURL}${prefix}/list`,
-                headers: auth.headers,
-                timeout: 5e3
-              }), panelOverride);
-              if (res.status !== 200 || !res.data || typeof res.data !== "object") {
-                res = await this.requestWithRetry((auth) => ({
+            if (this.cachedServices.length > 0) {
+              return this.cachedServices;
+            }
+            const prefixes = this.workingApiPrefix ? [this.workingApiPrefix] : [
+              "/panel/api/inbounds",
+              "/api/inbounds",
+              "/inbounds"
+            ];
+            for (const prefix of prefixes) {
+              try {
+                let res = await this.requestWithRetry((auth) => ({
                   method: "GET",
-                  url: `${auth.baseURL}${prefix}`,
+                  url: `${auth.baseURL}${prefix}/list`,
                   headers: auth.headers,
                   timeout: 5e3
                 }), panelOverride);
-              }
-              if (res.status === 200 && res.data && typeof res.data === "object") {
-                const data = res.data;
-                const items = Array.isArray(data) ? data : data.obj || data.data || data.items || data.inbounds || data.hosts || data.nodes || data.services || data.result;
-                if (Array.isArray(items) && items.length > 0) {
-                  this.workingApiPrefix = prefix;
-                  for (const ib of items) {
-                    const id = ib.id !== void 0 ? ib.id : ib.tag;
-                    if (id !== void 0 && !inboundsList.some((i) => String(i.id) === String(id))) {
-                      inboundsList.push({
-                        id,
-                        remark: ib.remark || ib.tag || ib.name || `Inbound ${id}`,
-                        protocol: ib.protocol || "vless",
-                        ...ib
-                      });
-                    }
-                  }
-                  if (inboundsList.length > 0) return inboundsList;
+                if (res.status !== 200 || !res.data || typeof res.data !== "object") {
+                  res = await this.requestWithRetry((auth) => ({
+                    method: "GET",
+                    url: `${auth.baseURL}${prefix}`,
+                    headers: auth.headers,
+                    timeout: 5e3
+                  }), panelOverride);
                 }
+                if (res.status === 200 && res.data && typeof res.data === "object") {
+                  const data = res.data;
+                  const items = Array.isArray(data) ? data : data.obj || data.data || data.items || data.inbounds || data.hosts || data.nodes || data.services || data.result;
+                  if (Array.isArray(items) && items.length > 0) {
+                    this.workingApiPrefix = prefix;
+                    for (const ib of items) {
+                      const id = ib.id !== void 0 ? ib.id : ib.tag;
+                      if (id !== void 0 && !inboundsList.some((i) => String(i.id) === String(id))) {
+                        inboundsList.push({
+                          id,
+                          remark: ib.remark || ib.tag || ib.name || `Inbound ${id}`,
+                          protocol: ib.protocol || "vless",
+                          ...ib
+                        });
+                      }
+                    }
+                    if (inboundsList.length > 0) return inboundsList;
+                  }
+                }
+              } catch (err) {
               }
-            } catch (err) {
             }
+            if (panel.inboundIds && Array.isArray(panel.inboundIds) && panel.inboundIds.length > 0) {
+              return panel.inboundIds.map((id) => ({
+                id: Number(id) || id,
+                remark: `Service #${id}`,
+                name: `Service #${id}`,
+                protocol: "Service",
+                enable: true
+              }));
+            }
+            if (panel.inboundId !== void 0 && panel.inboundId !== null && String(panel.inboundId) !== "") {
+              return [{
+                id: Number(panel.inboundId) || panel.inboundId,
+                remark: `Service #${panel.inboundId}`,
+                name: `Service #${panel.inboundId}`,
+                protocol: "Service",
+                enable: true
+              }];
+            }
+            if (urlToUse.includes("solidlayerco.com")) {
+              return [{ id: 4, remark: "Full", name: "Full", protocol: "Service", enable: true }];
+            }
+            if (inboundsList.length > 0 && !panelOverride) {
+              this.cachedInbounds = inboundsList;
+              this.cachedInboundsTime = Date.now();
+              this.failureCooldownUntil = 0;
+            }
+            return inboundsList;
+          } catch (e) {
+            console.warn("[Panel4] getInbounds note:", e.message);
+            if (this.isNetworkTimeoutOrRefused(e)) {
+              this.failureCooldownUntil = Date.now() + 25e3;
+            }
+            if (this.cachedInbounds && this.cachedInbounds.length > 0) return this.cachedInbounds;
+            if (this.cachedServices.length > 0) return this.cachedServices;
+            return [];
           }
-          if (panel.inboundIds && Array.isArray(panel.inboundIds) && panel.inboundIds.length > 0) {
-            return panel.inboundIds.map((id) => ({
-              id: Number(id) || id,
-              remark: `Service #${id}`,
-              name: `Service #${id}`,
-              protocol: "Service",
-              enable: true
-            }));
-          }
-          if (panel.inboundId !== void 0 && panel.inboundId !== null && String(panel.inboundId) !== "") {
-            return [{
-              id: Number(panel.inboundId) || panel.inboundId,
-              remark: `Service #${panel.inboundId}`,
-              name: `Service #${panel.inboundId}`,
-              protocol: "Service",
-              enable: true
-            }];
-          }
-          if (urlToUse.includes("solidlayerco.com")) {
-            return [{ id: 4, remark: "Full", name: "Full", protocol: "Service", enable: true }];
-          }
-          return inboundsList;
-        } catch (e) {
-          console.warn("[Panel4] getInbounds note:", e.message);
-          if (this.cachedServices.length > 0) return this.cachedServices;
-          return [];
+        };
+        if (!panelOverride && !forceRefreshAuth) {
+          this.inflightInboundsPromise = runFetch().finally(() => {
+            this.inflightInboundsPromise = null;
+          });
+          return this.inflightInboundsPromise;
         }
+        return runFetch();
       }
       /**
        * Fundamental client creation method supporting both positional and object options.
@@ -83235,9 +83575,12 @@ ${errDetails}`);
         this.trafficCache = null;
       }
       withTimeout(promise, ms, fallback) {
+        let timer;
         return Promise.race([
-          promise.catch(() => fallback),
-          new Promise((resolve) => setTimeout(() => resolve(fallback), ms))
+          promise.catch(() => fallback).finally(() => clearTimeout(timer)),
+          new Promise((resolve) => {
+            timer = setTimeout(() => resolve(fallback), ms);
+          })
         ]);
       }
       /**
@@ -84913,6 +85256,16 @@ var resellerBotManager_exports = {};
 __export(resellerBotManager_exports, {
   resellerBotManager: () => resellerBotManager
 });
+function withTimeoutSafe(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    timeout
+  ]);
+}
 function escapeHtml(text) {
   return (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
@@ -84992,8 +85345,77 @@ var init_resellerBotManager = __esm({
     ResellerBotManager = class {
       constructor() {
         this.activeBots = /* @__PURE__ */ new Map();
+        this.fallbackBots = /* @__PURE__ */ new Map();
         this.userSessionStates = /* @__PURE__ */ new Map();
         this.forceJoinCache = /* @__PURE__ */ new Map();
+        this.watchdogTimer = null;
+      }
+      getNonPollingBot(token) {
+        const clean = (token || "").trim();
+        if (!clean || !isValidTelegramBotToken(clean)) return null;
+        let cached = this.fallbackBots.get(clean);
+        if (!cached) {
+          if (this.fallbackBots.size > 50) {
+            this.fallbackBots.clear();
+          }
+          cached = new import_node_telegram_bot_api.default(clean, {
+            polling: false,
+            request: { forever: true, pool: { maxSockets: 5 }, timeout: 25e3 }
+          });
+          this.fallbackBots.set(clean, cached);
+        }
+        return cached;
+      }
+      ensureWatchdogRunning() {
+        if (this.watchdogTimer) return;
+        this.watchdogTimer = setInterval(async () => {
+          const now = Date.now();
+          for (const [k, ts] of this.forceJoinCache.entries()) {
+            if (now - ts > 5 * 60 * 1e3) {
+              this.forceJoinCache.delete(k);
+            }
+          }
+          if (this.userSessionStates.size > 1e3) {
+            const excess = this.userSessionStates.size - 800;
+            let i = 0;
+            for (const k of this.userSessionStates.keys()) {
+              this.userSessionStates.delete(k);
+              if (++i >= excess) break;
+            }
+          }
+          for (const [sellerChatId, rec] of this.activeBots.entries()) {
+            if (rec.watchdogRestarting) continue;
+            try {
+              const pObj = rec.bot?._polling;
+              const pollingActive = typeof rec.bot.isPolling === "function" ? rec.bot.isPolling() : Boolean(pObj?._lastRequest);
+              const lastActivity = Math.max(rec.lastPollingActivityAt, Number(pObj?._lastUpdate || 0));
+              const idleMs = now - lastActivity;
+              if (!pollingActive || rec.lastPollingAttemptAt > 0 && idleMs > 85e3) {
+                rec.watchdogRestarting = true;
+                console.warn(`[ResellerBot @${sellerChatId}] Watchdog recovering stalled polling (active=${pollingActive}, idle=${Math.round(idleMs / 1e3)}s)`);
+                try {
+                  if (pObj && typeof pObj.stop === "function") {
+                    await pObj.stop({ cancel: true, reason: "Reseller watchdog socket recovery" });
+                    if (pObj.options) pObj.options.interval = 400;
+                    await pObj.start({ restart: true });
+                  } else {
+                    await rec.bot.stopPolling({ cancel: true }).catch(() => {
+                    });
+                    await rec.bot.startPolling().catch(() => {
+                    });
+                  }
+                  rec.lastPollingAttemptAt = Date.now();
+                  rec.lastPollingActivityAt = Date.now();
+                  rec.consecutivePollingErrors = 0;
+                } finally {
+                  rec.watchdogRestarting = false;
+                }
+              }
+            } catch (err) {
+              rec.watchdogRestarting = false;
+            }
+          }
+        }, 40 * 1e3);
       }
       getEffectiveBotName(seller) {
         const botCfg = seller.sellerBot || {};
@@ -85015,10 +85437,11 @@ var init_resellerBotManager = __esm({
         return "\u0631\u0628\u0627\u062A \u0641\u0631\u0648\u0634\u06AF\u0627\u0647\u06CC";
       }
       /**
-       * Initialize all active reseller bots from database
+       * Initialize all active reseller bots from database (staggered to avoid startup bursts)
        */
       async initAllResellerBots() {
         console.log("[ResellerBotManager] Initializing all active reseller bots...");
+        this.ensureWatchdogRunning();
         const state = db.getState();
         const sellers = (state.users || []).filter((u) => {
           if (!u || !u.isSeller || !u.sellerBot || !u.sellerBot.botToken) return false;
@@ -85029,7 +85452,11 @@ var init_resellerBotManager = __esm({
           }
           return !!u.sellerBot.enabled;
         });
-        for (const seller of sellers) {
+        for (let i = 0; i < sellers.length; i++) {
+          const seller = sellers[i];
+          if (i > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
           try {
             await this.startResellerBot(seller.chatId);
           } catch (err) {
@@ -85068,25 +85495,53 @@ var init_resellerBotManager = __esm({
             message: "\u0627\u06CC\u0646 \u062A\u0648\u06A9\u0646 \u0642\u0628\u0644\u0627\u064B \u0628\u0631\u0627\u06CC \u0647\u0645\u06A9\u0627\u0631 \u062F\u06CC\u06AF\u0631\u06CC \u062B\u0628\u062A \u0634\u062F\u0647 \u0627\u0633\u062A. \u0644\u0637\u0641\u0627\u064B \u062A\u0648\u06A9\u0646 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0631\u0628\u0627\u062A \u062E\u0648\u062F\u062A\u0627\u0646 \u0631\u0627 \u0648\u0627\u0631\u062F \u0646\u0645\u0627\u06CC\u06CC\u062F."
           };
         }
+        this.ensureWatchdogRunning();
         let bot2 = null;
         try {
           bot2 = new import_node_telegram_bot_api.default(token, {
             polling: {
-              interval: 80,
+              interval: 400,
               autoStart: false,
               params: {
-                timeout: 25,
+                timeout: 20,
                 allowed_updates: ["message", "callback_query"]
               }
             },
             request: {
               forever: true,
-              pool: { maxSockets: 100 },
-              timeout: 3e4
+              pool: { maxSockets: 10 },
+              timeout: 45e3
             }
           });
           enhanceBotForSpeedAndColoredButtons(bot2);
           this.attachBotHandlers(bot2, sellerChatId);
+          const recInit = {
+            bot: bot2,
+            token,
+            username: (user.sellerBot?.botUsername || "").trim(),
+            botFirstName: (user.sellerBot?.botFirstName || "").trim(),
+            sellerChatId,
+            startedAt: Date.now(),
+            lastPollingAttemptAt: Date.now(),
+            lastPollingActivityAt: Date.now(),
+            consecutivePollingErrors: 0
+          };
+          this.activeBots.set(sellerChatId, recInit);
+          const pObj = bot2._polling;
+          if (pObj && typeof pObj._getUpdates === "function") {
+            const origGetUpdates = pObj._getUpdates.bind(pObj);
+            pObj._getUpdates = () => {
+              recInit.lastPollingAttemptAt = Date.now();
+              return origGetUpdates().then((res) => {
+                recInit.lastPollingActivityAt = Date.now();
+                if (recInit.consecutivePollingErrors > 0) {
+                  recInit.consecutivePollingErrors = 0;
+                  if (pObj.options) pObj.options.interval = 400;
+                }
+                return res;
+              });
+            };
+          }
           bot2.deleteWebHook({ drop_pending_updates: false }).catch(() => {
           });
           bot2.startPolling().catch((pollErr) => {
@@ -85146,19 +85601,18 @@ var init_resellerBotManager = __esm({
             }).catch(() => {
             });
           }
-          this.activeBots.set(sellerChatId, {
-            bot: bot2,
-            username: botUsername,
-            botFirstName,
-            sellerChatId,
-            startedAt: Date.now()
-          });
+          const currentRec = this.activeBots.get(sellerChatId);
+          if (currentRec && currentRec.bot === bot2) {
+            currentRec.username = botUsername;
+            currentRec.botFirstName = botFirstName;
+          }
           return {
             success: true,
             username: botUsername,
             message: botUsername ? `\u0631\u0628\u0627\u062A \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0634\u0645\u0627 (@${botUsername}) \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0631\u0648\u0634\u0646 \u0634\u062F \u0648 \u0647\u0645\u200C\u0627\u06A9\u0646\u0648\u0646 \u0622\u0646\u0644\u0627\u06CC\u0646 \u0627\u0633\u062A.` : "\u062A\u0646\u0638\u06CC\u0645\u0627\u062A \u0631\u0628\u0627\u062A \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0634\u0645\u0627 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F \u0648 \u0631\u0628\u0627\u062A \u062F\u0631 \u0648\u0636\u0639\u06CC\u062A \u0622\u0646\u0644\u0627\u06CC\u0646 \u0642\u0631\u0627\u0631 \u06AF\u0631\u0641\u062A."
           };
         } catch (err) {
+          this.activeBots.delete(sellerChatId);
           if (bot2) {
             try {
               bot2.removeAllListeners("message");
@@ -85167,7 +85621,8 @@ var init_resellerBotManager = __esm({
               });
               bot2.on("polling_error", () => {
               });
-              await bot2.stopPolling();
+              await bot2.stopPolling({ cancel: true }).catch(() => {
+              });
             } catch (e) {
             }
           }
@@ -85191,7 +85646,8 @@ var init_resellerBotManager = __esm({
             });
             record.bot.on("polling_error", () => {
             });
-            await record.bot.stopPolling();
+            await record.bot.stopPolling({ cancel: true }).catch(() => {
+            });
           } catch (e) {
           }
           return true;
@@ -85741,7 +86197,7 @@ var init_resellerBotManager = __esm({
               chId = "@" + chId;
             }
             try {
-              const member = await bot2.getChatMember(chId, buyerChatId);
+              const member = await withTimeoutSafe(bot2.getChatMember(chId, buyerChatId), 3500);
               if (["left", "kicked"].includes(member.status)) {
                 notJoined.push(ch);
               }
@@ -86554,14 +87010,22 @@ ${refLink}`
           });
         };
         bot2.on("polling_error", (error) => {
-          const errMsg = error?.message || String(error);
-          if (errMsg.includes("401") || errMsg.includes("404") || errMsg.includes("Unauthorized") || errMsg.includes("Not Found")) {
+          const rec = this.activeBots.get(sellerChatId);
+          if (rec) {
+            rec.lastPollingActivityAt = Date.now();
+          }
+          if (isConfirmedTelegramTokenRejected(error)) {
+            console.warn(`[ResellerBot @${sellerChatId}] Token confirmed invalid/revoked by Telegram (401). Stopping bot.`);
             this.stopResellerBot(sellerChatId).catch(() => {
             });
             return;
           }
-          if (errMsg.includes("409") || errMsg.includes("Conflict")) {
-            return;
+          if (rec) {
+            rec.consecutivePollingErrors++;
+            const pObj = bot2?._polling;
+            if (pObj && pObj.options) {
+              pObj.options.interval = Math.min(1e4, 600 * Math.pow(2, Math.min(4, rec.consecutivePollingErrors - 1)));
+            }
           }
         });
         bot2.on("error", () => {
@@ -89150,7 +89614,7 @@ ${fulfillRes.message}`,
           return { success: true, message: "\u0627\u06CC\u0646 \u0633\u0641\u0627\u0631\u0634 \u0642\u0628\u0644\u0627\u064B \u062A\u0627\u06CC\u06CC\u062F \u0648 \u0627\u0646\u062C\u0627\u0645 \u0634\u062F\u0647 \u0627\u0633\u062A.", subUrl: order.deliveredSubUrl };
         }
         const record = this.activeBots.get(sellerChatId);
-        const childBot = record?.bot || (seller.sellerBot?.botToken ? new import_node_telegram_bot_api.default(seller.sellerBot.botToken, { polling: false }) : null);
+        const childBot = record?.bot || this.getNonPollingBot(seller.sellerBot?.botToken);
         try {
           if (order.type === "deposit") {
             if (!seller.sellerBot.buyers) seller.sellerBot.buyers = [];
@@ -89430,16 +89894,10 @@ ${fulfillRes.message}`,
 \u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u062C\u062F\u06CC\u062F \u0634\u0645\u0627: <b>${(buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>` : `\u2139\uFE0F \u0645\u0628\u0644\u063A ${cleanAmount.toLocaleString()} \u062A\u0648\u0645\u0627\u0646 \u0627\u0632 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0634\u0645\u0627 \u06A9\u0633\u0631 \u06AF\u0631\u062F\u06CC\u062F.
 \u{1F4B0} \u0645\u0648\u062C\u0648\u062F\u06CC \u0641\u0639\u0644\u06CC: <b>${(buyer.balance || 0).toLocaleString()} \u062A\u0648\u0645\u0627\u0646</b>`;
         const record = this.activeBots.get(sellerChatId);
-        if (record?.bot) {
-          await record.bot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: "HTML" }).catch(() => {
+        const notifyBot = record?.bot || this.getNonPollingBot(seller.sellerBot.botToken);
+        if (notifyBot) {
+          await notifyBot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: "HTML" }).catch(() => {
           });
-        } else if (seller.sellerBot.botToken && isValidTelegramBotToken(seller.sellerBot.botToken)) {
-          try {
-            const tempBot = new import_node_telegram_bot_api.default(seller.sellerBot.botToken, { polling: false });
-            await tempBot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: "HTML" }).catch(() => {
-            });
-          } catch (e) {
-          }
         }
         return {
           success: true,
@@ -89886,6 +90344,26 @@ function getProductButtonText(user, p) {
 function getBot() {
   return bot;
 }
+function isConfirmedTelegramTokenRejected(err) {
+  const statusCode = Number(err?.response?.statusCode || 0);
+  const errorCode = Number(err?.response?.body?.error_code || 0);
+  if (statusCode === 401 || errorCode === 401) return true;
+  if (statusCode === 404 && errorCode === 404 && typeof err?.response?.body?.description === "string") {
+    const desc = err.response.body.description.toLowerCase();
+    return desc.includes("not found") || desc.includes("unauthorized");
+  }
+  return false;
+}
+function withTimeoutSafe2(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    timeout
+  ]);
+}
 function clearAllActiveIntervals() {
   for (const interval of activeIntervals) {
     try {
@@ -89894,6 +90372,33 @@ function clearAllActiveIntervals() {
     }
   }
   activeIntervals = [];
+}
+function pruneBotMemoryCaches() {
+  const now = Date.now();
+  for (const [cid, entry] of forceJoinCache.entries()) {
+    if (!entry || now - entry.timestamp > 5 * 60 * 1e3) {
+      forceJoinCache.delete(cid);
+    }
+  }
+  if (userSession.size > 1e3) {
+    const excess = userSession.size - 800;
+    let i = 0;
+    for (const k of userSession.keys()) {
+      userSession.delete(k);
+      if (++i >= excess) break;
+    }
+  }
+  if (adminSession.size > 200) {
+    const excess = adminSession.size - 100;
+    let i = 0;
+    for (const k of adminSession.keys()) {
+      adminSession.delete(k);
+      if (++i >= excess) break;
+    }
+  }
+  if (giftCodeDrafts.size > 200) {
+    giftCodeDrafts.clear();
+  }
 }
 async function fetchSubscriptionLiveInfo2(subUrl) {
   if (!subUrl || !subUrl.startsWith("http://") && !subUrl.startsWith("https://")) {
@@ -90755,29 +91260,39 @@ async function initBot() {
     console.log("[Bot] No valid Bot Token configured (token is empty, placeholder, or invalid). Polling suspended until configured in Admin Panel.");
     return;
   }
+  const currentGen = ++botGeneration;
+  isPolling = false;
+  consecutivePollingErrors = 0;
+  lastPollingAttemptAt = 0;
+  lastPollingActivityAt = 0;
   if (bot) {
     console.log("[Bot] Actively stopping current bot polling and cleaning up resources...");
     try {
       const activeBot = bot;
       bot = null;
-      if (typeof activeBot.stopPolling === "function") {
-        await activeBot.stopPolling();
-      }
       activeBot.removeAllListeners();
+      activeBot.on("error", () => {
+      });
+      activeBot.on("polling_error", () => {
+      });
+      if (typeof activeBot.stopPolling === "function") {
+        await activeBot.stopPolling({ cancel: true }).catch(() => {
+        });
+      }
     } catch (e) {
       console.error("[Bot Error] Error stopping polling of previous bot:", e.message);
     }
-    isPolling = false;
   }
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (currentGen !== botGeneration) return;
   try {
     console.log(`[Bot] Initializing Telegram Bot with token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
     bot = new import_node_telegram_bot_api2.default(rawToken, {
       polling: {
-        interval: 80,
+        interval: 350,
         autoStart: true,
         params: {
-          timeout: 25,
+          timeout: 20,
           allowed_updates: [
             "message",
             "callback_query"
@@ -90786,61 +91301,128 @@ async function initBot() {
       },
       request: {
         forever: true,
-        pool: { maxSockets: 100 },
-        timeout: 3e4
+        pool: { maxSockets: 15 },
+        timeout: 45e3
       }
     });
     enhanceBotForSpeedAndColoredButtons(bot);
     isPolling = true;
+    lastPollingAttemptAt = Date.now();
+    lastPollingActivityAt = Date.now();
+    const pollingObj = bot._polling;
+    if (pollingObj && typeof pollingObj._getUpdates === "function") {
+      const origGetUpdates = pollingObj._getUpdates.bind(pollingObj);
+      pollingObj._getUpdates = () => {
+        lastPollingAttemptAt = Date.now();
+        return origGetUpdates().then((res) => {
+          lastPollingActivityAt = Date.now();
+          if (consecutivePollingErrors > 0) {
+            consecutivePollingErrors = 0;
+            if (pollingObj.options) pollingObj.options.interval = 350;
+          }
+          return res;
+        });
+      };
+    }
     bot.deleteWebHook({ drop_pending_updates: false }).catch(() => {
     });
     bot.getMe().then((me) => {
       if (me?.username) cachedMainBotUsername = me.username;
+      lastPollingActivityAt = Date.now();
       console.log(`[Bot] Successfully connected & verified as @${me.username} (${me.first_name})`);
     }).catch((verr) => {
       const vMsg = verr?.message || String(verr);
-      if (vMsg.includes("401") || vMsg.includes("Unauthorized") || vMsg.includes("404")) {
-        console.warn(`[Bot Warning] Token invalid or revoked by Telegram (401 Unauthorized). Stopping polling.`);
+      if (isConfirmedTelegramTokenRejected(verr)) {
+        console.warn(`[Bot Warning] Token rejected by Telegram (401 Unauthorized). Stopping polling.`);
         if (bot && typeof bot.stopPolling === "function") {
-          bot.stopPolling().catch(() => {
+          bot.stopPolling({ cancel: true }).catch(() => {
           });
         }
         bot = null;
         isPolling = false;
       } else {
-        console.warn(`[Bot Warning] getMe check returned: ${vMsg}. Polling is active.`);
+        console.warn(`[Bot Warning] getMe check returned: ${vMsg}. Polling stays active with backoff.`);
       }
     });
     let lastTransientLogTime = 0;
     bot.on("polling_error", (error) => {
+      lastPollingActivityAt = Date.now();
       const errMsg = error?.message || String(error);
-      if (errMsg.includes("404") || errMsg.includes("401") || errMsg.includes("Unauthorized") || errMsg.includes("Not Found")) {
-        console.error("[Bot Error] Bot Token is invalid or revoked by Telegram. Stopping polling.");
+      if (isConfirmedTelegramTokenRejected(error)) {
+        console.error("[Bot Error] Bot Token confirmed invalid or revoked by Telegram (401). Stopping polling.");
         if (bot && typeof bot.stopPolling === "function") {
-          bot.stopPolling().catch(() => {
+          bot.stopPolling({ cancel: true }).catch(() => {
           });
         }
         isPolling = false;
         return;
       }
-      if (errMsg.includes("409") || errMsg.includes("Conflict")) {
-        console.warn("[Bot Warning] Telegram 409 Conflict: Another bot process is running with this token. Please ensure only 1 instance runs.");
-        return;
+      consecutivePollingErrors++;
+      const pObj = bot?._polling;
+      if (pObj && pObj.options) {
+        pObj.options.interval = Math.min(8e3, 500 * Math.pow(2, Math.min(4, consecutivePollingErrors - 1)));
       }
-      const isTransient = errMsg.includes("502") || errMsg.includes("504") || errMsg.includes("ESOCKETTIMEDOUT") || errMsg.includes("ECONNRESET") || errMsg.includes("ETIMEDOUT");
-      if (isTransient) {
-        const now = Date.now();
-        if (now - lastTransientLogTime > 6e4) {
-          lastTransientLogTime = now;
-          console.warn("[Bot Info] Telegram server temporary gateway delay (502/Timeout). Polling is waiting and will auto-reconnect...");
+      if (errMsg.includes("409") || errMsg.includes("Conflict")) {
+        const now2 = Date.now();
+        if (now2 - lastTransientLogTime > 6e4) {
+          lastTransientLogTime = now2;
+          console.warn("[Bot Warning] Telegram 409 Conflict: Another bot process is running with this token. Retrying with backoff...");
         }
         return;
       }
-      console.error("[Bot Error] Polling error:", errMsg);
+      const isTransient = errMsg.includes("502") || errMsg.includes("504") || errMsg.includes("ESOCKETTIMEDOUT") || errMsg.includes("ECONNRESET") || errMsg.includes("ETIMEDOUT") || errMsg.includes("EAI_AGAIN");
+      const now = Date.now();
+      if (isTransient) {
+        if (now - lastTransientLogTime > 6e4) {
+          lastTransientLogTime = now;
+          console.warn("[Bot Info] Telegram temporary network/gateway delay (502/Timeout). Auto-reconnecting with backoff...");
+        }
+        return;
+      }
+      if (now - lastTransientLogTime > 3e4) {
+        lastTransientLogTime = now;
+        console.error("[Bot Error] Polling error:", errMsg);
+      }
     });
     bot.on("error", (error) => {
       console.error("[Bot Error] General error:", error.message || error);
     });
+    let watchdogRestarting = false;
+    activeIntervals.push(setInterval(async () => {
+      pruneBotMemoryCaches();
+      if (!bot || !isPolling || watchdogRestarting || currentGen !== botGeneration) return;
+      try {
+        const pObj = bot._polling;
+        const now = Date.now();
+        const pollingActive = typeof bot.isPolling === "function" ? bot.isPolling() : Boolean(pObj?._lastRequest);
+        const lastUpdateTs = Math.max(lastPollingActivityAt, Number(pObj?._lastUpdate || 0));
+        const idleMs = now - lastUpdateTs;
+        if (!pollingActive || lastPollingAttemptAt > 0 && idleMs > 75e3) {
+          watchdogRestarting = true;
+          console.warn(`[Bot Watchdog] Polling appears stalled (active=${pollingActive}, idle=${Math.round(idleMs / 1e3)}s). Resetting socket cleanly...`);
+          try {
+            if (pObj && typeof pObj.stop === "function") {
+              await pObj.stop({ cancel: true, reason: "Watchdog stalled socket recovery" });
+              if (pObj.options) pObj.options.interval = 350;
+              await pObj.start({ restart: true });
+            } else {
+              await bot.stopPolling({ cancel: true }).catch(() => {
+              });
+              await bot.startPolling().catch(() => {
+              });
+            }
+            lastPollingAttemptAt = Date.now();
+            lastPollingActivityAt = Date.now();
+            consecutivePollingErrors = 0;
+          } finally {
+            watchdogRestarting = false;
+          }
+        }
+      } catch (wErr) {
+        watchdogRestarting = false;
+        console.warn("[Bot Watchdog] Recovery note:", wErr?.message || wErr);
+      }
+    }, 35 * 1e3));
     bot.setMyCommands([
       { command: "/start", description: "\u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC" },
       { command: "/admin", description: "\u0645\u062F\u06CC\u0631\u06CC\u062A \u067E\u0646\u0644" }
@@ -92468,7 +93050,7 @@ ${inboundText}
             const chId = sanitizeChannelId(channel.id);
             if (!chId) continue;
             try {
-              const member = await bot.getChatMember(chId, chatId);
+              const member = await withTimeoutSafe2(bot.getChatMember(chId, chatId), 3500);
               if (member.status === "left" || member.status === "kicked") {
                 unjoinedChannels.push(channel);
               }
@@ -93973,11 +94555,11 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
           const backupPassword = text.trim();
           bot.sendMessage(chatId, "\u23F3 \u062F\u0631 \u062D\u0627\u0644 \u0633\u0627\u062E\u062A \u0641\u0627\u06CC\u0644 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646 \u0631\u0645\u0632\u06AF\u0630\u0627\u0631\u06CC \u0634\u062F\u0647...");
           try {
-            const rawData = import_fs3.default.readFileSync(import_path4.default.join(process.cwd(), "db.json"), "utf8");
+            const rawData = JSON.stringify(db.getState(), null, 2);
             const encryptedPayload = encryptData(rawData, backupPassword);
             const backupFileName = `sanaei_backup_${Date.now()}.json`;
             const backupPath = import_path4.default.join(process.cwd(), backupFileName);
-            import_fs3.default.writeFileSync(backupPath, encryptedPayload, "utf8");
+            await import_fs3.default.promises.writeFile(backupPath, encryptedPayload, "utf8");
             await bot.sendDocument(chatId, backupPath, {
               caption: `\u{1F4E5} \u0641\u0627\u06CC\u0644 \u0628\u06A9\u0627\u067E \u0631\u0645\u0632\u06AF\u0630\u0627\u0631\u06CC \u0634\u062F\u0647 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u062A\u0648\u0644\u06CC\u062F \u0634\u062F.
 
@@ -93986,10 +94568,8 @@ _(\u0627\u06CC\u0646 \u0646\u0627\u0645 \u0647\u0646\u06AF\u0627\u0645 \u0633\u0
 \u26A0\uFE0F \u062D\u062A\u0645\u0627 \u0627\u06CC\u0646 \u0641\u0627\u06CC\u0644 \u0648 \u0631\u0645\u0632 \u0631\u0627 \u062F\u0631 \u062C\u0627\u06CC\u06CC \u0645\u0637\u0645\u0626\u0646 \u06CC\u0627\u062F\u062F\u0627\u0634\u062A \u0648 \u0646\u06AF\u0647\u062F\u0627\u0631\u06CC \u06A9\u0646\u06CC\u062F. \u062C\u0647\u062A \u0628\u0627\u0632\u06CC\u0627\u0628\u06CC \u0627\u0637\u0644\u0627\u0639\u0627\u062A\u060C \u06A9\u0627\u0641\u06CC\u0633\u062A \u0647\u0645\u06CC\u0646 \u0641\u0627\u06CC\u0644 .json \u0631\u0627 \u0628\u0647 \u0631\u0628\u0627\u062A \u0627\u0631\u0633\u0627\u0644 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F.`,
               parse_mode: "Markdown"
             });
-            try {
-              import_fs3.default.unlinkSync(backupPath);
-            } catch (e) {
-            }
+            await import_fs3.default.promises.unlink(backupPath).catch(() => {
+            });
           } catch (err) {
             bot.sendMessage(chatId, `\u274C \u062E\u0637\u0627 \u062F\u0631 \u0627\u06CC\u062C\u0627\u062F \u0641\u0627\u06CC\u0644 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646: ${err.message}`);
           }
@@ -94624,7 +95204,7 @@ ${refLink}
           const chId = sanitizeChannelId(channel.id);
           if (!chId) continue;
           try {
-            const member = await bot.getChatMember(chId, chatId);
+            const member = await withTimeoutSafe2(bot.getChatMember(chId, chatId), 3500);
             if (member.status === "left" || member.status === "kicked") {
               unjoinedChannels.push({ ...channel, id: chId });
             }
@@ -94879,10 +95459,10 @@ ${refLink}
         }
         answerQuery({ text: "\u23F3 \u062F\u0631 \u062D\u0627\u0644 \u0633\u0627\u062E\u062A \u0648 \u0627\u0631\u0633\u0627\u0644 \u0641\u0627\u06CC\u0644 \u0628\u06A9\u0627\u067E..." });
         try {
-          const rawData = import_fs3.default.readFileSync(import_path4.default.join(process.cwd(), "db.json"), "utf8");
+          const rawData = JSON.stringify(db.getState(), null, 2);
           const backupFileName = `sanaei_backup_${Date.now()}.json`;
           const backupPath = import_path4.default.join(process.cwd(), backupFileName);
-          import_fs3.default.writeFileSync(backupPath, rawData, "utf8");
+          await import_fs3.default.promises.writeFile(backupPath, rawData, "utf8");
           await bot.sendDocument(chatId, backupPath, {
             caption: `\u{1F4E5} <b>\u0641\u0627\u06CC\u0644 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646 \u06A9\u0627\u0645\u0644 \u062F\u06CC\u062A\u0627\u0628\u06CC\u0633 \u0631\u0628\u0627\u062A \u0648 \u062A\u0646\u0638\u06CC\u0645\u0627\u062A</b>
 
@@ -94891,10 +95471,8 @@ ${refLink}
 \u{1F4A1} \u062C\u0647\u062A \u0628\u0627\u0632\u06CC\u0627\u0628\u06CC \u062F\u0631 \u0633\u0631\u0648\u0631 \u062F\u06CC\u06AF\u0631 \u06CC\u0627 \u0647\u0645\u06CC\u0646 \u0631\u0628\u0627\u062A\u060C \u06A9\u0627\u0641\u06CC\u0633\u062A \u0627\u06CC\u0646 \u0641\u0627\u06CC\u0644 <code>.json</code> \u0631\u0627 \u0628\u0647 \u0647\u0645\u06CC\u0646 \u0686\u062A \u0627\u0631\u0633\u0627\u0644 \u0646\u0645\u0627\u06CC\u06CC\u062F.`,
             parse_mode: "HTML"
           });
-          try {
-            import_fs3.default.unlinkSync(backupPath);
-          } catch (e) {
-          }
+          await import_fs3.default.promises.unlink(backupPath).catch(() => {
+          });
         } catch (err) {
           bot.sendMessage(chatId, `\u274C \u062E\u0637\u0627 \u062F\u0631 \u0627\u06CC\u062C\u0627\u062F \u0641\u0627\u06CC\u0644 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646: ${err.message}`);
         }
@@ -97147,6 +97725,8 @@ ${result.message}
     }
   });
   activeIntervals.push(setInterval(async () => {
+    if (isDailyReportRunning || !bot) return;
+    isDailyReportRunning = true;
     try {
       const state2 = db.getState();
       if (state2.adminIds.length > 0) {
@@ -97175,9 +97755,13 @@ ${result.message}
       }
     } catch (e) {
       console.error("[Daily Report Worker Error]", e.message);
+    } finally {
+      isDailyReportRunning = false;
     }
   }, 15 * 60 * 1e3));
   activeIntervals.push(setInterval(async () => {
+    if (isAutoBackupRunning || !bot) return;
+    isAutoBackupRunning = true;
     try {
       const state2 = db.getState();
       const intervalHours = state2.autoBackupIntervalHours || 0;
@@ -97187,7 +97771,7 @@ ${result.message}
         const intervalMs = intervalHours * 60 * 60 * 1e3;
         if (now - lastSent >= intervalMs) {
           const mainAdmin = state2.adminIds[0];
-          const rawData = import_fs3.default.readFileSync(import_path4.default.join(process.cwd(), "db.json"), "utf8");
+          const rawData = JSON.stringify(state2);
           let payload = rawData;
           let isEncrypted = false;
           if (state2.autoBackupPassword && state2.autoBackupPassword.trim() !== "") {
@@ -97196,7 +97780,7 @@ ${result.message}
           }
           const backupFileName = `auto_backup_${Date.now()}.json`;
           const backupPath = import_path4.default.join(process.cwd(), backupFileName);
-          import_fs3.default.writeFileSync(backupPath, payload, "utf8");
+          await import_fs3.default.promises.writeFile(backupPath, payload, "utf8");
           if (bot) {
             await bot.sendDocument(mainAdmin, backupPath, {
               caption: `\u{1F504} <b>\u0628\u06A9\u0627\u067E \u062E\u0648\u062F\u06A9\u0627\u0631 \u0631\u0628\u0627\u062A</b>
@@ -97207,23 +97791,30 @@ ${result.message}
             });
             db.updateState({ lastAutoBackupSent: now });
           }
-          try {
-            import_fs3.default.unlinkSync(backupPath);
-          } catch (e) {
-          }
+          await import_fs3.default.promises.unlink(backupPath).catch(() => {
+          });
         }
       }
     } catch (e) {
       console.error("[Backup Check Worker Error]", e.message);
+    } finally {
+      isAutoBackupRunning = false;
     }
   }, 10 * 60 * 1e3));
   activeIntervals.push(setInterval(async () => {
+    if (isLimitWorkerRunning) return;
+    isLimitWorkerRunning = true;
     try {
       const state2 = db.getState();
       const allClientsArray = await multiPanel.getAllClientsWithTraffic();
       if (!allClientsArray || allClientsArray.length === 0) return;
       const now = Date.now();
-      for (const user of state2.users) {
+      const users = state2.users || [];
+      for (let idx = 0; idx < users.length; idx++) {
+        if (idx > 0 && idx % 20 === 0) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        const user = users[idx];
         if (!user.purchases || user.purchases.length === 0) continue;
         let userChanged = false;
         for (const purchase of user.purchases) {
@@ -97262,9 +97853,10 @@ ${result.message}
                       if (!purchase.paygDisabled) {
                         await multiPanel.updateClientEnable(purchase, false);
                         purchase.paygDisabled = true;
-                        bot.sendMessage(user.chatId, `\u274C <b>\u0633\u0642\u0641 \u0628\u062F\u0647\u06CC \u0647\u0645\u06A9\u0627\u0631 \u067E\u0631 \u0634\u062F</b>
+                        bot?.sendMessage(user.chatId, `\u274C <b>\u0633\u0642\u0641 \u0628\u062F\u0647\u06CC \u0647\u0645\u06A9\u0627\u0631 \u067E\u0631 \u0634\u062F</b>
 
-\u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG) \xAB${purchase.name}\xBB \u0628\u0647 \u062F\u0644\u06CC\u0644 \u0631\u0633\u06CC\u062F\u0646 \u0628\u062F\u0647\u06CC \u0634\u0645\u0627 \u0628\u0647 \u0633\u0642\u0641 \u0645\u062C\u0627\u0632 (${limit.toLocaleString()} \u062A\u0648\u0645\u0627\u0646) \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u0634\u062F. \u0644\u0637\u0641\u0627\u064B \u062C\u0647\u062A \u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0646\u0633\u0628\u062A \u0628\u0647 \u062A\u0633\u0648\u06CC\u0647 \u062D\u0633\u0627\u0628 \u0627\u0642\u062F\u0627\u0645 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F.`, { parse_mode: "HTML" });
+\u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG) \xAB${purchase.name}\xBB \u0628\u0647 \u062F\u0644\u06CC\u0644 \u0631\u0633\u06CC\u062F\u0646 \u0628\u062F\u0647\u06CC \u0634\u0645\u0627 \u0628\u0647 \u0633\u0642\u0641 \u0645\u062C\u0627\u0632 (${limit.toLocaleString()} \u062A\u0648\u0645\u0627\u0646) \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u0634\u062F. \u0644\u0637\u0641\u0627\u064B \u062C\u0647\u062A \u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0646\u0633\u0628\u062A \u0628\u0647 \u062A\u0633\u0648\u06CC\u0647 \u062D\u0633\u0627\u0628 \u0627\u0642\u062F\u0627\u0645 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+                        });
                       }
                     }
                   }
@@ -97282,24 +97874,26 @@ ${result.message}
                     if (!purchase.paygDisabled) {
                       await multiPanel.updateClientEnable(purchase, false);
                       purchase.paygDisabled = true;
-                      bot.sendMessage(user.chatId, `\u274C <b>\u0627\u062A\u0645\u0627\u0645 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0648 \u0642\u0637\u0639 \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F</b>
+                      bot?.sendMessage(user.chatId, `\u274C <b>\u0627\u062A\u0645\u0627\u0645 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0648 \u0642\u0637\u0639 \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F</b>
 
 \u{1F4E6} <b>\u0633\u0631\u0648\u06CC\u0633:</b> ${purchase.name}
 \u{1F194} <b>\u0634\u0646\u0627\u0633\u0647 \u0633\u0641\u0627\u0631\u0634:</b> <code>${purchase.id}</code>
 
 \u{1F4B8} \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u0634\u0645\u0627 \u0628\u0647 \u0627\u062A\u0645\u0627\u0645 \u0631\u0633\u06CC\u062F (\u06F0 \u062A\u0648\u0645\u0627\u0646) \u0648 \u0633\u0631\u0648\u06CC\u0633 \u0634\u0645\u0627 \u0628\u0647 \u0637\u0648\u0631 \u0645\u0648\u0642\u062A \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u0634\u062F.
 
-\u{1F50B} <b>\u062C\u0647\u062A \u0627\u062A\u0635\u0627\u0644 \u0645\u062C\u062F\u062F:</b> \u06A9\u0627\u0641\u06CC\u0633\u062A \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u062E\u0648\u062F \u0631\u0627 \u0634\u0627\u0631\u0698 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F. \u0633\u0631\u0648\u06CC\u0633 \u0628\u0644\u0627\u0641\u0627\u0635\u0644\u0647 \u067E\u0633 \u0627\u0632 \u0634\u0627\u0631\u0698 \u062E\u0648\u062F\u06A9\u0627\u0631 \u0641\u0639\u0627\u0644 \u062E\u0648\u0627\u0647\u062F \u0634\u062F.`, { parse_mode: "HTML" });
+\u{1F50B} <b>\u062C\u0647\u062A \u0627\u062A\u0635\u0627\u0644 \u0645\u062C\u062F\u062F:</b> \u06A9\u0627\u0641\u06CC\u0633\u062A \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u062E\u0648\u062F \u0631\u0627 \u0634\u0627\u0631\u0698 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F. \u0633\u0631\u0648\u06CC\u0633 \u0628\u0644\u0627\u0641\u0627\u0635\u0644\u0647 \u067E\u0633 \u0627\u0632 \u0634\u0627\u0631\u0698 \u062E\u0648\u062F\u06A9\u0627\u0631 \u0641\u0639\u0627\u0644 \u062E\u0648\u0627\u0647\u062F \u0634\u062F.`, { parse_mode: "HTML" }).catch(() => {
+                      });
                     }
                   } else if (balanceEquivalentGb < 1) {
                     if (!purchase.warnedPayg) {
-                      bot.sendMessage(user.chatId, `\u26A0\uFE0F <b>\u0647\u0634\u062F\u0627\u0631 \u06A9\u0645\u0628\u0648\u062F \u0645\u0648\u062C\u0648\u062F\u06CC \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
+                      bot?.sendMessage(user.chatId, `\u26A0\uFE0F <b>\u0647\u0634\u062F\u0627\u0631 \u06A9\u0645\u0628\u0648\u062F \u0645\u0648\u062C\u0648\u062F\u06CC \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
 
 \u{1F4E6} <b>\u0633\u0631\u0648\u06CC\u0633:</b> ${purchase.name}
 \u{1F4B0} <b>\u0645\u0648\u062C\u0648\u062F\u06CC \u0628\u0627\u0642\u06CC\u0645\u0627\u0646\u062F\u0647:</b> ${user.balance.toLocaleString()} \u062A\u0648\u0645\u0627\u0646
 \u{1F4CA} <b>\u0627\u0639\u062A\u0628\u0627\u0631 \u062A\u0642\u0631\u06CC\u0628\u06CC \u0628\u0627\u0642\u06CC\u0645\u0627\u0646\u062F\u0647:</b> \u06A9\u0645\u062A\u0631 \u0627\u0632 \u06F1 \u06AF\u06CC\u06AF\u0627\u0628\u0627\u06CC\u062A (${balanceEquivalentGb.toFixed(2)} GB)
 
-\u{1F4A1} \u062C\u0647\u062A \u062C\u0644\u0648\u06AF\u06CC\u0631\u06CC \u0627\u0632 \u0642\u0637\u0639 \u0646\u0627\u06AF\u0647\u0627\u0646\u06CC \u0633\u0631\u0648\u06CC\u0633\u060C \u0644\u0637\u0641\u0627\u064B \u0646\u0633\u0628\u062A \u0628\u0647 \u0634\u0627\u0631\u0698 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u062E\u0648\u062F \u0627\u0642\u062F\u0627\u0645 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F.`, { parse_mode: "HTML" });
+\u{1F4A1} \u062C\u0647\u062A \u062C\u0644\u0648\u06AF\u06CC\u0631\u06CC \u0627\u0632 \u0642\u0637\u0639 \u0646\u0627\u06AF\u0647\u0627\u0646\u06CC \u0633\u0631\u0648\u06CC\u0633\u060C \u0644\u0637\u0641\u0627\u064B \u0646\u0633\u0628\u062A \u0628\u0647 \u0634\u0627\u0631\u0698 \u06A9\u06CC\u0641 \u067E\u0648\u0644 \u062E\u0648\u062F \u0627\u0642\u062F\u0627\u0645 \u0641\u0631\u0645\u0627\u06CC\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+                      });
                       purchase.warnedPayg = true;
                     }
                   } else {
@@ -97324,7 +97918,7 @@ ${result.message}
                   purchase.paygDisabled = false;
                   purchase.warnedPayg = false;
                   userChanged = true;
-                  bot.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
+                  bot?.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
 
 \u0633\u0631\u0648\u06CC\u0633 \xAB${purchase.name}\xBB \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
                   });
@@ -97337,7 +97931,7 @@ ${result.message}
                 purchase.paygDisabled = false;
                 purchase.warnedPayg = false;
                 userChanged = true;
-                bot.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
+                bot?.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
 
 \u0633\u0631\u0648\u06CC\u0633 <b>${purchase.name}</b> \u0628\u0647 \u062F\u0644\u06CC\u0644 \u0627\u0641\u0632\u0627\u06CC\u0634 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644\u060C \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
                 });
@@ -97360,9 +97954,10 @@ ${result.message}
               if (daysExpired >= 7) {
                 try {
                   await multiPanel.delClient(purchase);
-                  bot.sendMessage(user.chatId, `\u{1F5D1} <b>\u062D\u0630\u0641 \u0633\u0631\u0648\u06CC\u0633 \u0645\u0646\u0642\u0636\u06CC \u0634\u062F\u0647</b>
+                  bot?.sendMessage(user.chatId, `\u{1F5D1} <b>\u062D\u0630\u0641 \u0633\u0631\u0648\u06CC\u0633 \u0645\u0646\u0642\u0636\u06CC \u0634\u062F\u0647</b>
 
-\u0633\u0631\u0648\u06CC\u0633 <b>${purchase.name}</b> (\u0646\u0627\u0645 \u06A9\u0627\u0646\u0641\u06CC\u06AF: <code>${purchase.id}</code>) \u0628\u0647 \u062F\u0644\u06CC\u0644 \u06AF\u0630\u0634\u062A \u06CC\u06A9 \u0647\u0641\u062A\u0647 \u0627\u0632 \u0632\u0645\u0627\u0646 \u0627\u0646\u0642\u0636\u0627\u06CC \u0622\u0646\u060C \u0628\u0631\u0627\u06CC \u0647\u0645\u06CC\u0634\u0647 \u0627\u0632 \u0633\u0631\u0648\u0631 \u062D\u0630\u0641 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" });
+\u0633\u0631\u0648\u06CC\u0633 <b>${purchase.name}</b> (\u0646\u0627\u0645 \u06A9\u0627\u0646\u0641\u06CC\u06AF: <code>${purchase.id}</code>) \u0628\u0647 \u062F\u0644\u06CC\u0644 \u06AF\u0630\u0634\u062A \u06CC\u06A9 \u0647\u0641\u062A\u0647 \u0627\u0632 \u0632\u0645\u0627\u0646 \u0627\u0646\u0642\u0636\u0627\u06CC \u0622\u0646\u060C \u0628\u0631\u0627\u06CC \u0647\u0645\u06CC\u0634\u0647 \u0627\u0632 \u0633\u0631\u0648\u0631 \u062D\u0630\u0641 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+                  });
                   purchase.isDeleted = true;
                   userChanged = true;
                   continue;
@@ -97381,7 +97976,7 @@ ${result.message}
             const mbLeft = (total - used) / (1024 * 1024);
             if (mbLeft > 0 && mbLeft < 1e3) {
               if (!purchase.warnedData) {
-                bot.sendMessage(user.chatId, `\u26A0\uFE0F <b>\u0647\u0634\u062F\u0627\u0631 \u0627\u062A\u0645\u0627\u0645 \u062D\u062C\u0645 \u0633\u0631\u0648\u06CC\u0633</b>
+                bot?.sendMessage(user.chatId, `\u26A0\uFE0F <b>\u0647\u0634\u062F\u0627\u0631 \u0627\u062A\u0645\u0627\u0645 \u062D\u062C\u0645 \u0633\u0631\u0648\u06CC\u0633</b>
 
 \u{1F4E6} <b>\u0646\u0627\u0645 \u0633\u0631\u0648\u06CC\u0633:</b> ${purchase.name}
 \u{1F194} <b>\u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0646\u0641\u06CC\u06AF:</b> <code>${purchase.id}</code>
@@ -97389,7 +97984,8 @@ ${result.message}
 \u{1F517} <b>\u0644\u06CC\u0646\u06A9 \u0627\u0634\u062A\u0631\u0627\u06A9 \u0634\u0645\u0627:</b>
 <code>${purchase.subUrl}</code>
 
-\u{1F4A1} \u062D\u062C\u0645 \u0628\u0627\u0642\u06CC\u200C\u0645\u0627\u0646\u062F\u0647 \u0627\u06CC\u0646 \u0633\u0631\u0648\u06CC\u0633 \u06A9\u0645\u062A\u0631 \u0627\u0632 \u06F1 \u06AF\u06CC\u06AF\u0627\u0628\u0627\u06CC\u062A \u0645\u06CC\u200C\u0628\u0627\u0634\u062F. \u0644\u0637\u0641\u0627 \u062C\u0647\u062A \u062A\u0645\u062F\u06CC\u062F \u0627\u0639\u062A\u0628\u0627\u0631 \u0622\u0646 \u0627\u0642\u062F\u0627\u0645 \u06A9\u0646\u06CC\u062F.`, { parse_mode: "HTML" });
+\u{1F4A1} \u062D\u062C\u0645 \u0628\u0627\u0642\u06CC\u200C\u0645\u0627\u0646\u062F\u0647 \u0627\u06CC\u0646 \u0633\u0631\u0648\u06CC\u0633 \u06A9\u0645\u062A\u0631 \u0627\u0632 \u06F1 \u06AF\u06CC\u06AF\u0627\u0628\u0627\u06CC\u062A \u0645\u06CC\u200C\u0628\u0627\u0634\u062F. \u0644\u0637\u0641\u0627 \u062C\u0647\u062A \u062A\u0645\u062F\u06CC\u062F \u0627\u0639\u062A\u0628\u0627\u0631 \u0622\u0646 \u0627\u0642\u062F\u0627\u0645 \u06A9\u0646\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+                });
                 purchase.warnedData = true;
                 userChanged = true;
               }
@@ -97404,7 +98000,7 @@ ${result.message}
             const hoursLeft = (expiry - now) / (1e3 * 60 * 60);
             if (hoursLeft > 0 && hoursLeft < 24) {
               if (!purchase.warnedTime) {
-                bot.sendMessage(user.chatId, `\u26A0\uFE0F <b>\u0647\u0634\u062F\u0627\u0631 \u0627\u062A\u0645\u0627\u0645 \u0632\u0645\u0627\u0646 \u0633\u0631\u0648\u06CC\u0633</b>
+                bot?.sendMessage(user.chatId, `\u26A0\uFE0F <b>\u0647\u0634\u062F\u0627\u0631 \u0627\u062A\u0645\u0627\u0645 \u0632\u0645\u0627\u0646 \u0633\u0631\u0648\u06CC\u0633</b>
 
 \u{1F4E6} <b>\u0646\u0627\u0645 \u0633\u0631\u0648\u06CC\u0633:</b> ${purchase.name}
 \u{1F194} <b>\u0634\u0646\u0627\u0633\u0647 \u06A9\u0627\u0646\u0641\u06CC\u06AF:</b> <code>${purchase.id}</code>
@@ -97412,7 +98008,8 @@ ${result.message}
 \u{1F517} <b>\u0644\u06CC\u0646\u06A9 \u0627\u0634\u062A\u0631\u0627\u06A9 \u0634\u0645\u0627:</b>
 <code>${purchase.subUrl}</code>
 
-\u{1F4A1} \u06A9\u0645\u062A\u0631 \u0627\u0632 \u06F2\u06F4 \u0633\u0627\u0639\u062A \u0628\u0647 \u067E\u0627\u06CC\u0627\u0646 \u0627\u0639\u062A\u0628\u0627\u0631 \u0632\u0645\u0627\u0646\u06CC \u0627\u06CC\u0646 \u0633\u0631\u0648\u06CC\u0633 \u0628\u0627\u0642\u06CC \u0645\u0627\u0646\u062F\u0647 \u0627\u0633\u062A. \u0644\u0637\u0641\u0627 \u062C\u0647\u062A \u062A\u0645\u062F\u06CC\u062F \u0627\u0639\u062A\u0628\u0627\u0631 \u0622\u0646 \u0627\u0642\u062F\u0627\u0645 \u06A9\u0646\u06CC\u062F.`, { parse_mode: "HTML" });
+\u{1F4A1} \u06A9\u0645\u062A\u0631 \u0627\u0632 \u06F2\u06F4 \u0633\u0627\u0639\u062A \u0628\u0647 \u067E\u0627\u06CC\u0627\u0646 \u0627\u0639\u062A\u0628\u0627\u0631 \u0632\u0645\u0627\u0646\u06CC \u0627\u06CC\u0646 \u0633\u0631\u0648\u06CC\u0633 \u0628\u0627\u0642\u06CC \u0645\u0627\u0646\u062F\u0647 \u0627\u0633\u062A. \u0644\u0637\u0641\u0627 \u062C\u0647\u062A \u062A\u0645\u062F\u06CC\u062F \u0627\u0639\u062A\u0628\u0627\u0631 \u0622\u0646 \u0627\u0642\u062F\u0627\u0645 \u06A9\u0646\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+                });
                 purchase.warnedTime = true;
                 userChanged = true;
               }
@@ -97430,6 +98027,8 @@ ${result.message}
       }
     } catch (e) {
       console.error("[Limit Check Worker Error]", e.message);
+    } finally {
+      isLimitWorkerRunning = false;
     }
   }, 120 * 1e3));
 }
@@ -97446,9 +98045,10 @@ async function checkPaygReactivation(user) {
           purchase.paygDisabled = false;
           purchase.warnedPayg = false;
           userChanged = true;
-          bot.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
+          bot?.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
 
-\u0633\u0631\u0648\u06CC\u0633 \xAB${purchase.name}\xBB \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" });
+\u0633\u0631\u0648\u06CC\u0633 \xAB${purchase.name}\xBB \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+          });
         }
       } else if (user.balance > 0) {
         const pricePerGb = purchase.pricePerGb || 1;
@@ -97458,9 +98058,10 @@ async function checkPaygReactivation(user) {
           purchase.paygDisabled = false;
           purchase.warnedPayg = false;
           userChanged = true;
-          bot.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
+          bot?.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
 
-\u0633\u0631\u0648\u06CC\u0633 <b>${purchase.name}</b> \u0628\u0647 \u062F\u0644\u06CC\u0644 \u0627\u0641\u0632\u0627\u06CC\u0634 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644\u060C \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" });
+\u0633\u0631\u0648\u06CC\u0633 <b>${purchase.name}</b> \u0628\u0647 \u062F\u0644\u06CC\u0644 \u0627\u0641\u0632\u0627\u06CC\u0634 \u0645\u0648\u062C\u0648\u062F\u06CC \u06A9\u06CC\u0641 \u067E\u0648\u0644\u060C \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
+          });
         }
       }
     }
@@ -97503,137 +98104,149 @@ async function sendDirectMessage(chatId, text, replyMarkup) {
   }
 }
 async function syncAllUsersAndSellersFinancials() {
-  let updatedCount = 0;
-  try {
-    const state = db.getState();
-    const allClientsArray = await multiPanel.getAllClientsWithTraffic().catch(() => []);
-    const users = state.users || [];
-    for (const user of users) {
-      let userChanged = false;
-      if (user.isSeller) {
-        if ((user.balance || 0) > 0) {
-          const creditBal = user.balance || 0;
-          user.totalPayments = (user.totalPayments || 0) + creditBal;
-          user.debt = Math.max(0, (user.debt || 0) - creditBal);
-          user.balance = 0;
-          userChanged = true;
+  if (inflightFinancialSyncPromise) {
+    return inflightFinancialSyncPromise;
+  }
+  inflightFinancialSyncPromise = (async () => {
+    let updatedCount = 0;
+    try {
+      const state = db.getState();
+      const allClientsArray = await multiPanel.getAllClientsWithTraffic().catch(() => []);
+      const users = state.users || [];
+      for (let i = 0; i < users.length; i++) {
+        if (i > 0 && i % 20 === 0) {
+          await new Promise((resolve) => setImmediate(resolve));
         }
-        const purchases = (user.purchases || []).filter((p) => !p.isDeleted || p.isCancelled);
-        let totalOriginalPrice = 0;
-        let totalFinalPrice = 0;
-        let totalDiscounts = 0;
-        let newlyBilledPaygDelta = 0;
-        for (const p of purchases) {
-          const isCancelled = !!p.isCancelled;
-          const clientObj = allClientsArray.find(
-            (cl) => cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase() || cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase() || p.subUrl && cl.subId && p.subUrl.includes(cl.subId)
-          );
-          let currentUsed = 0;
-          if (clientObj) {
-            currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
-          } else {
-            currentUsed = p.lastUsedBytes || 0;
+        const user = users[i];
+        let userChanged = false;
+        if (user.isSeller) {
+          if ((user.balance || 0) > 0) {
+            const creditBal = user.balance || 0;
+            user.totalPayments = (user.totalPayments || 0) + creditBal;
+            user.debt = Math.max(0, (user.debt || 0) - creditBal);
+            user.balance = 0;
+            userChanged = true;
           }
-          let orig = 0;
-          let fin = 0;
-          if (isCancelled) {
-            orig = Number(p.cancellationCost) || 0;
-            fin = orig;
-          } else if (p.isPayAsYouGo) {
-            const baseSettled = p.baseSettledBytes || 0;
-            const prevLastUsed = p.lastUsedBytes || 0;
-            const effectiveLastUsed = Math.max(baseSettled, prevLastUsed);
-            const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
-            const discountPct = p.discountPercent !== void 0 ? p.discountPercent : getSellerDiscountForProduct(user, p);
-            const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
-            if (currentUsed > effectiveLastUsed) {
-              const deltaBytes = currentUsed - effectiveLastUsed;
-              const deltaGb = deltaBytes / (1024 * 1024 * 1024);
-              const deltaCost = Math.ceil(deltaGb * discountedPricePerGb);
-              if (deltaCost > 0) {
-                newlyBilledPaygDelta += deltaCost;
+          const purchases = (user.purchases || []).filter((p) => !p.isDeleted || p.isCancelled);
+          let totalOriginalPrice = 0;
+          let totalFinalPrice = 0;
+          let totalDiscounts = 0;
+          let newlyBilledPaygDelta = 0;
+          for (const p of purchases) {
+            const isCancelled = !!p.isCancelled;
+            const clientObj = allClientsArray.find(
+              (cl) => cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase() || cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase() || p.subUrl && cl.subId && p.subUrl.includes(cl.subId)
+            );
+            let currentUsed = 0;
+            if (clientObj) {
+              currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
+            } else {
+              currentUsed = p.lastUsedBytes || 0;
+            }
+            let orig = 0;
+            let fin = 0;
+            if (isCancelled) {
+              orig = Number(p.cancellationCost) || 0;
+              fin = orig;
+            } else if (p.isPayAsYouGo) {
+              const baseSettled = p.baseSettledBytes || 0;
+              const prevLastUsed = p.lastUsedBytes || 0;
+              const effectiveLastUsed = Math.max(baseSettled, prevLastUsed);
+              const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
+              const discountPct = p.discountPercent !== void 0 ? p.discountPercent : getSellerDiscountForProduct(user, p);
+              const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+              if (currentUsed > effectiveLastUsed) {
+                const deltaBytes = currentUsed - effectiveLastUsed;
+                const deltaGb = deltaBytes / (1024 * 1024 * 1024);
+                const deltaCost = Math.ceil(deltaGb * discountedPricePerGb);
+                if (deltaCost > 0) {
+                  newlyBilledPaygDelta += deltaCost;
+                }
+              }
+              if (currentUsed > prevLastUsed) {
+                p.lastUsedBytes = currentUsed;
+                userChanged = true;
+              }
+              const effectiveBase = currentUsed < baseSettled ? 0 : baseSettled;
+              const billableBytes = Math.max(0, currentUsed - effectiveBase);
+              const billableGb = billableBytes / (1024 * 1024 * 1024);
+              const settledGb = effectiveBase / (1024 * 1024 * 1024);
+              const settledOrig = Math.ceil(settledGb * rawPricePerGb);
+              const settledFin = Math.ceil(settledGb * discountedPricePerGb);
+              const currentOrig = Math.ceil(billableGb * rawPricePerGb);
+              const currentFin = Math.ceil(billableGb * discountedPricePerGb);
+              orig = settledOrig + currentOrig;
+              fin = settledFin + currentFin;
+            } else {
+              if (currentUsed > (p.lastUsedBytes || 0)) {
+                p.lastUsedBytes = currentUsed;
+                userChanged = true;
+              }
+              orig = p.originalPrice !== void 0 ? p.originalPrice : p.price || 0;
+              fin = p.price !== void 0 ? p.price : 0;
+              if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
+                orig = Math.round(fin / (1 - p.discountPercent / 100));
               }
             }
-            if (currentUsed > prevLastUsed) {
-              p.lastUsedBytes = currentUsed;
-              userChanged = true;
-            }
-            const effectiveBase = currentUsed < baseSettled ? 0 : baseSettled;
-            const billableBytes = Math.max(0, currentUsed - effectiveBase);
-            const billableGb = billableBytes / (1024 * 1024 * 1024);
-            const settledGb = effectiveBase / (1024 * 1024 * 1024);
-            const settledOrig = Math.ceil(settledGb * rawPricePerGb);
-            const settledFin = Math.ceil(settledGb * discountedPricePerGb);
-            const currentOrig = Math.ceil(billableGb * rawPricePerGb);
-            const currentFin = Math.ceil(billableGb * discountedPricePerGb);
-            orig = settledOrig + currentOrig;
-            fin = settledFin + currentFin;
-          } else {
-            if (currentUsed > (p.lastUsedBytes || 0)) {
-              p.lastUsedBytes = currentUsed;
-              userChanged = true;
-            }
-            orig = p.originalPrice !== void 0 ? p.originalPrice : p.price || 0;
-            fin = p.price !== void 0 ? p.price : 0;
-            if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
-              orig = Math.round(fin / (1 - p.discountPercent / 100));
-            }
+            if (orig < fin) orig = fin;
+            totalOriginalPrice += orig;
+            totalFinalPrice += fin;
+            totalDiscounts += Math.max(0, orig - fin);
           }
-          if (orig < fin) orig = fin;
-          totalOriginalPrice += orig;
-          totalFinalPrice += fin;
-          totalDiscounts += Math.max(0, orig - fin);
-        }
-        if (newlyBilledPaygDelta > 0) {
-          user.debt = Math.max(0, (user.debt || 0) + newlyBilledPaygDelta);
-          userChanged = true;
-        }
-        if (user.totalSales !== totalFinalPrice) {
-          user.totalSales = totalFinalPrice;
-          userChanged = true;
-        }
-        const currentDebt = Math.max(0, user.debt || 0);
-        const correctPayments = Math.max(0, totalFinalPrice - currentDebt);
-        if (user.totalPayments !== correctPayments) {
-          user.totalPayments = correctPayments;
-          userChanged = true;
-        }
-        const isUnlimited = isSellerUnlimitedLimit(user);
-        const limit = user.debtLimit !== void 0 && user.debtLimit > 0 ? user.debtLimit : 1e6;
-        if (isUnlimited || (user.debt || 0) < limit) {
-          for (const p of purchases) {
-            if (p.isPayAsYouGo && p.paygDisabled) {
-              try {
-                await multiPanel.updateClientEnable(p, true);
-                p.paygDisabled = false;
-                p.warnedPayg = false;
-                userChanged = true;
-                if (bot) {
-                  bot.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
+          if (newlyBilledPaygDelta > 0) {
+            user.debt = Math.max(0, (user.debt || 0) + newlyBilledPaygDelta);
+            userChanged = true;
+          }
+          if (user.totalSales !== totalFinalPrice) {
+            user.totalSales = totalFinalPrice;
+            userChanged = true;
+          }
+          const currentDebt = Math.max(0, user.debt || 0);
+          const correctPayments = Math.max(0, totalFinalPrice - currentDebt);
+          if (user.totalPayments !== correctPayments) {
+            user.totalPayments = correctPayments;
+            userChanged = true;
+          }
+          const isUnlimited = isSellerUnlimitedLimit(user);
+          const limit = user.debtLimit !== void 0 && user.debtLimit > 0 ? user.debtLimit : 1e6;
+          if (isUnlimited || (user.debt || 0) < limit) {
+            for (const p of purchases) {
+              if (p.isPayAsYouGo && p.paygDisabled) {
+                try {
+                  await multiPanel.updateClientEnable(p, true);
+                  p.paygDisabled = false;
+                  p.warnedPayg = false;
+                  userChanged = true;
+                  if (bot) {
+                    bot.sendMessage(user.chatId, `\u2705 <b>\u0641\u0639\u0627\u0644\u0633\u0627\u0632\u06CC \u0645\u062C\u062F\u062F \u0633\u0631\u0648\u06CC\u0633 \u0645\u0635\u0631\u0641 \u0622\u0632\u0627\u062F (PAYG)</b>
 
 \u0633\u0631\u0648\u06CC\u0633 \xAB${p.name || p.id}\xBB \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0645\u062C\u062F\u062F\u0627\u064B \u0641\u0639\u0627\u0644 \u06AF\u0631\u062F\u06CC\u062F.`, { parse_mode: "HTML" }).catch(() => {
-                  });
+                    });
+                  }
+                } catch (e) {
                 }
-              } catch (e) {
               }
             }
           }
         }
+        if (userChanged) {
+          db.saveUser(user);
+          updatedCount++;
+        }
       }
-      if (userChanged) {
-        db.saveUser(user);
-        updatedCount++;
+      if (updatedCount > 0) {
+        console.log(`[Financials Sync] Successfully reconciled accounts for ${updatedCount} user(s)/seller(s).`);
       }
+    } catch (err) {
+      console.error("[Financials Sync Error]", err.message);
     }
-    if (updatedCount > 0) {
-      console.log(`[Financials Sync] Successfully reconciled accounts for ${updatedCount} user(s)/seller(s).`);
-    }
-  } catch (err) {
-    console.error("[Financials Sync Error]", err.message);
-  }
-  return { updatedCount };
+    return { updatedCount };
+  })().finally(() => {
+    inflightFinancialSyncPromise = null;
+  });
+  return inflightFinancialSyncPromise;
 }
-var import_node_telegram_bot_api2, import_fs3, import_path4, import_qrcode2, bot, isPolling, activeIntervals, adminSession, giftCodeDrafts, userSession, purchaseLocks, forceJoinCache, cachedMainBotUsername;
+var import_node_telegram_bot_api2, import_fs3, import_path4, import_qrcode2, bot, isPolling, botGeneration, lastPollingAttemptAt, lastPollingActivityAt, consecutivePollingErrors, isDailyReportRunning, isAutoBackupRunning, isLimitWorkerRunning, inflightFinancialSyncPromise, activeIntervals, adminSession, giftCodeDrafts, userSession, purchaseLocks, forceJoinCache, cachedMainBotUsername;
 var init_bot = __esm({
   "server/bot.ts"() {
     import_node_telegram_bot_api2 = __toESM(require_node_telegram_bot_api(), 1);
@@ -97653,6 +98266,14 @@ var init_bot = __esm({
     init_dist();
     bot = null;
     isPolling = false;
+    botGeneration = 0;
+    lastPollingAttemptAt = 0;
+    lastPollingActivityAt = 0;
+    consecutivePollingErrors = 0;
+    isDailyReportRunning = false;
+    isAutoBackupRunning = false;
+    isLimitWorkerRunning = false;
+    inflightFinancialSyncPromise = null;
     activeIntervals = [];
     adminSession = /* @__PURE__ */ new Map();
     giftCodeDrafts = /* @__PURE__ */ new Map();
@@ -97734,6 +98355,15 @@ async function startServer() {
     });
   }
   const api = import_express.default.Router();
+  api.get("/health", (req, res) => {
+    const mem = process.memoryUsage();
+    res.json({
+      ok: true,
+      uptimeSec: Math.round(process.uptime()),
+      rssMb: Math.round(mem.rss / (1024 * 1024)),
+      heapUsedMb: Math.round(mem.heapUsed / (1024 * 1024))
+    });
+  });
   api.get("/state", (req, res) => {
     const state = db.getState();
     let sellerKeyUpdated = false;
@@ -97847,6 +98477,7 @@ async function startServer() {
     if (apiKey !== void 0) newPanel.apiKey = apiKey;
     if (subUrlBase !== void 0) newPanel.subUrlBase = subUrlBase;
     db.updateState({ panel: newPanel });
+    xui.invalidateCaches();
     res.json({ success: true });
   });
   api.post("/update-rebecca-panel", async (req, res) => {
@@ -97861,6 +98492,7 @@ async function startServer() {
     if (subUrlBase !== void 0) newRebecca.subUrlBase = subUrlBase;
     if (enabled !== void 0) newRebecca.enabled = Boolean(enabled);
     db.updateState({ rebeccaPanel: newRebecca });
+    rebecca.invalidateCaches();
     res.json({ success: true });
   });
   api.get("/rebecca-inbounds", async (req, res) => {
@@ -100632,10 +101264,14 @@ async function startServer() {
     const httpServer = app.listen(currentPort, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${currentPort}`);
       initBot();
-      syncAllUsersAndSellersFinancials().catch((err) => {
-        console.error("[Startup Financials Sync Error]", err.message);
-      });
-      resellerBotManager.initAllResellerBots().catch(console.error);
+      setTimeout(() => {
+        resellerBotManager.initAllResellerBots().catch(console.error);
+      }, 800);
+      setTimeout(() => {
+        syncAllUsersAndSellersFinancials().catch((err) => {
+          console.error("[Startup Financials Sync Error]", err.message);
+        });
+      }, 6e3);
     });
     httpServer.on("error", (err) => {
       if (err && err.code === "EADDRINUSE") {

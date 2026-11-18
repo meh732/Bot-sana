@@ -94,6 +94,16 @@ async function startServer() {
   // ----- Admin API ----- //
   const api = express.Router();
 
+  api.get("/health", (req, res) => {
+    const mem = process.memoryUsage();
+    res.json({
+      ok: true,
+      uptimeSec: Math.round(process.uptime()),
+      rssMb: Math.round(mem.rss / (1024 * 1024)),
+      heapUsedMb: Math.round(mem.heapUsed / (1024 * 1024))
+    });
+  });
+
   api.get("/state", (req, res) => {
     const state = db.getState();
     let sellerKeyUpdated = false;
@@ -220,6 +230,7 @@ async function startServer() {
     if (subUrlBase !== undefined) newPanel.subUrlBase = subUrlBase;
 
     db.updateState({ panel: newPanel });
+    xui.invalidateCaches();
     res.json({ success: true });
   });
 
@@ -237,6 +248,7 @@ async function startServer() {
     if (enabled !== undefined) newRebecca.enabled = Boolean(enabled);
 
     db.updateState({ rebeccaPanel: newRebecca });
+    rebecca.invalidateCaches();
     res.json({ success: true });
   });
 
@@ -3443,10 +3455,15 @@ async function startServer() {
     const httpServer = app.listen(currentPort, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${currentPort}`);
       initBot();
-      syncAllUsersAndSellersFinancials().catch(err => {
-        console.error('[Startup Financials Sync Error]', err.message);
-      });
-      resellerBotManager.initAllResellerBots().catch(console.error);
+      // Stagger heavy bot/panel startup tasks to keep CPU & RAM spikes low on VPS
+      setTimeout(() => {
+        resellerBotManager.initAllResellerBots().catch(console.error);
+      }, 800);
+      setTimeout(() => {
+        syncAllUsersAndSellersFinancials().catch(err => {
+          console.error('[Startup Financials Sync Error]', err.message);
+        });
+      }, 6000);
     });
 
     httpServer.on('error', (err: any) => {

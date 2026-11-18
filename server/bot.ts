@@ -553,7 +553,38 @@ function getProductButtonText(user: any, p: any): string {
 
 let bot: TelegramBot | null = null;
 let isPolling = false;
+let botGeneration = 0;
+let lastPollingAttemptAt = 0;
+let lastPollingActivityAt = 0;
+let consecutivePollingErrors = 0;
+let isDailyReportRunning = false;
+let isAutoBackupRunning = false;
+let isLimitWorkerRunning = false;
+let inflightFinancialSyncPromise: Promise<{ updatedCount: number }> | null = null;
+
 export function getBot(): TelegramBot | null { return bot; }
+
+export function isConfirmedTelegramTokenRejected(err: any): boolean {
+  const statusCode = Number(err?.response?.statusCode || 0);
+  const errorCode = Number(err?.response?.body?.error_code || 0);
+  if (statusCode === 401 || errorCode === 401) return true;
+  if (statusCode === 404 && errorCode === 404 && typeof err?.response?.body?.description === 'string') {
+    const desc = err.response.body.description.toLowerCase();
+    return desc.includes('not found') || desc.includes('unauthorized');
+  }
+  return false;
+}
+
+function withTimeoutSafe<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    timeout
+  ]);
+}
 
 let activeIntervals: NodeJS.Timeout[] = [];
 function clearAllActiveIntervals() {
@@ -585,6 +616,34 @@ const userSession = new Map<number, {
 const purchaseLocks = new Set<number>();
 // Memory cache to avoid Telegram rate limits and unresponsiveness during force join checks (valid for 2 minutes)
 const forceJoinCache = new Map<number, { isJoined: boolean; timestamp: number }>();
+
+function pruneBotMemoryCaches() {
+  const now = Date.now();
+  for (const [cid, entry] of forceJoinCache.entries()) {
+    if (!entry || now - entry.timestamp > 5 * 60 * 1000) {
+      forceJoinCache.delete(cid);
+    }
+  }
+  if (userSession.size > 1000) {
+    const excess = userSession.size - 800;
+    let i = 0;
+    for (const k of userSession.keys()) {
+      userSession.delete(k);
+      if (++i >= excess) break;
+    }
+  }
+  if (adminSession.size > 200) {
+    const excess = adminSession.size - 100;
+    let i = 0;
+    for (const k of adminSession.keys()) {
+      adminSession.delete(k);
+      if (++i >= excess) break;
+    }
+  }
+  if (giftCodeDrafts.size > 200) {
+    giftCodeDrafts.clear();
+  }
+}
 // pendingPayments moved to db.getState().pendingPayments
 
 // Helper to fetch live traffic info directly from standard V2Ray/X-UI/Rebecca Subscription-Userinfo header
@@ -1615,33 +1674,41 @@ export async function initBot() {
     return;
   }
 
+  const currentGen = ++botGeneration;
+  isPolling = false;
+  consecutivePollingErrors = 0;
+  lastPollingAttemptAt = 0;
+  lastPollingActivityAt = 0;
+
   if (bot) {
     console.log('[Bot] Actively stopping current bot polling and cleaning up resources...');
     try {
       const activeBot = bot;
       bot = null; // Unlink reference immediately to prevent race conditions
-      if (typeof activeBot.stopPolling === 'function') {
-        await activeBot.stopPolling();
-      }
       activeBot.removeAllListeners();
+      activeBot.on('error', () => {});
+      activeBot.on('polling_error', () => {});
+      if (typeof activeBot.stopPolling === 'function') {
+        await (activeBot as any).stopPolling({ cancel: true }).catch(() => {});
+      }
     } catch (e: any) {
       console.error('[Bot Error] Error stopping polling of previous bot:', e.message);
     }
-    isPolling = false;
   }
 
   // Brief grace delay to let Telegram servers process the connection teardown
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  if (currentGen !== botGeneration) return;
 
   try {
     console.log(`[Bot] Initializing Telegram Bot with token ending in ...${rawToken.substring(rawToken.length - 8 || 0)}`);
 
     bot = new TelegramBot(rawToken, { 
       polling: {
-        interval: 80,
+        interval: 350,
         autoStart: true,
         params: {
-          timeout: 25,
+          timeout: 20,
           allowed_updates: [
             'message',
             'callback_query'
@@ -1650,64 +1717,137 @@ export async function initBot() {
       },
       request: {
         forever: true,
-        pool: { maxSockets: 100 },
-        timeout: 30000
+        pool: { maxSockets: 15 },
+        timeout: 45000
       } as any
     });
     enhanceBotForSpeedAndColoredButtons(bot);
     isPolling = true;
+    lastPollingAttemptAt = Date.now();
+    lastPollingActivityAt = Date.now();
+
+    // Hook internal _getUpdates so every successful poll (even 0 updates) updates activity & resets error backoff
+    const pollingObj = (bot as any)._polling;
+    if (pollingObj && typeof pollingObj._getUpdates === 'function') {
+      const origGetUpdates = pollingObj._getUpdates.bind(pollingObj);
+      pollingObj._getUpdates = () => {
+        lastPollingAttemptAt = Date.now();
+        return origGetUpdates().then((res: any) => {
+          lastPollingActivityAt = Date.now();
+          if (consecutivePollingErrors > 0) {
+            consecutivePollingErrors = 0;
+            if (pollingObj.options) pollingObj.options.interval = 350;
+          }
+          return res;
+        });
+      };
+    }
 
     // Asynchronously delete webhook and verify identity without blocking event listener registration
     (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
     bot.getMe().then((me) => {
       if (me?.username) cachedMainBotUsername = me.username;
+      lastPollingActivityAt = Date.now();
       console.log(`[Bot] Successfully connected & verified as @${me.username} (${me.first_name})`);
     }).catch((verr: any) => {
       const vMsg = verr?.message || String(verr);
-      if (vMsg.includes('401') || vMsg.includes('Unauthorized') || vMsg.includes('404')) {
-        console.warn(`[Bot Warning] Token invalid or revoked by Telegram (401 Unauthorized). Stopping polling.`);
+      if (isConfirmedTelegramTokenRejected(verr)) {
+        console.warn(`[Bot Warning] Token rejected by Telegram (401 Unauthorized). Stopping polling.`);
         if (bot && typeof bot.stopPolling === 'function') {
-          bot.stopPolling().catch(() => {});
+          (bot as any).stopPolling({ cancel: true }).catch(() => {});
         }
         bot = null;
         isPolling = false;
       } else {
-        console.warn(`[Bot Warning] getMe check returned: ${vMsg}. Polling is active.`);
+        console.warn(`[Bot Warning] getMe check returned: ${vMsg}. Polling stays active with backoff.`);
       }
     });
 
     // Attach crucial error listeners to avoid crashing or unhandled rejections
     let lastTransientLogTime = 0;
     bot.on('polling_error', (error: any) => {
+      lastPollingActivityAt = Date.now();
       const errMsg = error?.message || String(error);
-      if (errMsg.includes('404') || errMsg.includes('401') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
-        console.error('[Bot Error] Bot Token is invalid or revoked by Telegram. Stopping polling.');
+      if (isConfirmedTelegramTokenRejected(error)) {
+        console.error('[Bot Error] Bot Token confirmed invalid or revoked by Telegram (401). Stopping polling.');
         if (bot && typeof bot.stopPolling === 'function') {
-          bot.stopPolling().catch(() => {});
+          (bot as any).stopPolling({ cancel: true }).catch(() => {});
         }
         isPolling = false;
         return;
       }
-      if (errMsg.includes('409') || errMsg.includes('Conflict')) {
-        console.warn('[Bot Warning] Telegram 409 Conflict: Another bot process is running with this token. Please ensure only 1 instance runs.');
-        return;
+
+      consecutivePollingErrors++;
+      const pObj = (bot as any)?._polling;
+      if (pObj && pObj.options) {
+        pObj.options.interval = Math.min(8000, 500 * Math.pow(2, Math.min(4, consecutivePollingErrors - 1)));
       }
-      // 502 Bad Gateway, 504 Gateway Timeout, and ESOCKETTIMEDOUT are temporary Telegram server glitches
-      const isTransient = errMsg.includes('502') || errMsg.includes('504') || errMsg.includes('ESOCKETTIMEDOUT') || errMsg.includes('ECONNRESET') || errMsg.includes('ETIMEDOUT');
-      if (isTransient) {
+
+      if (errMsg.includes('409') || errMsg.includes('Conflict')) {
         const now = Date.now();
-        if (now - lastTransientLogTime > 60000) { // Log once per minute max
+        if (now - lastTransientLogTime > 60000) {
           lastTransientLogTime = now;
-          console.warn('[Bot Info] Telegram server temporary gateway delay (502/Timeout). Polling is waiting and will auto-reconnect...');
+          console.warn('[Bot Warning] Telegram 409 Conflict: Another bot process is running with this token. Retrying with backoff...');
         }
         return;
       }
-      console.error('[Bot Error] Polling error:', errMsg);
+
+      const isTransient = errMsg.includes('502') || errMsg.includes('504') || errMsg.includes('ESOCKETTIMEDOUT') || errMsg.includes('ECONNRESET') || errMsg.includes('ETIMEDOUT') || errMsg.includes('EAI_AGAIN');
+      const now = Date.now();
+      if (isTransient) {
+        if (now - lastTransientLogTime > 60000) { // Log once per minute max
+          lastTransientLogTime = now;
+          console.warn('[Bot Info] Telegram temporary network/gateway delay (502/Timeout). Auto-reconnecting with backoff...');
+        }
+        return;
+      }
+      if (now - lastTransientLogTime > 30000) {
+        lastTransientLogTime = now;
+        console.error('[Bot Error] Polling error:', errMsg);
+      }
     });
 
     bot.on('error', (error: any) => {
       console.error('[Bot Error] General error:', error.message || error);
     });
+
+    // Polling Watchdog + Cache Pruner (every 35s) — prevents bot from ever going permanently "to sleep"
+    let watchdogRestarting = false;
+    activeIntervals.push(setInterval(async () => {
+      pruneBotMemoryCaches();
+      if (!bot || !isPolling || watchdogRestarting || currentGen !== botGeneration) return;
+      try {
+        const pObj = (bot as any)._polling;
+        const now = Date.now();
+        const pollingActive = typeof (bot as any).isPolling === 'function' ? (bot as any).isPolling() : Boolean(pObj?._lastRequest);
+        const lastUpdateTs = Math.max(lastPollingActivityAt, Number(pObj?._lastUpdate || 0));
+        const idleMs = now - lastUpdateTs;
+
+        // With 20s Telegram timeout + 45s socket timeout, legitimate silence without error/response never exceeds ~75s
+        if (!pollingActive || (lastPollingAttemptAt > 0 && idleMs > 75000)) {
+          watchdogRestarting = true;
+          console.warn(`[Bot Watchdog] Polling appears stalled (active=${pollingActive}, idle=${Math.round(idleMs / 1000)}s). Resetting socket cleanly...`);
+          try {
+            if (pObj && typeof pObj.stop === 'function') {
+              await pObj.stop({ cancel: true, reason: 'Watchdog stalled socket recovery' });
+              if (pObj.options) pObj.options.interval = 350;
+              await pObj.start({ restart: true });
+            } else {
+              await (bot as any).stopPolling({ cancel: true }).catch(() => {});
+              await bot.startPolling().catch(() => {});
+            }
+            lastPollingAttemptAt = Date.now();
+            lastPollingActivityAt = Date.now();
+            consecutivePollingErrors = 0;
+          } finally {
+            watchdogRestarting = false;
+          }
+        }
+      } catch (wErr: any) {
+        watchdogRestarting = false;
+        console.warn('[Bot Watchdog] Recovery note:', wErr?.message || wErr);
+      }
+    }, 35 * 1000));
 
     bot.setMyCommands([
       { command: '/start', description: 'منوی اصلی' },
@@ -3434,7 +3574,7 @@ export async function initBot() {
              const chId = sanitizeChannelId(channel.id);
              if (!chId) continue;
              try {
-                const member = await bot!.getChatMember(chId, chatId);
+                const member = await withTimeoutSafe(bot!.getChatMember(chId, chatId), 3500);
                 if (member.status === 'left' || member.status === 'kicked') {
                    unjoinedChannels.push(channel);
                 }
@@ -4925,21 +5065,19 @@ export async function initBot() {
         const backupPassword = text.trim();
         bot!.sendMessage(chatId, '⏳ در حال ساخت فایل پشتیبان رمزگذاری شده...');
         try {
-          const rawData = fs.readFileSync(path.join(process.cwd(), 'db.json'), 'utf8');
+          const rawData = JSON.stringify(db.getState(), null, 2);
           const encryptedPayload = encryptData(rawData, backupPassword);
           const backupFileName = `sanaei_backup_${Date.now()}.json`;
           const backupPath = path.join(process.cwd(), backupFileName);
           
-          fs.writeFileSync(backupPath, encryptedPayload, 'utf8');
+          await fs.promises.writeFile(backupPath, encryptedPayload, 'utf8');
           
           await bot!.sendDocument(chatId, backupPath, {
             caption: `📥 فایل بکاپ رمزگذاری شده با موفقیت تولید شد.\n\n🔑 رمز فایل بکاپ شما: *${backupPassword}*\n\n⚠️ حتما این فایل و رمز را در جایی مطمئن یادداشت و نگهداری کنید. جهت بازیابی اطلاعات، کافیست همین فایل .json را به ربات ارسال فرمایید.`,
             parse_mode: 'Markdown'
           });
           
-          try {
-            fs.unlinkSync(backupPath);
-          } catch (e) {}
+          await fs.promises.unlink(backupPath).catch(() => {});
         } catch (err: any) {
           bot!.sendMessage(chatId, `❌ خطا در ایجاد فایل پشتیبان: ${err.message}`);
         }
@@ -5632,7 +5770,7 @@ export async function initBot() {
            if (!chId) continue;
 
            try {
-              const member = await bot!.getChatMember(chId, chatId);
+              const member = await withTimeoutSafe(bot!.getChatMember(chId, chatId), 3500);
               if (member.status === 'left' || member.status === 'kicked') {
                  unjoinedChannels.push({ ...channel, id: chId });
               }
@@ -5894,17 +6032,17 @@ export async function initBot() {
       }
       answerQuery({ text: '⏳ در حال ساخت و ارسال فایل بکاپ...' });
       try {
-        const rawData = fs.readFileSync(path.join(process.cwd(), 'db.json'), 'utf8');
+        const rawData = JSON.stringify(db.getState(), null, 2);
         const backupFileName = `sanaei_backup_${Date.now()}.json`;
         const backupPath = path.join(process.cwd(), backupFileName);
-        fs.writeFileSync(backupPath, rawData, 'utf8');
+        await fs.promises.writeFile(backupPath, rawData, 'utf8');
         
         await bot!.sendDocument(chatId, backupPath, {
           caption: `📥 <b>فایل پشتیبان کامل دیتابیس ربات و تنظیمات</b>\n\n📅 تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}\n\n💡 جهت بازیابی در سرور دیگر یا همین ربات، کافیست این فایل <code>.json</code> را به همین چت ارسال نمایید.`,
           parse_mode: 'HTML'
         });
 
-        try { fs.unlinkSync(backupPath); } catch (e) {}
+        await fs.promises.unlink(backupPath).catch(() => {});
       } catch (err: any) {
         bot!.sendMessage(chatId, `❌ خطا در ایجاد فایل پشتیبان: ${err.message}`);
       }
@@ -8292,6 +8430,8 @@ export async function initBot() {
 
   // Start daily sales and user report worker (runs every 15 minutes to accurately catch end-of-Shamsi-day 23:45+ or interval)
   activeIntervals.push(setInterval(async () => {
+    if (isDailyReportRunning || !bot) return;
+    isDailyReportRunning = true;
     try {
       const state = db.getState();
       if (state.adminIds.length > 0) {
@@ -8322,11 +8462,15 @@ export async function initBot() {
       }
     } catch (e: any) {
       console.error('[Daily Report Worker Error]', e.message);
+    } finally {
+      isDailyReportRunning = false;
     }
   }, 15 * 60 * 1000)); // Check every 15 minutes
 
   // Start auto-backup worker
   activeIntervals.push(setInterval(async () => {
+    if (isAutoBackupRunning || !bot) return;
+    isAutoBackupRunning = true;
     try {
       const state = db.getState();
       const intervalHours = state.autoBackupIntervalHours || 0;
@@ -8336,9 +8480,9 @@ export async function initBot() {
         const intervalMs = intervalHours * 60 * 60 * 1000;
         
         if (now - lastSent >= intervalMs) {
-           // Time to send backup
+           // Time to send backup (non-blocking serialize + async write)
            const mainAdmin = state.adminIds[0]; // first admin
-           const rawData = fs.readFileSync(path.join(process.cwd(), 'db.json'), 'utf8');
+           const rawData = JSON.stringify(state);
            
            let payload = rawData;
            let isEncrypted = false;
@@ -8349,7 +8493,7 @@ export async function initBot() {
 
            const backupFileName = `auto_backup_${Date.now()}.json`;
            const backupPath = path.join(process.cwd(), backupFileName);
-           fs.writeFileSync(backupPath, payload, 'utf8');
+           await fs.promises.writeFile(backupPath, payload, 'utf8');
            
            if (bot) {
              await bot.sendDocument(mainAdmin, backupPath, {
@@ -8362,26 +8506,33 @@ export async function initBot() {
              db.updateState({ lastAutoBackupSent: now });
            }
            
-           try {
-             fs.unlinkSync(backupPath); // clean up temp file
-           } catch (e) {}
+           await fs.promises.unlink(backupPath).catch(() => {});
         }
       }
     } catch (e: any) {
       console.error('[Backup Check Worker Error]', e.message);
+    } finally {
+      isAutoBackupRunning = false;
     }
   }, 10 * 60 * 1000)); // Check every 10 minutes
 
-  // Real-time limit check & PAYG billing worker (checks every 30 seconds)
+  // Real-time limit check & PAYG billing worker (checks every 2 minutes with mutex + event-loop yields)
   activeIntervals.push(setInterval(async () => {
+    if (isLimitWorkerRunning) return;
+    isLimitWorkerRunning = true;
     try {
       const state = db.getState();
       const allClientsArray = await multiPanel.getAllClientsWithTraffic();
       if (!allClientsArray || allClientsArray.length === 0) return;
 
       const now = Date.now();
+      const users = state.users || [];
 
-      for (const user of state.users) {
+      for (let idx = 0; idx < users.length; idx++) {
+          if (idx > 0 && idx % 20 === 0) {
+            await new Promise<void>(resolve => setImmediate(resolve));
+          }
+          const user = users[idx];
           if (!user.purchases || user.purchases.length === 0) continue;
           let userChanged = false;
           
@@ -8431,7 +8582,7 @@ export async function initBot() {
                                       if (!purchase.paygDisabled) {
                                           await multiPanel.updateClientEnable(purchase, false);
                                           purchase.paygDisabled = true;
-                                          bot!.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' });
+                                          bot?.sendMessage(user.chatId, `❌ <b>سقف بدهی همکار پر شد</b>\n\nسرویس مصرف آزاد (PAYG) «${purchase.name}» به دلیل رسیدن بدهی شما به سقف مجاز (${limit.toLocaleString()} تومان) غیرفعال شد. لطفاً جهت فعالسازی مجدد نسبت به تسویه حساب اقدام فرمایید.`, { parse_mode: 'HTML' }).catch(() => {});
                                       }
                                   }
                               }
@@ -8451,19 +8602,19 @@ export async function initBot() {
                                   if (!purchase.paygDisabled) {
                                       await multiPanel.updateClientEnable(purchase, false);
                                       purchase.paygDisabled = true;
-                                      bot!.sendMessage(user.chatId, `❌ <b>اتمام موجودی کیف پول و قطع سرویس مصرف آزاد</b>\n\n` +
+                                      bot?.sendMessage(user.chatId, `❌ <b>اتمام موجودی کیف پول و قطع سرویس مصرف آزاد</b>\n\n` +
                                         `📦 <b>سرویس:</b> ${purchase.name}\n` +
                                         `🆔 <b>شناسه سفارش:</b> <code>${purchase.id}</code>\n\n` +
                                         `💸 موجودی کیف پول شما به اتمام رسید (۰ تومان) و سرویس شما به طور موقت غیرفعال شد.\n\n` +
-                                        `🔋 <b>جهت اتصال مجدد:</b> کافیست کیف پول خود را شارژ فرمایید. سرویس بلافاصله پس از شارژ خودکار فعال خواهد شد.`, { parse_mode: 'HTML' });
+                                        `🔋 <b>جهت اتصال مجدد:</b> کافیست کیف پول خود را شارژ فرمایید. سرویس بلافاصله پس از شارژ خودکار فعال خواهد شد.`, { parse_mode: 'HTML' }).catch(() => {});
                                   }
                               } else if (balanceEquivalentGb < 1) { // less than 1GB equivalent remaining
                                   if (!purchase.warnedPayg) {
-                                      bot!.sendMessage(user.chatId, `⚠️ <b>هشدار کمبود موجودی سرویس مصرف آزاد (PAYG)</b>\n\n` +
+                                      bot?.sendMessage(user.chatId, `⚠️ <b>هشدار کمبود موجودی سرویس مصرف آزاد (PAYG)</b>\n\n` +
                                         `📦 <b>سرویس:</b> ${purchase.name}\n` +
                                         `💰 <b>موجودی باقیمانده:</b> ${user.balance.toLocaleString()} تومان\n` +
                                         `📊 <b>اعتبار تقریبی باقیمانده:</b> کمتر از ۱ گیگابایت (${balanceEquivalentGb.toFixed(2)} GB)\n\n` +
-                                        `💡 جهت جلوگیری از قطع ناگهانی سرویس، لطفاً نسبت به شارژ کیف پول خود اقدام فرمایید.`, { parse_mode: 'HTML' });
+                                        `💡 جهت جلوگیری از قطع ناگهانی سرویس، لطفاً نسبت به شارژ کیف پول خود اقدام فرمایید.`, { parse_mode: 'HTML' }).catch(() => {});
                                       purchase.warnedPayg = true;
                                   }
                               } else {
@@ -8490,7 +8641,7 @@ export async function initBot() {
                               purchase.paygDisabled = false;
                               purchase.warnedPayg = false;
                               userChanged = true;
-                              bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${purchase.name}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
+                              bot?.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${purchase.name}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
                           } catch (e) {}
                       }
                   } else if ((user.balance || 0) >= 1000) {
@@ -8499,7 +8650,7 @@ export async function initBot() {
                           purchase.paygDisabled = false;
                           purchase.warnedPayg = false;
                           userChanged = true;
-                          bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس <b>${purchase.name}</b> به دلیل افزایش موجودی کیف پول، مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
+                          bot?.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس <b>${purchase.name}</b> به دلیل افزایش موجودی کیف پول، مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
                       } catch (e) {}
                   }
               }
@@ -8521,7 +8672,7 @@ export async function initBot() {
                       if (daysExpired >= 7) {
                           try {
                               await multiPanel.delClient(purchase);
-                              bot!.sendMessage(user.chatId, `🗑 <b>حذف سرویس منقضی شده</b>\n\nسرویس <b>${purchase.name}</b> (نام کانفیگ: <code>${purchase.id}</code>) به دلیل گذشت یک هفته از زمان انقضای آن، برای همیشه از سرور حذف گردید.`, { parse_mode: 'HTML' });
+                              bot?.sendMessage(user.chatId, `🗑 <b>حذف سرویس منقضی شده</b>\n\nسرویس <b>${purchase.name}</b> (نام کانفیگ: <code>${purchase.id}</code>) به دلیل گذشت یک هفته از زمان انقضای آن، برای همیشه از سرور حذف گردید.`, { parse_mode: 'HTML' }).catch(() => {});
                               
                               // mark as deleted instead of removing so it persists in financial reports
                               purchase.isDeleted = true;
@@ -8543,11 +8694,11 @@ export async function initBot() {
                   const mbLeft = ((total - used) / (1024 * 1024));
                   if (mbLeft > 0 && mbLeft < 1000) { // < 1GB limit
                       if (!purchase.warnedData) {
-                          bot!.sendMessage(user.chatId, `⚠️ <b>هشدار اتمام حجم سرویس</b>\n\n` +
+                          bot?.sendMessage(user.chatId, `⚠️ <b>هشدار اتمام حجم سرویس</b>\n\n` +
                             `📦 <b>نام سرویس:</b> ${purchase.name}\n` +
                             `🆔 <b>شناسه کانفیگ:</b> <code>${purchase.id}</code>\n\n` +
                             `🔗 <b>لینک اشتراک شما:</b>\n<code>${purchase.subUrl}</code>\n\n` +
-                            `💡 حجم باقی‌مانده این سرویس کمتر از ۱ گیگابایت می‌باشد. لطفا جهت تمدید اعتبار آن اقدام کنید.`, { parse_mode: 'HTML' });
+                            `💡 حجم باقی‌مانده این سرویس کمتر از ۱ گیگابایت می‌باشد. لطفا جهت تمدید اعتبار آن اقدام کنید.`, { parse_mode: 'HTML' }).catch(() => {});
                           purchase.warnedData = true;
                           userChanged = true;
                       }
@@ -8563,11 +8714,11 @@ export async function initBot() {
                   const hoursLeft = (expiry - now) / (1000 * 60 * 60);
                   if (hoursLeft > 0 && hoursLeft < 24) {
                       if (!purchase.warnedTime) {
-                          bot!.sendMessage(user.chatId, `⚠️ <b>هشدار اتمام زمان سرویس</b>\n\n` +
+                          bot?.sendMessage(user.chatId, `⚠️ <b>هشدار اتمام زمان سرویس</b>\n\n` +
                             `📦 <b>نام سرویس:</b> ${purchase.name}\n` +
                             `🆔 <b>شناسه کانفیگ:</b> <code>${purchase.id}</code>\n\n` +
                             `🔗 <b>لینک اشتراک شما:</b>\n<code>${purchase.subUrl}</code>\n\n` +
-                            `💡 کمتر از ۲۴ ساعت به پایان اعتبار زمانی این سرویس باقی مانده است. لطفا جهت تمدید اعتبار آن اقدام کنید.`, { parse_mode: 'HTML' });
+                            `💡 کمتر از ۲۴ ساعت به پایان اعتبار زمانی این سرویس باقی مانده است. لطفا جهت تمدید اعتبار آن اقدام کنید.`, { parse_mode: 'HTML' }).catch(() => {});
                           purchase.warnedTime = true;
                           userChanged = true;
                       }
@@ -8585,6 +8736,8 @@ export async function initBot() {
       }
     } catch (e: any) {
         console.error('[Limit Check Worker Error]', e.message);
+    } finally {
+        isLimitWorkerRunning = false;
     }
   }, 120 * 1000)); // Check every 2 minutes for PAYG billing & limits without overloading panel networks
 }
@@ -8602,7 +8755,7 @@ export async function checkPaygReactivation(user: any) {
           purchase.paygDisabled = false;
           purchase.warnedPayg = false;
           userChanged = true;
-          bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${purchase.name}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' });
+          bot?.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${purchase.name}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
         }
       } else if (user.balance > 0) {
         const pricePerGb = purchase.pricePerGb || 1;
@@ -8612,7 +8765,7 @@ export async function checkPaygReactivation(user: any) {
            purchase.paygDisabled = false;
            purchase.warnedPayg = false;
            userChanged = true;
-           bot!.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس <b>${purchase.name}</b> به دلیل افزایش موجودی کیف پول، مجدداً فعال گردید.`, { parse_mode: 'HTML' });
+           bot?.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس <b>${purchase.name}</b> به دلیل افزایش موجودی کیف پول، مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
         }
       }
     }
@@ -8662,157 +8815,171 @@ export async function sendDirectMessage(chatId: number, text: string, replyMarku
 }
 
 export async function syncAllUsersAndSellersFinancials(): Promise<{ updatedCount: number }> {
-  let updatedCount = 0;
-  try {
-    const state = db.getState();
-    const allClientsArray = await multiPanel.getAllClientsWithTraffic().catch(() => [] as any[]);
-    const users = state.users || [];
+  if (inflightFinancialSyncPromise) {
+    return inflightFinancialSyncPromise;
+  }
 
-    for (const user of users) {
-      let userChanged = false;
+  inflightFinancialSyncPromise = (async () => {
+    let updatedCount = 0;
+    try {
+      const state = db.getState();
+      const allClientsArray = await multiPanel.getAllClientsWithTraffic().catch(() => [] as any[]);
+      const users = state.users || [];
 
-      if (user.isSeller) {
-        // 1. If seller has any positive balance (e.g. from previously approved deposits), convert to totalPayments & reduce debt
-        if ((user.balance || 0) > 0) {
-          const creditBal = user.balance || 0;
-          user.totalPayments = (user.totalPayments || 0) + creditBal;
-          user.debt = Math.max(0, (user.debt || 0) - creditBal);
-          user.balance = 0;
-          userChanged = true;
+      for (let i = 0; i < users.length; i++) {
+        if (i > 0 && i % 20 === 0) {
+          await new Promise<void>(resolve => setImmediate(resolve));
         }
+        const user = users[i];
+        let userChanged = false;
 
-        // 2. Reconcile active/cancelled purchases with discounts (exclude deleted non-cancelled configs)
-        const purchases = (user.purchases || []).filter((p: any) => !p.isDeleted || p.isCancelled);
-        let totalOriginalPrice = 0;
-        let totalFinalPrice = 0;
-        let totalDiscounts = 0;
-        let newlyBilledPaygDelta = 0;
-
-        for (const p of purchases) {
-          const isCancelled = !!p.isCancelled;
-          const clientObj = allClientsArray.find(cl => 
-            (cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase()) ||
-            (cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase()) ||
-            (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
-          );
-          let currentUsed = 0;
-          if (clientObj) {
-            currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
-          } else {
-            currentUsed = (p.lastUsedBytes || 0);
+        if (user.isSeller) {
+          // 1. If seller has any positive balance (e.g. from previously approved deposits), convert to totalPayments & reduce debt
+          if ((user.balance || 0) > 0) {
+            const creditBal = user.balance || 0;
+            user.totalPayments = (user.totalPayments || 0) + creditBal;
+            user.debt = Math.max(0, (user.debt || 0) - creditBal);
+            user.balance = 0;
+            userChanged = true;
           }
 
-          let orig = 0;
-          let fin = 0;
+          // 2. Reconcile active/cancelled purchases with discounts (exclude deleted non-cancelled configs)
+          const purchases = (user.purchases || []).filter((p: any) => !p.isDeleted || p.isCancelled);
+          let totalOriginalPrice = 0;
+          let totalFinalPrice = 0;
+          let totalDiscounts = 0;
+          let newlyBilledPaygDelta = 0;
 
-          if (isCancelled) {
-            orig = Number(p.cancellationCost) || 0;
-            fin = orig;
-          } else if (p.isPayAsYouGo) {
-            const baseSettled = p.baseSettledBytes || 0;
-            const prevLastUsed = p.lastUsedBytes || 0;
-            const effectiveLastUsed = Math.max(baseSettled, prevLastUsed);
+          for (const p of purchases) {
+            const isCancelled = !!p.isCancelled;
+            const clientObj = allClientsArray.find(cl => 
+              (cl.email && p.id && cl.email.toLowerCase() === String(p.id).toLowerCase()) ||
+              (cl.id && p.id && cl.id.toLowerCase() === String(p.id).toLowerCase()) ||
+              (p.subUrl && cl.subId && p.subUrl.includes(cl.subId))
+            );
+            let currentUsed = 0;
+            if (clientObj) {
+              currentUsed = (clientObj.up || 0) + (clientObj.down || 0);
+            } else {
+              currentUsed = (p.lastUsedBytes || 0);
+            }
 
-            const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
-            const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user, p);
-            const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+            let orig = 0;
+            let fin = 0;
 
-            if (currentUsed > effectiveLastUsed) {
-              const deltaBytes = currentUsed - effectiveLastUsed;
-              const deltaGb = deltaBytes / (1024 * 1024 * 1024);
-              const deltaCost = Math.ceil(deltaGb * discountedPricePerGb);
-              if (deltaCost > 0) {
-                newlyBilledPaygDelta += deltaCost;
+            if (isCancelled) {
+              orig = Number(p.cancellationCost) || 0;
+              fin = orig;
+            } else if (p.isPayAsYouGo) {
+              const baseSettled = p.baseSettledBytes || 0;
+              const prevLastUsed = p.lastUsedBytes || 0;
+              const effectiveLastUsed = Math.max(baseSettled, prevLastUsed);
+
+              const rawPricePerGb = p.originalPricePerGb || p.pricePerGb || 0;
+              const discountPct = p.discountPercent !== undefined ? p.discountPercent : getSellerDiscountForProduct(user, p);
+              const discountedPricePerGb = Math.round(rawPricePerGb * (1 - discountPct / 100));
+
+              if (currentUsed > effectiveLastUsed) {
+                const deltaBytes = currentUsed - effectiveLastUsed;
+                const deltaGb = deltaBytes / (1024 * 1024 * 1024);
+                const deltaCost = Math.ceil(deltaGb * discountedPricePerGb);
+                if (deltaCost > 0) {
+                  newlyBilledPaygDelta += deltaCost;
+                }
+              }
+              if (currentUsed > prevLastUsed) {
+                p.lastUsedBytes = currentUsed;
+                userChanged = true;
+              }
+
+              const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
+              const billableBytes = Math.max(0, currentUsed - effectiveBase);
+              const billableGb = billableBytes / (1024 * 1024 * 1024);
+              const settledGb = effectiveBase / (1024 * 1024 * 1024);
+
+              const settledOrig = Math.ceil(settledGb * rawPricePerGb);
+              const settledFin = Math.ceil(settledGb * discountedPricePerGb);
+
+              const currentOrig = Math.ceil(billableGb * rawPricePerGb);
+              const currentFin = Math.ceil(billableGb * discountedPricePerGb);
+
+              orig = settledOrig + currentOrig;
+              fin = settledFin + currentFin;
+            } else {
+              if (currentUsed > (p.lastUsedBytes || 0)) {
+                p.lastUsedBytes = currentUsed;
+                userChanged = true;
+              }
+              orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
+              fin = p.price !== undefined ? p.price : 0;
+              if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
+                orig = Math.round(fin / (1 - p.discountPercent / 100));
               }
             }
-            if (currentUsed > prevLastUsed) {
-              p.lastUsedBytes = currentUsed;
-              userChanged = true;
-            }
 
-            const effectiveBase = (currentUsed < baseSettled) ? 0 : baseSettled;
-            const billableBytes = Math.max(0, currentUsed - effectiveBase);
-            const billableGb = billableBytes / (1024 * 1024 * 1024);
-            const settledGb = effectiveBase / (1024 * 1024 * 1024);
+            if (orig < fin) orig = fin;
 
-            const settledOrig = Math.ceil(settledGb * rawPricePerGb);
-            const settledFin = Math.ceil(settledGb * discountedPricePerGb);
-
-            const currentOrig = Math.ceil(billableGb * rawPricePerGb);
-            const currentFin = Math.ceil(billableGb * discountedPricePerGb);
-
-            orig = settledOrig + currentOrig;
-            fin = settledFin + currentFin;
-          } else {
-            if (currentUsed > (p.lastUsedBytes || 0)) {
-              p.lastUsedBytes = currentUsed;
-              userChanged = true;
-            }
-            orig = p.originalPrice !== undefined ? p.originalPrice : (p.price || 0);
-            fin = p.price !== undefined ? p.price : 0;
-            if (orig <= fin && p.discountPercent && p.discountPercent > 0) {
-              orig = Math.round(fin / (1 - p.discountPercent / 100));
-            }
+            totalOriginalPrice += orig;
+            totalFinalPrice += fin;
+            totalDiscounts += Math.max(0, orig - fin);
           }
 
-          if (orig < fin) orig = fin;
+          // Only add newly consumed PAYG delta to user.debt — NEVER overwrite manual debt or past settlements!
+          if (newlyBilledPaygDelta > 0) {
+            user.debt = Math.max(0, (user.debt || 0) + newlyBilledPaygDelta);
+            userChanged = true;
+          }
 
-          totalOriginalPrice += orig;
-          totalFinalPrice += fin;
-          totalDiscounts += Math.max(0, orig - fin);
-        }
+          // Reconcile totalSales to equal total final net invoice
+          if (user.totalSales !== totalFinalPrice) {
+            user.totalSales = totalFinalPrice;
+            userChanged = true;
+          }
 
-        // Only add newly consumed PAYG delta to user.debt — NEVER overwrite manual debt or past settlements!
-        if (newlyBilledPaygDelta > 0) {
-          user.debt = Math.max(0, (user.debt || 0) + newlyBilledPaygDelta);
-          userChanged = true;
-        }
+          // Reconcile totalPayments so that totalSales - totalPayments = debt
+          const currentDebt = Math.max(0, user.debt || 0);
+          const correctPayments = Math.max(0, totalFinalPrice - currentDebt);
+          if (user.totalPayments !== correctPayments) {
+            user.totalPayments = correctPayments;
+            userChanged = true;
+          }
 
-        // Reconcile totalSales to equal total final net invoice
-        if (user.totalSales !== totalFinalPrice) {
-          user.totalSales = totalFinalPrice;
-          userChanged = true;
-        }
-
-        // Reconcile totalPayments so that totalSales - totalPayments = debt
-        const currentDebt = Math.max(0, user.debt || 0);
-        const correctPayments = Math.max(0, totalFinalPrice - currentDebt);
-        if (user.totalPayments !== correctPayments) {
-          user.totalPayments = correctPayments;
-          userChanged = true;
-        }
-
-        // Auto-reactivate disabled PAYG if seller's debt is within limit
-        const isUnlimited = isSellerUnlimitedLimit(user);
-        const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
-        if (isUnlimited || (user.debt || 0) < limit) {
-          for (const p of purchases) {
-            if (p.isPayAsYouGo && p.paygDisabled) {
-              try {
-                await multiPanel.updateClientEnable(p, true);
-                p.paygDisabled = false;
-                p.warnedPayg = false;
-                userChanged = true;
-                if (bot) {
-                  bot.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${p.name || p.id}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
-                }
-              } catch (e) {}
+          // Auto-reactivate disabled PAYG if seller's debt is within limit
+          const isUnlimited = isSellerUnlimitedLimit(user);
+          const limit = user.debtLimit !== undefined && user.debtLimit > 0 ? user.debtLimit : 1000000;
+          if (isUnlimited || (user.debt || 0) < limit) {
+            for (const p of purchases) {
+              if (p.isPayAsYouGo && p.paygDisabled) {
+                try {
+                  await multiPanel.updateClientEnable(p, true);
+                  p.paygDisabled = false;
+                  p.warnedPayg = false;
+                  userChanged = true;
+                  if (bot) {
+                    bot.sendMessage(user.chatId, `✅ <b>فعالسازی مجدد سرویس مصرف آزاد (PAYG)</b>\n\nسرویس «${p.name || p.id}» با موفقیت مجدداً فعال گردید.`, { parse_mode: 'HTML' }).catch(() => {});
+                  }
+                } catch (e) {}
+              }
             }
           }
         }
+
+        if (userChanged) {
+          db.saveUser(user);
+          updatedCount++;
+        }
       }
 
-      if (userChanged) {
-        db.saveUser(user);
-        updatedCount++;
+      if (updatedCount > 0) {
+        console.log(`[Financials Sync] Successfully reconciled accounts for ${updatedCount} user(s)/seller(s).`);
       }
+    } catch (err: any) {
+      console.error('[Financials Sync Error]', err.message);
     }
+    return { updatedCount };
+  })().finally(() => {
+    inflightFinancialSyncPromise = null;
+  });
 
-    if (updatedCount > 0) {
-      console.log(`[Financials Sync] Successfully reconciled accounts for ${updatedCount} user(s)/seller(s).`);
-    }
-  } catch (err: any) {
-    console.error('[Financials Sync Error]', err.message);
-  }
-  return { updatedCount };
+  return inflightFinancialSyncPromise;
 }

@@ -37,20 +37,35 @@ export class Panel4Client {
   private lastPanelUser: string = '';
   private lastPanelPass: string = '';
   private lastPanelApiKey: string = '';
+  private inflightAuthPromise: Promise<{ baseURL: string; headers: Record<string, string> }> | null = null;
+  private cachedInbounds: any[] | null = null;
+  private cachedInboundsTime: number = 0;
+  private inflightInboundsPromise: Promise<any[]> | null = null;
+  private failureCooldownUntil: number = 0;
 
   constructor() {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     this.client = axios.create({
-      timeout: 15000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
       },
       httpsAgent: new https.Agent({
         rejectUnauthorized: false,
-        keepAlive: true
+        keepAlive: true,
+        maxSockets: 15,
+        maxFreeSockets: 5,
+        timeout: 10000
       }),
     });
+  }
+
+  private isNetworkTimeoutOrRefused(err: any): boolean {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    return ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN'].includes(code) ||
+      msg.includes('timeout') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT');
   }
 
   public sanitizeUsername(rawInput: any): string {
@@ -212,86 +227,112 @@ export class Panel4Client {
     const baseURL = this.formatBaseUrl(normUrl);
     const now = Date.now();
 
-    // 1. Username/Password Login Auth
+    // 1. Username/Password Login Auth (deduplicated)
     if (hasUserPass) {
       const isExpired = !this.cookie || (this.tokenExpiryTime > 0 && now >= this.tokenExpiryTime);
       if (forceRefresh || isExpired) {
-        this.cookie = '';
-        const loginPaths = ['/api/admins/token', '/login', '/panel/login'];
-        let loginSuccess = false;
-        let lastLoginError = '';
+        if (!forceRefresh && this.inflightAuthPromise) {
+          return this.inflightAuthPromise;
+        }
+        const doLogin = async (): Promise<{ baseURL: string; headers: Record<string, string> }> => {
+          this.cookie = '';
+          const loginPaths = ['/api/admins/token', '/login', '/panel/login'];
+          let loginSuccess = false;
+          let lastLoginError = '';
 
-        for (const path of loginPaths) {
-          try {
-            // Form-encoded (FastAPI / Panel 4 standard)
-            const params = new URLSearchParams();
-            params.append('grant_type', 'password');
-            params.append('username', normUser);
-            params.append('password', normPass);
+          for (const path of loginPaths) {
+            try {
+              const params = new URLSearchParams();
+              params.append('grant_type', 'password');
+              params.append('username', normUser);
+              params.append('password', normPass);
 
-            let res = await this.client.post(`${baseURL}${path}`, params, {
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              validateStatus: () => true,
-              timeout: 10000
-            });
+              let res = await this.client.post(`${baseURL}${path}`, params, {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                validateStatus: () => true,
+                timeout: 6000
+              });
 
-            if (res.data?.token || res.data?.access_token) {
-              const tok = res.data.token || res.data.access_token;
-              this.cookie = tok;
-              this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
-              if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
-              loginSuccess = true;
-              break;
-            }
-
-            // JSON mode
-            res = await this.client.post(`${baseURL}${path}`, {
-              username: normUser,
-              password: normPass
-            }, {
-              headers: { 'Content-Type': 'application/json' },
-              validateStatus: () => true,
-              timeout: 10000
-            });
-
-            if (res.data?.token || res.data?.access_token) {
-              const tok = res.data.token || res.data.access_token;
-              this.cookie = tok;
-              this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
-              if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
-              loginSuccess = true;
-              break;
-            } else if (res.data?.success || res.status === 200) {
-              const rawCookies = res.headers['set-cookie'];
-              if (rawCookies && rawCookies.length > 0) {
-                this.cookie = rawCookies.map((c: string) => c.split(';')[0]).join('; ');
-                this.tokenExpiryTime = Date.now() + 12 * 3600 * 1000;
+              if (res.data?.token || res.data?.access_token) {
+                const tok = res.data.token || res.data.access_token;
+                this.cookie = tok;
+                this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
+                if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
                 loginSuccess = true;
                 break;
               }
-            }
-          } catch (e: any) {
-            lastLoginError = e.message;
-          }
-        }
 
-        // Fallback to configured or discovered API Key if password login failed
-        if (!loginSuccess && !this.cookie) {
-          const fallbackKey = normApiKey || this.discoveredApiKey;
-          if (fallbackKey) {
-            const isJwt = fallbackKey.includes('.');
-            const headers: Record<string, string> = {
-              'Accept': 'application/json'
-            };
-            if (isJwt) {
-              headers['Authorization'] = fallbackKey.startsWith('Bearer ') ? fallbackKey : `Bearer ${fallbackKey}`;
-            } else {
-              headers['X-API-Key'] = fallbackKey;
+              res = await this.client.post(`${baseURL}${path}`, {
+                username: normUser,
+                password: normPass
+              }, {
+                headers: { 'Content-Type': 'application/json' },
+                validateStatus: () => true,
+                timeout: 6000
+              });
+
+              if (res.data?.token || res.data?.access_token) {
+                const tok = res.data.token || res.data.access_token;
+                this.cookie = tok;
+                this.tokenExpiryTime = this.extractJwtExpiryMs(tok);
+                if (res.data?.admin) this.captureAdminMetadata(res.data.admin);
+                loginSuccess = true;
+                break;
+              } else if (res.data?.success || res.status === 200) {
+                const rawCookies = res.headers['set-cookie'];
+                if (rawCookies && rawCookies.length > 0) {
+                  this.cookie = rawCookies.map((c: string) => c.split(';')[0]).join('; ');
+                  this.tokenExpiryTime = Date.now() + 12 * 3600 * 1000;
+                  loginSuccess = true;
+                  break;
+                }
+              }
+            } catch (e: any) {
+              lastLoginError = e.message;
+              if (this.isNetworkTimeoutOrRefused(e)) {
+                this.failureCooldownUntil = Date.now() + 25000;
+                break;
+              }
             }
-            return { baseURL, headers };
           }
-          throw new Error(`عدم موفقیت در ورود به پنل ۴. لطفاً آدرس، نام کاربری و رمز عبور را بررسی فرمایید: ${lastLoginError}`);
+
+          if (!loginSuccess && !this.cookie) {
+            const fallbackKey = normApiKey || this.discoveredApiKey;
+            if (fallbackKey) {
+              const isJwt = fallbackKey.includes('.');
+              const headers: Record<string, string> = {
+                'Accept': 'application/json'
+              };
+              if (isJwt) {
+                headers['Authorization'] = fallbackKey.startsWith('Bearer ') ? fallbackKey : `Bearer ${fallbackKey}`;
+              } else {
+                headers['X-API-Key'] = fallbackKey;
+              }
+              return { baseURL, headers };
+            }
+            throw new Error(`عدم موفقیت در ورود به پنل ۴. لطفاً آدرس، نام کاربری و رمز عبور را بررسی فرمایید: ${lastLoginError}`);
+          }
+
+          const isJwt = this.cookie.includes('.') || this.cookie.startsWith('Bearer ');
+          const authHeader = this.cookie.startsWith('Bearer ') ? this.cookie : (this.cookie.includes('.') ? `Bearer ${this.cookie}` : this.cookie);
+          const headers: Record<string, string> = {
+            'Accept': 'application/json'
+          };
+          if (isJwt) {
+            headers['Authorization'] = authHeader;
+          } else {
+            headers['Cookie'] = this.cookie;
+          }
+          return { baseURL, headers };
+        };
+
+        if (!forceRefresh) {
+          this.inflightAuthPromise = doLogin().finally(() => {
+            this.inflightAuthPromise = null;
+          });
+          return this.inflightAuthPromise;
         }
+        return doLogin();
       }
 
       const isJwt = this.cookie.includes('.') || this.cookie.startsWith('Bearer ');
@@ -364,6 +405,8 @@ export class Panel4Client {
   }
 
   public async testConnection(panelOverride?: any): Promise<{ success: boolean; message: string; inboundsCount?: number; inbounds?: any[] }> {
+    this.failureCooldownUntil = 0;
+    this.cachedInbounds = null;
     try {
       const inbounds = await this.getInbounds(panelOverride, true);
       if (!inbounds || inbounds.length === 0) {
@@ -387,6 +430,18 @@ export class Panel4Client {
   }
 
   public async getInbounds(panelOverride?: any, forceRefreshAuth: boolean = false): Promise<any[]> {
+    const now = Date.now();
+    if (!panelOverride && !forceRefreshAuth && this.cachedInbounds && (now - this.cachedInboundsTime < 25000)) {
+      return this.cachedInbounds;
+    }
+    if (!panelOverride && !forceRefreshAuth && now < this.failureCooldownUntil) {
+      return this.cachedInbounds || [];
+    }
+    if (!panelOverride && !forceRefreshAuth && this.inflightInboundsPromise) {
+      return this.inflightInboundsPromise;
+    }
+
+    const runFetch = async (): Promise<any[]> => {
     try {
       const state = db.getState();
       const savedPanel = state.panel4 || {};
@@ -526,12 +581,30 @@ export class Panel4Client {
         return [{ id: 4, remark: 'Full', name: 'Full', protocol: 'Service', enable: true }];
       }
 
+      if (inboundsList.length > 0 && !panelOverride) {
+        this.cachedInbounds = inboundsList;
+        this.cachedInboundsTime = Date.now();
+        this.failureCooldownUntil = 0;
+      }
       return inboundsList;
     } catch (e: any) {
       console.warn('[Panel4] getInbounds note:', e.message);
+      if (this.isNetworkTimeoutOrRefused(e)) {
+        this.failureCooldownUntil = Date.now() + 25000;
+      }
+      if (this.cachedInbounds && this.cachedInbounds.length > 0) return this.cachedInbounds;
       if (this.cachedServices.length > 0) return this.cachedServices;
       return [];
     }
+    };
+
+    if (!panelOverride && !forceRefreshAuth) {
+      this.inflightInboundsPromise = runFetch().finally(() => {
+        this.inflightInboundsPromise = null;
+      });
+      return this.inflightInboundsPromise;
+    }
+    return runFetch();
   }
 
   /**

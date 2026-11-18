@@ -12,7 +12,8 @@ import {
   parseAmountInput,
   getBot,
   enhanceBotForSpeedAndColoredButtons,
-  isValidTelegramBotToken
+  isValidTelegramBotToken,
+  isConfirmedTelegramTokenRejected
 } from './bot.js';
 import { getTehranShamsiDayRange } from './accounting.js';
 import { multiPanel } from './multiPanel.js';
@@ -21,10 +22,26 @@ import { xui } from './xui.js';
 
 interface ActiveBotRecord {
   bot: TelegramBot;
+  token: string;
   username: string;
   botFirstName?: string;
   sellerChatId: number;
   startedAt: number;
+  lastPollingAttemptAt: number;
+  lastPollingActivityAt: number;
+  consecutivePollingErrors: number;
+  watchdogRestarting?: boolean;
+}
+
+function withTimeoutSafe<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    timeout
+  ]);
 }
 
 function escapeHtml(text: string): string {
@@ -114,8 +131,81 @@ async function extractDirectConfigsFromSubUrl(subUrl: string): Promise<string[]>
 
 class ResellerBotManager {
   private activeBots: Map<number, ActiveBotRecord> = new Map();
+  private fallbackBots: Map<string, TelegramBot> = new Map();
   private userSessionStates: Map<string, { action: string; data?: any }> = new Map();
   private forceJoinCache: Map<string, number> = new Map();
+  private watchdogTimer: NodeJS.Timeout | null = null;
+
+  private getNonPollingBot(token?: string): TelegramBot | null {
+    const clean = (token || '').trim();
+    if (!clean || !isValidTelegramBotToken(clean)) return null;
+    let cached = this.fallbackBots.get(clean);
+    if (!cached) {
+      if (this.fallbackBots.size > 50) {
+        this.fallbackBots.clear();
+      }
+      cached = new TelegramBot(clean, {
+        polling: false,
+        request: { forever: true, pool: { maxSockets: 5 }, timeout: 25000 } as any
+      });
+      this.fallbackBots.set(clean, cached);
+    }
+    return cached;
+  }
+
+  private ensureWatchdogRunning() {
+    if (this.watchdogTimer) return;
+    this.watchdogTimer = setInterval(async () => {
+      const now = Date.now();
+      for (const [k, ts] of this.forceJoinCache.entries()) {
+        if (now - ts > 5 * 60 * 1000) {
+          this.forceJoinCache.delete(k);
+        }
+      }
+      if (this.userSessionStates.size > 1000) {
+        const excess = this.userSessionStates.size - 800;
+        let i = 0;
+        for (const k of this.userSessionStates.keys()) {
+          this.userSessionStates.delete(k);
+          if (++i >= excess) break;
+        }
+      }
+
+      for (const [sellerChatId, rec] of this.activeBots.entries()) {
+        if (rec.watchdogRestarting) continue;
+        try {
+          const pObj = (rec.bot as any)?._polling;
+          const pollingActive = typeof (rec.bot as any).isPolling === 'function'
+            ? (rec.bot as any).isPolling()
+            : Boolean(pObj?._lastRequest);
+          const lastActivity = Math.max(rec.lastPollingActivityAt, Number(pObj?._lastUpdate || 0));
+          const idleMs = now - lastActivity;
+
+          if (!pollingActive || (rec.lastPollingAttemptAt > 0 && idleMs > 85000)) {
+            rec.watchdogRestarting = true;
+            console.warn(`[ResellerBot @${sellerChatId}] Watchdog recovering stalled polling (active=${pollingActive}, idle=${Math.round(idleMs / 1000)}s)`);
+            try {
+              if (pObj && typeof pObj.stop === 'function') {
+                await pObj.stop({ cancel: true, reason: 'Reseller watchdog socket recovery' });
+                if (pObj.options) pObj.options.interval = 400;
+                await pObj.start({ restart: true });
+              } else {
+                await (rec.bot as any).stopPolling({ cancel: true }).catch(() => {});
+                await rec.bot.startPolling().catch(() => {});
+              }
+              rec.lastPollingAttemptAt = Date.now();
+              rec.lastPollingActivityAt = Date.now();
+              rec.consecutivePollingErrors = 0;
+            } finally {
+              rec.watchdogRestarting = false;
+            }
+          }
+        } catch (err: any) {
+          rec.watchdogRestarting = false;
+        }
+      }
+    }, 40 * 1000);
+  }
 
   public getEffectiveBotName(seller: User): string {
     const botCfg = seller.sellerBot || ({} as SellerBotConfig);
@@ -148,10 +238,11 @@ class ResellerBotManager {
   }
 
   /**
-   * Initialize all active reseller bots from database
+   * Initialize all active reseller bots from database (staggered to avoid startup bursts)
    */
   public async initAllResellerBots(): Promise<void> {
     console.log('[ResellerBotManager] Initializing all active reseller bots...');
+    this.ensureWatchdogRunning();
     const state = db.getState();
     const sellers = (state.users || []).filter(u => {
       if (!u || !u.isSeller || !u.sellerBot || !u.sellerBot.botToken) return false;
@@ -164,7 +255,11 @@ class ResellerBotManager {
       return !!u.sellerBot.enabled;
     });
 
-    for (const seller of sellers) {
+    for (let i = 0; i < sellers.length; i++) {
+      const seller = sellers[i];
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
       try {
         await this.startResellerBot(seller.chatId);
       } catch (err: any) {
@@ -209,26 +304,56 @@ class ResellerBotManager {
       };
     }
 
+    this.ensureWatchdogRunning();
     let bot: TelegramBot | null = null;
     try {
       bot = new TelegramBot(token, {
         polling: {
-          interval: 80,
+          interval: 400,
           autoStart: false,
           params: {
-            timeout: 25,
+            timeout: 20,
             allowed_updates: ['message', 'callback_query']
           }
         },
         request: {
           forever: true,
-          pool: { maxSockets: 100 },
-          timeout: 30000
+          pool: { maxSockets: 10 },
+          timeout: 45000
         } as any
       });
 
       enhanceBotForSpeedAndColoredButtons(bot);
       this.attachBotHandlers(bot, sellerChatId);
+
+      const recInit: ActiveBotRecord = {
+        bot,
+        token,
+        username: (user.sellerBot?.botUsername || '').trim(),
+        botFirstName: (user.sellerBot?.botFirstName || '').trim(),
+        sellerChatId,
+        startedAt: Date.now(),
+        lastPollingAttemptAt: Date.now(),
+        lastPollingActivityAt: Date.now(),
+        consecutivePollingErrors: 0
+      };
+      this.activeBots.set(sellerChatId, recInit);
+
+      const pObj = (bot as any)._polling;
+      if (pObj && typeof pObj._getUpdates === 'function') {
+        const origGetUpdates = pObj._getUpdates.bind(pObj);
+        pObj._getUpdates = () => {
+          recInit.lastPollingAttemptAt = Date.now();
+          return origGetUpdates().then((res: any) => {
+            recInit.lastPollingActivityAt = Date.now();
+            if (recInit.consecutivePollingErrors > 0) {
+              recInit.consecutivePollingErrors = 0;
+              if (pObj.options) pObj.options.interval = 400;
+            }
+            return res;
+          });
+        };
+      }
 
       (bot as any).deleteWebHook({ drop_pending_updates: false }).catch(() => {});
 
@@ -302,13 +427,11 @@ class ResellerBotManager {
         }).catch(() => {});
       }
 
-      this.activeBots.set(sellerChatId, {
-        bot,
-        username: botUsername,
-        botFirstName,
-        sellerChatId,
-        startedAt: Date.now()
-      });
+      const currentRec = this.activeBots.get(sellerChatId);
+      if (currentRec && currentRec.bot === bot) {
+        currentRec.username = botUsername;
+        currentRec.botFirstName = botFirstName;
+      }
 
       return {
         success: true,
@@ -318,13 +441,14 @@ class ResellerBotManager {
           : 'تنظیمات ربات اختصاصی شما با موفقیت ذخیره شد و ربات در وضعیت آنلاین قرار گرفت.'
       };
     } catch (err: any) {
+      this.activeBots.delete(sellerChatId);
       if (bot) {
         try {
           bot.removeAllListeners('message');
           bot.removeAllListeners('callback_query');
           bot.on('error', () => {});
           bot.on('polling_error', () => {});
-          await bot.stopPolling();
+          await (bot as any).stopPolling({ cancel: true }).catch(() => {});
         } catch (e) {}
       }
       return {
@@ -346,7 +470,7 @@ class ResellerBotManager {
         record.bot.removeAllListeners('callback_query');
         record.bot.on('error', () => {});
         record.bot.on('polling_error', () => {});
-        await record.bot.stopPolling();
+        await (record.bot as any).stopPolling({ cancel: true }).catch(() => {});
       } catch (e) {}
       return true;
     }
@@ -991,7 +1115,7 @@ class ResellerBotManager {
           chId = '@' + chId;
         }
         try {
-          const member = await bot.getChatMember(chId, buyerChatId);
+          const member = await withTimeoutSafe(bot.getChatMember(chId, buyerChatId), 3500);
           if (['left', 'kicked'].includes(member.status)) {
             notJoined.push(ch);
           }
@@ -1914,15 +2038,23 @@ class ResellerBotManager {
       });
     };
 
-    // Error safety for polling
+    // Error safety for polling with backoff & safe token rejection check
     bot.on('polling_error', (error: any) => {
-      const errMsg = error?.message || String(error);
-      if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
+      const rec = this.activeBots.get(sellerChatId);
+      if (rec) {
+        rec.lastPollingActivityAt = Date.now();
+      }
+      if (isConfirmedTelegramTokenRejected(error)) {
+        console.warn(`[ResellerBot @${sellerChatId}] Token confirmed invalid/revoked by Telegram (401). Stopping bot.`);
         this.stopResellerBot(sellerChatId).catch(() => {});
         return;
       }
-      if (errMsg.includes('409') || errMsg.includes('Conflict')) {
-        return;
+      if (rec) {
+        rec.consecutivePollingErrors++;
+        const pObj = (bot as any)?._polling;
+        if (pObj && pObj.options) {
+          pObj.options.interval = Math.min(10000, 600 * Math.pow(2, Math.min(4, rec.consecutivePollingErrors - 1)));
+        }
       }
     });
 
@@ -4725,8 +4857,7 @@ class ResellerBotManager {
     }
 
     const record = this.activeBots.get(sellerChatId);
-    const childBot =
-      record?.bot || (seller.sellerBot?.botToken ? new TelegramBot(seller.sellerBot.botToken, { polling: false }) : null);
+    const childBot = record?.bot || this.getNonPollingBot(seller.sellerBot?.botToken);
 
     try {
       // CASE 1: WALLET DEPOSIT IN BOT 2
@@ -5083,13 +5214,9 @@ class ResellerBotManager {
         : `ℹ️ مبلغ ${cleanAmount.toLocaleString()} تومان از موجودی کیف پول شما کسر گردید.\n💰 موجودی فعلی: <b>${(buyer.balance || 0).toLocaleString()} تومان</b>`;
 
     const record = this.activeBots.get(sellerChatId);
-    if (record?.bot) {
-      await record.bot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
-    } else if (seller.sellerBot.botToken && isValidTelegramBotToken(seller.sellerBot.botToken)) {
-      try {
-        const tempBot = new TelegramBot(seller.sellerBot.botToken, { polling: false });
-        await tempBot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
-      } catch (e) {}
+    const notifyBot = record?.bot || this.getNonPollingBot(seller.sellerBot.botToken);
+    if (notifyBot) {
+      await notifyBot.sendMessage(cleanBuyerId, notifyMsg, { parse_mode: 'HTML' }).catch(() => {});
     }
 
     return {
